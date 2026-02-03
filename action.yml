@@ -1,0 +1,154 @@
+name: 'Omar Gate'
+description: 'AI-powered security gate that blocks P0/P1 vulnerabilities before merge'
+author: 'PlexAura'
+branding:
+  icon: 'shield'
+  color: 'red'
+
+inputs:
+  # Required
+  openai_api_key:
+    description: 'OpenAI API key for LLM calls (BYO)'
+    required: true
+
+  # GitHub integration (recommended)
+  github_token:
+    description: 'GitHub token used to post check runs/comments and query workflow history (recommended: ${{ github.token }})'
+    required: false
+    default: ''
+
+  # PlexAura integration (optional)
+  plexaura_token:
+    description: 'PlexAura API token for Tier 2/3 uploads (optional)'
+    required: false
+    default: ''
+
+  telemetry_tier:
+    description: 'Telemetry tier: 0=off, 1=aggregate, 2=metadata, 3=full artifacts'
+    required: false
+    default: '1'
+
+  training_opt_in:
+    description: 'Optional training consent (de-identified). true/false'
+    required: false
+    default: 'false'
+
+  # Scan configuration
+  scan_mode:
+    description: 'Scan mode: pr-diff (fast), deep (full repo), nightly (scheduled)'
+    required: false
+    default: 'pr-diff'
+
+  severity_gate:
+    description: 'Minimum severity to block merge: P0, P1, P2, or none'
+    required: false
+    default: 'P1'
+
+  model:
+    description: 'Primary OpenAI model'
+    required: false
+    default: 'gpt-5.2-codex'
+
+  model_fallback:
+    description: 'Fallback OpenAI model'
+    required: false
+    default: 'gpt-5.2'
+
+  llm_failure_policy:
+    description: 'If LLM call fails: block (fail-closed), deterministic_only, allow_with_warning'
+    required: false
+    default: 'block'
+
+  # Rate limiting / cost control
+  max_daily_scans:
+    description: 'Maximum scans per repo per day (0 = unlimited)'
+    required: false
+    default: '20'
+
+  min_scan_interval_minutes:
+    description: 'Minimum minutes between scans for same PR'
+    required: false
+    default: '5'
+
+  max_input_tokens:
+    description: 'Maximum input tokens per scan (cost control)'
+    required: false
+    default: '100000'
+
+  require_cost_confirmation:
+    description: 'If estimated cost > $X, require manual confirmation (USD)'
+    required: false
+    default: '5.00'
+
+  approval_mode:
+    description: 'How to approve high-cost scans: pr_label, workflow_dispatch, or none'
+    required: false
+    default: 'pr_label'
+
+  approval_label:
+    description: 'PR label that approves high-cost scan'
+    required: false
+    default: 'sentinellayer:approved'
+
+  # Fork handling
+  fork_policy:
+    description: 'Fork PR handling: block, limited (deterministic only), allow'
+    required: false
+    default: 'block'
+
+  # Fixer options
+  run_deterministic_fix:
+    description: 'Run deterministic autofix (self-contained allowlist)'
+    required: false
+    default: 'false'
+
+  run_llm_fix:
+    description: 'Generate LLM fix patches (artifacts only, no auto-commit)'
+    required: false
+    default: 'false'
+
+  auto_commit_fixes:
+    description: 'Auto-commit deterministic fixes to PR branch'
+    required: false
+    default: 'false'
+
+  # Policy pack controls
+  policy_pack:
+    description: 'Policy pack identifier'
+    required: false
+    default: 'omar'
+
+  policy_pack_version:
+    description: 'Policy pack version'
+    required: false
+    default: 'v1'
+
+outputs:
+  gate_status:
+    description: 'Gate result: passed, blocked, bypassed, error'
+  p0_count:
+    description: 'Number of P0 findings'
+  p1_count:
+    description: 'Number of P1 findings'
+  p2_count:
+    description: 'Number of P2 findings'
+  p3_count:
+    description: 'Number of P3 findings'
+  run_id:
+    description: 'Unique run identifier'
+  findings_artifact:
+    description: 'Path to findings JSONL artifact'
+  pack_summary_artifact:
+    description: 'Path to PACK_SUMMARY.json'
+  estimated_cost_usd:
+    description: 'Estimated LLM cost for this run'
+  idempotency_key:
+    description: 'Idempotency key used for dedupe'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  env:
+    OPENAI_API_KEY: ${{ inputs.openai_api_key }}
+    PLEXAURA_TOKEN: ${{ inputs.plexaura_token }}
+    GITHUB_TOKEN: ${{ inputs.github_token }}
