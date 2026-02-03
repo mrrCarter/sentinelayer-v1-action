@@ -37,5 +37,6 @@ def test_config_is_frozen(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("INPUT_OPENAI_API_KEY", "sk-test-key")
     cfg = OmarGateConfig()
 
-    with pytest.raises(TypeError):
+    # Pydantic 2.x raises ValidationError for frozen models
+    with pytest.raises((TypeError, ValidationError)):
         cfg.scan_mode = "deep"
