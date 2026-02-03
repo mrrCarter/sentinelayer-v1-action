@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import requests
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from .context import GitHubContext
 
@@ -50,6 +50,36 @@ class GitHubClient:
             payload["external_id"] = external_id
         r = self.session.post(url, json=payload)
         r.raise_for_status()
+
+    def list_check_runs(self, head_sha: str, check_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        url = f"{GITHUB_API}/repos/{self.repo}/commits/{head_sha}/check-runs"
+        params: Dict[str, Any] = {"per_page": 100}
+        if check_name:
+            params["check_name"] = check_name
+        r = self.session.get(url, params=params)
+        r.raise_for_status()
+        return r.json().get("check_runs", [])
+
+    def find_check_run_by_external_id(self, head_sha: str, external_id: str, check_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        for run in self.list_check_runs(head_sha, check_name):
+            if run.get("external_id") == external_id:
+                return run
+        return None
+
+    def get_pull_request(self, pr_number: int) -> Dict[str, Any]:
+        url = f"{GITHUB_API}/repos/{self.repo}/pulls/{pr_number}"
+        r = self.session.get(url)
+        r.raise_for_status()
+        return r.json()
+
+    def list_issue_labels(self, pr_number: int) -> List[str]:
+        url = f"{GITHUB_API}/repos/{self.repo}/issues/{pr_number}/labels"
+        r = self.session.get(url, params={"per_page": 100})
+        r.raise_for_status()
+        return [label.get("name", "") for label in r.json()]
+
+    def has_label(self, pr_number: int, label: str) -> bool:
+        return label in self.list_issue_labels(pr_number)
 
 
 def load_context() -> GitHubContext:
