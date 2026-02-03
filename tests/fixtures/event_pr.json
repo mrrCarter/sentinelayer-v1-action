@@ -1,0 +1,26 @@
+{
+  "number": 42,
+  "pull_request": {
+    "number": 42,
+    "title": "Fix bug",
+    "head": {
+      "sha": "headsha123",
+      "ref": "feature-branch",
+      "repo": {
+        "full_name": "octo/repo",
+        "owner": { "login": "octo" }
+      }
+    },
+    "base": {
+      "sha": "basesha456",
+      "ref": "main",
+      "repo": {
+        "full_name": "octo/repo",
+        "owner": { "login": "octo" }
+      }
+    }
+  },
+  "repository": {
+    "full_name": "octo/repo"
+  }
+}
