@@ -7,7 +7,14 @@ MARKER_PREFIX = "<!-- omar-gate:run_id="
 def marker(run_id: str) -> str:
     return f"{MARKER_PREFIX}{run_id} -->"
 
-def render_pr_comment(result: GateResult, run_id: str, dashboard_url: str | None, cost_usd: float | None, action_version: str) -> str:
+def render_pr_comment(
+    result: GateResult,
+    run_id: str,
+    dashboard_url: str | None,
+    cost_usd: float | None,
+    action_version: str,
+    warnings: list[str] | None = None,
+) -> str:
     status_emoji = {
         "passed": "✅ PASSED",
         "blocked": "❌ BLOCKED",
@@ -29,6 +36,11 @@ def render_pr_comment(result: GateResult, run_id: str, dashboard_url: str | None
     lines.append(f"| 🟡 P2 | {result.counts.p2} |")
     lines.append(f"| ⚪ P3 | {result.counts.p3} |")
     lines.append("")
+    if warnings:
+        lines.append("### Warnings")
+        for warning in warnings:
+            lines.append(f"- {warning}")
+        lines.append("")
     if dashboard_url:
         lines.append(f"📊 View run in PlexAura: {dashboard_url}")
     if cost_usd is not None:
