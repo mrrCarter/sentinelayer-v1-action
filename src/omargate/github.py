@@ -81,6 +81,14 @@ class GitHubClient:
     def has_label(self, pr_number: int, label: str) -> bool:
         return label in self.list_issue_labels(pr_number)
 
+    def get_branch_protection(self, branch: str) -> Optional[Dict[str, Any]]:
+        url = f"{GITHUB_API}/repos/{self.repo}/branches/{branch}/protection"
+        r = self.session.get(url)
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return r.json()
+
 
 def load_context() -> GitHubContext:
     """Load GitHub Actions context from environment."""

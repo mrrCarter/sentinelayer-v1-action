@@ -10,6 +10,7 @@ from omargate.config import OmarGateConfig
 from omargate.context import GitHubContext
 from omargate.logging import OmarLogger
 from omargate.preflight import (
+    check_branch_protection,
     check_cost_approval,
     check_dedupe,
     check_fork_policy,
@@ -24,10 +25,12 @@ class DummyGitHub:
         runs: Optional[List[Dict[str, Any]]] = None,
         pr_head: str = "headsha",
         labels: Optional[List[str]] = None,
+        protection: Optional[Dict[str, Any]] = None,
     ) -> None:
         self._runs = runs or []
         self._pr_head = pr_head
         self._labels = labels or []
+        self._protection = protection
 
     def list_check_runs(self, head_sha: str, check_name: Optional[str] = None) -> List[Dict[str, Any]]:
         return self._runs
@@ -45,6 +48,9 @@ class DummyGitHub:
 
     def has_label(self, pr_number: int, label: str) -> bool:
         return label in self._labels
+
+    def get_branch_protection(self, branch: str) -> Optional[Dict[str, Any]]:
+        return self._protection
 
 
 def test_fork_policy_blocks_by_default() -> None:
@@ -98,6 +104,59 @@ def test_fork_policy_limited_mode() -> None:
 def test_cost_estimation() -> None:
     cost = estimate_cost(file_count=10, total_lines=100, model="gpt-4o")
     assert cost == pytest.approx(0.006)
+
+
+def test_branch_protection_required_check() -> None:
+    gh = DummyGitHub(
+        protection={
+            "required_status_checks": {
+                "contexts": ["Omar Gate"],
+                "checks": [],
+            }
+        }
+    )
+    ctx = GitHubContext(
+        repo_owner="octo",
+        repo_name="repo",
+        repo_full_name="octo/repo",
+        event_name="pull_request",
+        pr_number=1,
+        pr_title="PR",
+        head_sha="head",
+        base_sha="base",
+        head_ref="feat",
+        base_ref="main",
+        is_fork=False,
+        fork_owner=None,
+        actor="octo",
+    )
+
+    required, status = check_branch_protection(gh, ctx, "Omar Gate")
+    assert required is True
+    assert status == "required"
+
+
+def test_branch_protection_missing_check() -> None:
+    gh = DummyGitHub(protection={"required_status_checks": {"contexts": ["Other Check"], "checks": []}})
+    ctx = GitHubContext(
+        repo_owner="octo",
+        repo_name="repo",
+        repo_full_name="octo/repo",
+        event_name="pull_request",
+        pr_number=1,
+        pr_title="PR",
+        head_sha="head",
+        base_sha="base",
+        head_ref="feat",
+        base_ref="main",
+        is_fork=False,
+        fork_owner=None,
+        actor="octo",
+    )
+
+    required, status = check_branch_protection(gh, ctx, "Omar Gate")
+    assert required is False
+    assert status == "missing_required_check"
 
 
 def test_cost_approval_with_label() -> None:
