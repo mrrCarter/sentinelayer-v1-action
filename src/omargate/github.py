@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
-import requests
 from typing import Any, Dict, Optional, List
+
+import httpx
+import requests
 
 from .context import GitHubContext
 
@@ -88,6 +90,37 @@ class GitHubClient:
             return None
         r.raise_for_status()
         return r.json()
+
+    async def get_pr_diff(self, pr_number: int) -> str:
+        """Get PR diff content."""
+        url = f"{GITHUB_API}/repos/{self.repo}/pulls/{pr_number}"
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/vnd.github.v3.diff",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "omar-gate-action",
+        }
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, headers=headers, timeout=30)
+            if resp.status_code == 200:
+                return resp.text
+        return ""
+
+    async def get_pr_changed_files(self, pr_number: int) -> List[str]:
+        """Get list of changed file paths in PR."""
+        url = f"{GITHUB_API}/repos/{self.repo}/pulls/{pr_number}/files"
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/vnd.github.v3+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "omar-gate-action",
+        }
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, headers=headers, timeout=30)
+            if resp.status_code == 200:
+                files = resp.json()
+                return [f.get("filename", "") for f in files if f.get("filename")]
+        return []
 
 
 def load_context() -> GitHubContext:
