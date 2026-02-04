@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from dataclasses import asdict, is_dataclass
@@ -32,6 +33,7 @@ def write_pack_summary(
     counts: Dict[str, int],
     tool_versions: Dict[str, str],
     stages_completed: List[str],
+    review_brief_path: Path | None = None,
     error: str | None = None,
 ) -> Path:
     summary = {
@@ -45,15 +47,40 @@ def write_pack_summary(
         "tool_versions": tool_versions,
         "stages_completed": stages_completed,
         "duration_ms": None,
+        "artifacts": {
+            "findings_jsonl": True,
+            "review_brief": review_brief_path is not None,
+        },
         "error": error,
     }
     out = run_dir / "PACK_SUMMARY.json"
     out.write_text(json_dumps(summary), encoding="utf-8")
     return out
 
-def new_run_dir(base: Path) -> Path:
-    base.mkdir(parents=True, exist_ok=True)
-    run_id = str(uuid.uuid4())
+def _default_run_base() -> Path:
+    workspace = os.environ.get("GITHUB_WORKSPACE")
+    if workspace:
+        return Path(workspace) / ".sentinellayer" / "runs"
+    return Path("/tmp/omar_runs")
+
+
+def get_run_dir(run_id: str) -> Path:
+    """
+    Get run directory in a location that persists after container exits.
+
+    Uses $GITHUB_WORKSPACE if available (mounted volume).
+    Falls back to /tmp for local testing.
+    """
+    base = _default_run_base()
     run_dir = base / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
+def new_run_dir(base: Path | None = None) -> Path:
+    base_dir = base or _default_run_base()
+    base_dir.mkdir(parents=True, exist_ok=True)
+    run_id = str(uuid.uuid4())
+    run_dir = base_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
