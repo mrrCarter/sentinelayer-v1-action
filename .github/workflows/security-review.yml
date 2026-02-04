@@ -1,0 +1,21 @@
+name: Security Review
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+jobs:
+  security-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sentinelayer Security Review
+        uses: mrrCarter/sentinelayer-v1-action@main
+        with:
+          api_url: https://api.sentinelayer.com
+          gate_mode: advisory
