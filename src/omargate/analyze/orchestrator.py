@@ -8,6 +8,7 @@ from ..artifacts import generate_review_brief
 from ..config import OmarGateConfig
 from ..ingest import run_ingest
 from ..logging import OmarLogger
+from ..package.fingerprint import add_fingerprints_to_findings
 from .deterministic import ConfigScanner, PatternScanner, scan_for_secrets
 from .llm import ContextBuilder, LLMClient, PromptLoader, ResponseParser, handle_llm_failure
 from .llm.response_parser import ParsedFinding
@@ -18,6 +19,7 @@ class AnalysisResult:
     """Complete analysis result."""
 
     findings: List[dict]
+    ingest: dict
     counts: dict
     ingest_stats: dict
     deterministic_count: int
@@ -141,6 +143,11 @@ class AnalysisOrchestrator:
 
         # Step 5: Merge findings
         all_findings = self._merge_findings(det_findings, llm_findings)
+        add_fingerprints_to_findings(
+            all_findings,
+            policy_version=self.config.policy_pack_version,
+            tenant_salt="",
+        )
         counts = self._count_by_severity(all_findings)
 
         review_brief_path: Optional[Path] = None
@@ -167,6 +174,7 @@ class AnalysisOrchestrator:
 
         return AnalysisResult(
             findings=all_findings,
+            ingest=ingest,
             counts=counts,
             ingest_stats=stats,
             deterministic_count=len(det_findings),
