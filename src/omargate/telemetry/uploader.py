@@ -9,7 +9,7 @@ import httpx
 
 from ..logging import OmarLogger
 
-PLEXAURA_API_URL = "https://api.sentinellayer.com"
+SENTINELAYER_API_URL = "https://api.sentinelayer.com"
 UPLOAD_TIMEOUT_SECONDS = 10
 MAX_RETRIES = 2
 BACKOFF_SECONDS = 1
@@ -17,29 +17,29 @@ BACKOFF_SECONDS = 1
 
 async def upload_telemetry(
     payload: dict,
-    plexaura_token: Optional[str] = None,
+    sentinelayer_token: Optional[str] = None,
     oidc_token: Optional[str] = None,
     logger: Optional[OmarLogger] = None,
 ) -> bool:
     """
-    Upload telemetry to PlexAura API.
+    Upload telemetry to Sentinelayer API.
 
     Best-effort: failures are logged but don't affect gate.
 
     Auth priority:
     1. OIDC token (from GitHub Actions OIDC)
-    2. PlexAura API token
+    2. Sentinelayer API token
     3. Anonymous (Tier 1 only)
     """
     headers = {"Content-Type": "application/json"}
 
     if oidc_token:
         headers["Authorization"] = f"Bearer {oidc_token}"
-    elif plexaura_token:
-        headers["Authorization"] = f"Bearer {plexaura_token}"
+    elif sentinelayer_token:
+        headers["Authorization"] = f"Bearer {sentinelayer_token}"
 
     tier = payload.get("tier", 1)
-    endpoint = f"{PLEXAURA_API_URL}/api/v1/telemetry"
+    endpoint = f"{SENTINELAYER_API_URL}/api/v1/telemetry"
 
     for attempt in range(MAX_RETRIES):
         try:
@@ -87,17 +87,17 @@ async def upload_telemetry(
 async def upload_artifacts(
     run_dir: Path,
     manifest: dict,
-    plexaura_token: str,
+    sentinelayer_token: str,
     logger: Optional[OmarLogger] = None,
 ) -> bool:
     """
-    Upload Tier 3 artifacts to PlexAura S3.
+    Upload Tier 3 artifacts to Sentinelayer S3.
 
     Uses presigned URLs from API.
     """
-    if not plexaura_token:
+    if not sentinelayer_token:
         if logger:
-            logger.warning("Artifact upload requires plexaura_token")
+            logger.warning("Artifact upload requires sentinelayer_token")
         return False
 
 
@@ -108,7 +108,7 @@ async def fetch_oidc_token(logger: Optional[OmarLogger] = None) -> Optional[str]
     if not request_url or not request_token:
         return None
 
-    audience = os.environ.get("SENTINELLAYER_OIDC_AUDIENCE")
+    audience = os.environ.get("SENTINELAYER_OIDC_AUDIENCE")
     if audience:
         separator = "&" if "?" in request_url else "?"
         request_url = f"{request_url}{separator}audience={audience}"
@@ -139,12 +139,12 @@ async def fetch_oidc_token(logger: Optional[OmarLogger] = None) -> Optional[str]
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
-                f"{PLEXAURA_API_URL}/api/v1/artifacts/upload-urls",
+                f"{SENTINELAYER_API_URL}/api/v1/artifacts/upload-urls",
                 json={
                     "run_id": manifest.get("run_id"),
                     "objects": [obj.get("name") for obj in manifest.get("objects", [])],
                 },
-                headers={"Authorization": f"Bearer {plexaura_token}"},
+                headers={"Authorization": f"Bearer {sentinelayer_token}"},
             )
 
             if response.status_code != 200:

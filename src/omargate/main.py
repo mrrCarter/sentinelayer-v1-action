@@ -82,8 +82,8 @@ async def async_main() -> int:
     )
 
     dashboard_url = None
-    if config.plexaura_token.get_secret_value():
-        dashboard_url = f"https://sentinellayer.com/runs/{run_id}"
+    if config.sentinelayer_token.get_secret_value():
+        dashboard_url = f"https://sentinelayer.com/runs/{run_id}"
 
     idem_key = compute_idempotency_key(
         repo=ctx.repo_full_name,
@@ -294,7 +294,7 @@ async def async_main() -> int:
 
             try:
                 workspace = Path(os.environ.get("GITHUB_WORKSPACE", "."))
-                artifacts_dir = workspace / ".sentinellayer" / "artifacts"
+                artifacts_dir = workspace / ".sentinelayer" / "artifacts"
                 prepare_artifacts_for_upload(run_dir, artifacts_dir)
             except Exception as exc:
                 logger.warning("Artifact preparation failed", error=str(exc))
@@ -478,10 +478,10 @@ async def _upload_telemetry(
     logger: OmarLogger,
     consent: ConsentConfig,
 ) -> None:
-    """Upload telemetry to PlexAura (best effort)."""
+    """Upload telemetry to Sentinelayer (best effort)."""
     _ = (run_id, gate_result)
 
-    plexaura_token = config.plexaura_token.get_secret_value()
+    sentinelayer_token = config.sentinelayer_token.get_secret_value()
     oidc_token = await fetch_oidc_token(logger=logger)
 
     if should_upload_tier(1, consent):
@@ -489,13 +489,13 @@ async def _upload_telemetry(
         if validate_payload_tier(tier1_payload, consent):
             await upload_telemetry(
                 tier1_payload,
-                plexaura_token=plexaura_token,
+                sentinelayer_token=sentinelayer_token,
                 oidc_token=oidc_token,
                 logger=logger,
             )
 
     if should_upload_tier(2, consent):
-        if not plexaura_token and not oidc_token:
+        if not sentinelayer_token and not oidc_token:
             logger.warning("Telemetry tier 2 requires authentication")
         else:
             tier2_payload = build_tier2_payload(
@@ -516,14 +516,14 @@ async def _upload_telemetry(
             if validate_payload_tier(tier2_payload, consent):
                 await upload_telemetry(
                     tier2_payload,
-                    plexaura_token=plexaura_token,
+                    sentinelayer_token=sentinelayer_token,
                     oidc_token=oidc_token,
                     logger=logger,
                 )
 
     if should_upload_tier(3, consent):
-        if not plexaura_token:
-            logger.warning("Telemetry tier 3 requires plexaura_token")
+        if not sentinelayer_token:
+            logger.warning("Telemetry tier 3 requires sentinelayer_token")
             return None
         manifest_path = run_dir / "ARTIFACT_MANIFEST.json"
         try:
@@ -531,7 +531,7 @@ async def _upload_telemetry(
         except Exception as exc:
             logger.warning("Failed to load artifact manifest", error=str(exc))
             return None
-        await upload_artifacts(run_dir, manifest, plexaura_token, logger=logger)
+        await upload_artifacts(run_dir, manifest, sentinelayer_token, logger=logger)
 
     return None
 

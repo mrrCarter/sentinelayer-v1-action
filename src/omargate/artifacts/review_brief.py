@@ -60,7 +60,7 @@ def render_review_brief(
     review_order = _format_review_order(findings, ingest, ranked_files)
     quick_commands = _format_quick_commands(detected_categories)
 
-    resolved_dashboard_url = dashboard_url or f"https://sentinellayer.com/runs/{run_id}"
+    resolved_dashboard_url = dashboard_url or f"https://sentinelayer.com/runs/{run_id}"
 
     lines: List[str] = []
     lines.append("# 🛡️ Omar Gate Review Brief")
@@ -117,7 +117,7 @@ def render_review_brief(
     lines.append("2. Check Risk Hotspots in priority order")
     lines.append("3. Run suggested commands to find related issues")
     lines.append(
-        "4. Request [HITL Review](https://sentinellayer.com/hitl) for expert validation"
+        "4. Request [HITL Review](https://sentinelayer.com/hitl) for expert validation"
     )
     lines.append("")
     lines.append("---")

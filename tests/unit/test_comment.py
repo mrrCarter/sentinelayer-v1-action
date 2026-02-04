@@ -44,7 +44,7 @@ def test_comment_contains_marker() -> None:
     )
 
     assert MARKER_PREFIX in body
-    assert "<!-- sentinellayer:omar-gate:v1:acme/demo:42 -->" in body
+    assert "<!-- sentinelayer:omar-gate:v1:acme/demo:42 -->" in body
 
 
 def test_comment_contains_all_sections() -> None:

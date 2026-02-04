@@ -17,8 +17,8 @@ class OmarGateConfig(BaseSettings):
     # GitHub integration (recommended)
     github_token: SecretStr = Field(default="", description="GitHub token used for API calls")
 
-    # PlexAura integration (optional)
-    plexaura_token: SecretStr = Field(default="", description="PlexAura API token")
+    # Sentinelayer integration (optional)
+    sentinelayer_token: SecretStr = Field(default="", description="Sentinelayer API token")
     telemetry_tier: conint(ge=0, le=3) = Field(
         default=1,
         description="Telemetry tier: 0=off, 1=aggregate, 2=metadata, 3=full artifacts",
@@ -52,7 +52,7 @@ class OmarGateConfig(BaseSettings):
     max_input_tokens: conint(ge=0) = Field(default=100000)
     require_cost_confirmation: confloat(ge=0) = Field(default=5.00)
     approval_mode: ApprovalMode = Field(default="pr_label")
-    approval_label: str = Field(default="sentinellayer:approved")
+    approval_label: str = Field(default="sentinelayer:approved")
 
     # Fork handling
     fork_policy: ForkPolicy = Field(default="block")

@@ -89,13 +89,13 @@ async def test_upload_respects_rate_limit(monkeypatch: pytest.MonkeyPatch) -> No
 
 @pytest.mark.anyio
 async def test_upload_uses_oidc_over_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    """OIDC token takes priority over plexaura_token."""
+    """OIDC token takes priority over sentinelayer_token."""
     client = DummyAsyncClient(responses=[DummyResponse(status_code=200)])
     monkeypatch.setattr("omargate.telemetry.uploader.httpx.AsyncClient", lambda *args, **kwargs: client)
 
     await upload_telemetry(
         {"tier": 1},
-        plexaura_token="plexaura-token",
+        sentinelayer_token="sentinelayer-token",
         oidc_token="oidc-token",
     )
 
@@ -122,7 +122,7 @@ async def test_upload_retries_with_backoff(monkeypatch: pytest.MonkeyPatch) -> N
 async def test_upload_artifacts_requires_token() -> None:
     """Artifacts upload requires token."""
     manifest = {"run_id": "run-1", "objects": []}
-    result = await upload_artifacts(Path("."), manifest, plexaura_token="")
+    result = await upload_artifacts(Path("."), manifest, sentinelayer_token="")
     assert result is False
 
 

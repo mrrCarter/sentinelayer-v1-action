@@ -1,6 +1,6 @@
 name: 'Omar Gate'
 description: 'AI-powered security gate that blocks P0/P1 vulnerabilities before merge'
-author: 'PlexAura'
+author: 'Sentinelayer'
 branding:
   icon: 'shield'
   color: 'red'
@@ -17,9 +17,9 @@ inputs:
     required: false
     default: ''
 
-  # PlexAura integration (optional)
-  plexaura_token:
-    description: 'PlexAura API token for Tier 2/3 uploads (optional)'
+  # Sentinelayer integration (optional)
+  sentinelayer_token:
+    description: 'Sentinelayer API token for Tier 2/3 uploads (optional)'
     required: false
     default: ''
 
@@ -103,7 +103,7 @@ inputs:
   approval_label:
     description: 'PR label that approves high-cost scan'
     required: false
-    default: 'sentinellayer:approved'
+    default: 'sentinelayer:approved'
 
   # Fork handling
   fork_policy:
@@ -165,5 +165,5 @@ runs:
   image: 'Dockerfile'
   env:
     OPENAI_API_KEY: ${{ inputs.openai_api_key }}
-    PLEXAURA_TOKEN: ${{ inputs.plexaura_token }}
+    SENTINELAYER_TOKEN: ${{ inputs.sentinelayer_token }}
     GITHUB_TOKEN: ${{ inputs.github_token }}
