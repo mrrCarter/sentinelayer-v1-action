@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from enum import Enum
+from typing import Literal, Optional
 
 Severity = Literal["P0", "P1", "P2", "P3"]
 SeverityGate = Literal["P0", "P1", "P2", "none"]
@@ -24,12 +25,21 @@ class Counts:
 class GateConfig:
     severity_gate: SeverityGate = "P1"
 
+class GateStatus(str, Enum):
+    PASSED = "passed"
+    BLOCKED = "blocked"
+    BYPASSED = "bypassed"
+    NEEDS_APPROVAL = "needs_approval"
+    ERROR = "error"
+    SKIPPED = "skipped"
+
 @dataclass
 class GateResult:
-    status: str  # passed | blocked | bypassed | error | skipped
+    status: GateStatus
     reason: str
     block_merge: bool
     counts: Counts
+    dedupe_key: Optional[str] = None
 
 @dataclass
 class Finding:
