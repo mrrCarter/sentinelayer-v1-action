@@ -4,21 +4,23 @@ import asyncio
 import json
 import os
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
 
 from .analyze import AnalysisOrchestrator
-from .comment import marker, render_pr_comment
+from .comment import marker, marker_prefix, render_pr_comment
 from .config import OmarGateConfig
 from .context import GitHubContext
 from .gate import evaluate_gate
-from .github import GitHubClient
+from .github import GitHubClient, findings_to_annotations
 from .idempotency import compute_idempotency_key
 from .logging import OmarLogger
 from .models import GateConfig
 from .artifacts import write_audit_report
 from .packaging import get_run_dir, write_findings_jsonl, write_pack_summary
+from .publish import prepare_artifacts_for_upload, write_step_summary
 from .package import write_artifact_manifest
 from .preflight import (
     check_branch_protection,
@@ -100,15 +102,15 @@ async def async_main() -> int:
             logger.info("Blocked by fork policy", reason=fork_reason)
             if ctx.pr_number:
                 comment_body = (
-                    f"{marker(run_id)}\n"
-                    "🛡️ Omar Gate: Blocked\n\n"
+                    "## 🛡️ Omar Gate: Blocked\n\n"
                     "Fork PRs cannot access secrets required for full analysis. "
-                    "Please ask a maintainer to run the scan via workflow_dispatch."
+                    "Please ask a maintainer to run the scan via workflow_dispatch.\n\n"
+                    f"{marker(ctx.repo_full_name, ctx.pr_number)}"
                 )
                 gh.create_or_update_pr_comment(
                     ctx.pr_number,
                     comment_body,
-                    marker(run_id),
+                    marker_prefix(),
                 )
             return 12
 
@@ -150,6 +152,7 @@ async def async_main() -> int:
     if limited_mode:
         logger.info("Running in limited mode (deterministic only)")
 
+    scan_start = time.perf_counter()
     analysis = await orchestrator.run(
         scan_mode=config.scan_mode,
         diff_content=diff_content,
@@ -161,6 +164,8 @@ async def async_main() -> int:
     )
 
     # === PACKAGING ===
+    summary_payload: dict = {}
+    scan_duration_ms = 0
     with logger.stage("packaging"):
         findings_path = run_dir / "FINDINGS.jsonl"
         write_findings_jsonl(findings_path, analysis.findings)
@@ -171,6 +176,7 @@ async def async_main() -> int:
         fingerprint_count = sum(
             1 for finding in analysis.findings if finding.get("fingerprint")
         )
+        scan_duration_ms = int((time.perf_counter() - scan_start) * 1000)
         pack_summary_path = write_pack_summary(
             run_dir=run_dir,
             run_id=run_id,
@@ -188,6 +194,7 @@ async def async_main() -> int:
             policy_pack=config.policy_pack,
             policy_pack_version=config.policy_pack_version,
             error=None,
+            duration_ms=scan_duration_ms,
         )
         try:
             summary_payload = json.loads(pack_summary_path.read_text(encoding="utf-8"))
@@ -210,6 +217,14 @@ async def async_main() -> int:
             logger.warning("Manifest generation failed", error=str(exc))
             analysis.warnings.append("Manifest generation failed")
 
+        try:
+            workspace = Path(os.environ.get("GITHUB_WORKSPACE", "."))
+            artifacts_dir = workspace / ".sentinellayer" / "artifacts"
+            prepare_artifacts_for_upload(run_dir, artifacts_dir)
+        except Exception as exc:
+            logger.warning("Artifact preparation failed", error=str(exc))
+            analysis.warnings.append("Artifact preparation failed")
+
     # === GATE EVALUATION ===
     with logger.stage("gate_eval"):
         gate_result = evaluate_gate(
@@ -217,9 +232,14 @@ async def async_main() -> int:
             GateConfig(severity_gate=config.severity_gate),
         )
 
+    status_value = (
+        gate_result.status.value
+        if hasattr(gate_result.status, "value")
+        else str(gate_result.status)
+    )
     logger.info(
         "Gate evaluation complete",
-        status=gate_result.status,
+        status=status_value,
         block_merge=gate_result.block_merge,
         counts=analysis.counts,
     )
@@ -228,34 +248,75 @@ async def async_main() -> int:
     with logger.stage("publish"):
         cost_usd = analysis.llm_usage.get("cost_usd", 0.0) if analysis.llm_usage else 0.0
 
-        comment_body = render_pr_comment(
-            result=gate_result,
-            run_id=run_id,
-            dashboard_url=dashboard_url,
-            cost_usd=cost_usd,
-            version=ACTION_VERSION,
-            findings=analysis.findings[:5],
-            warnings=analysis.warnings,
-            scan_mode=config.scan_mode,
-            files_scanned=analysis.total_files_scanned,
-            deterministic_count=analysis.deterministic_count,
-            llm_count=analysis.llm_count,
-        )
-
         if ctx.pr_number:
+            github_run_id = os.environ.get("GITHUB_RUN_ID")
+            server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+            artifacts_url = (
+                f"{server_url}/{ctx.repo_full_name}/actions/runs/{github_run_id}"
+                if github_run_id
+                else None
+            )
+            comment_body = render_pr_comment(
+                result=gate_result,
+                run_id=run_id,
+                repo_full_name=ctx.repo_full_name,
+                pr_number=ctx.pr_number,
+                dashboard_url=dashboard_url,
+                artifacts_url=artifacts_url,
+                cost_usd=cost_usd,
+                version=ACTION_VERSION,
+                findings=analysis.findings[:5],
+                warnings=analysis.warnings,
+                scan_mode=config.scan_mode,
+                policy_pack=config.policy_pack,
+                policy_pack_version=config.policy_pack_version,
+                duration_ms=summary_payload.get("duration_ms") or scan_duration_ms,
+                deterministic_count=analysis.deterministic_count,
+                llm_count=analysis.llm_count,
+                dedupe_key=gate_result.dedupe_key or idem_key,
+            )
             gh.create_or_update_pr_comment(
                 ctx.pr_number,
                 comment_body,
-                marker(run_id),
+                marker_prefix(),
             )
 
+        counts = summary_payload.get("counts", {}) or analysis.counts
+        summary_text = (
+            f"🔴 P0={counts.get('P0', 0)} • 🟠 P1={counts.get('P1', 0)} • "
+            f"🟡 P2={counts.get('P2', 0)} • ⚪ P3={counts.get('P3', 0)}"
+        )
+        status_key = (
+            gate_result.status.value
+            if hasattr(gate_result.status, "value")
+            else str(gate_result.status)
+        )
+        conclusion_map = {
+            "passed": "success",
+            "blocked": "failure",
+            "bypassed": "neutral",
+            "needs_approval": "action_required",
+            "error": "failure",
+        }
+        annotations = findings_to_annotations(analysis.findings)
         gh.create_check_run(
             name=CHECK_NAME,
             head_sha=ctx.head_sha,
-            conclusion="failure" if gate_result.block_merge else "success",
-            summary=gate_result.reason,
+            conclusion=conclusion_map.get(status_key, "failure"),
+            summary=summary_text,
+            title=f"Omar Gate: {status_key.upper()}",
+            text=gate_result.reason,
             details_url=dashboard_url,
             external_id=idem_key,
+            annotations=annotations,
+        )
+
+        write_step_summary(
+            gate_result=gate_result,
+            summary=summary_payload,
+            findings=analysis.findings,
+            run_id=run_id,
+            version=ACTION_VERSION,
         )
 
     # === TELEMETRY (best effort) ===
@@ -313,7 +374,12 @@ def _write_github_outputs(
         return
 
     with open(output_path, "a", encoding="utf-8") as f:
-        f.write(f"gate_status={gate_result.status}\n")
+        status_value = (
+            gate_result.status.value
+            if hasattr(gate_result.status, "value")
+            else str(gate_result.status)
+        )
+        f.write(f"gate_status={status_value}\n")
         f.write(f"run_id={run_id}\n")
         f.write(f"p0_count={analysis.counts['P0']}\n")
         f.write(f"p1_count={analysis.counts['P1']}\n")

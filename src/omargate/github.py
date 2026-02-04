@@ -22,14 +22,14 @@ class GitHubClient:
             "User-Agent": "omar-gate-action",
         })
 
-    def create_or_update_pr_comment(self, pr_number: int, body: str, marker: str) -> None:
-        # Idempotent update: search recent comments for marker; update if found else create.
+    def create_or_update_pr_comment(self, pr_number: int, body: str, marker_prefix: str) -> None:
+        """Idempotent update: search recent comments for marker prefix; update if found else create."""
         url = f"{GITHUB_API}/repos/{self.repo}/issues/{pr_number}/comments"
         r = self.session.get(url, params={"per_page": 100})
         r.raise_for_status()
         comments = r.json()
         for c in comments:
-            if marker in (c.get("body") or ""):
+            if marker_prefix in (c.get("body") or ""):
                 patch_url = f"{GITHUB_API}/repos/{self.repo}/issues/comments/{c['id']}"
                 pr = self.session.patch(patch_url, json={"body": body})
                 pr.raise_for_status()
@@ -37,14 +37,30 @@ class GitHubClient:
         cr = self.session.post(url, json={"body": body})
         cr.raise_for_status()
 
-    def create_check_run(self, name: str, head_sha: str, conclusion: str, summary: str, details_url: Optional[str]=None, external_id: Optional[str]=None) -> None:
+    def create_check_run(
+        self,
+        name: str,
+        head_sha: str,
+        conclusion: str,
+        summary: str,
+        title: Optional[str] = None,
+        text: Optional[str] = None,
+        details_url: Optional[str] = None,
+        external_id: Optional[str] = None,
+        annotations: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
         url = f"{GITHUB_API}/repos/{self.repo}/check-runs"
+        output: Dict[str, Any] = {"title": title or name, "summary": summary}
+        if text:
+            output["text"] = text
+        if annotations:
+            output["annotations"] = annotations
         payload: Dict[str, Any] = {
             "name": name,
             "head_sha": head_sha,
             "status": "completed",
             "conclusion": conclusion,
-            "output": {"title": name, "summary": summary},
+            "output": output,
         }
         if details_url:
             payload["details_url"] = details_url
@@ -126,3 +142,35 @@ class GitHubClient:
 def load_context() -> GitHubContext:
     """Load GitHub Actions context from environment."""
     return GitHubContext.from_environment()
+
+
+def findings_to_annotations(findings: List[Dict[str, Any]], max_annotations: int = 50) -> List[Dict[str, Any]]:
+    """Convert findings to GitHub Check Run annotations."""
+    severity_to_level = {
+        "P0": "failure",
+        "P1": "failure",
+        "P2": "warning",
+        "P3": "notice",
+    }
+    annotations: List[Dict[str, Any]] = []
+    for finding in findings:
+        if len(annotations) >= max_annotations:
+            break
+        path = finding.get("file_path")
+        line_start = finding.get("line_start")
+        if not path or not line_start:
+            continue
+        line_end = finding.get("line_end") or line_start
+        severity = finding.get("severity", "P3")
+        annotations.append(
+            {
+                "path": path,
+                "start_line": int(line_start),
+                "end_line": int(line_end),
+                "annotation_level": severity_to_level.get(severity, "notice"),
+                "title": f"{severity}: {finding.get('category', 'Issue')}",
+                "message": finding.get("message", "No description"),
+                "raw_details": finding.get("recommendation", ""),
+            }
+        )
+    return annotations
