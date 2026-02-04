@@ -1,4 +1,4 @@
-"""Telemetry package for SentinelLayer."""
+"""Telemetry package for Sentinelayer."""
 
 from .collector import TelemetryCollector
 from .consent import ConsentConfig, TelemetryTier, get_max_tier, should_upload_tier, validate_payload_tier

@@ -163,7 +163,7 @@ def test_cost_approval_with_label() -> None:
     config = OmarGateConfig(
         openai_api_key="sk-test",
         approval_mode="pr_label",
-        approval_label="sentinellayer:approved",
+        approval_label="sentinelayer:approved",
         require_cost_confirmation=0.01,
     )
     ctx = GitHubContext(
@@ -181,7 +181,7 @@ def test_cost_approval_with_label() -> None:
         fork_owner=None,
         actor="octo",
     )
-    gh = DummyGitHub(labels=["sentinellayer:approved"])
+    gh = DummyGitHub(labels=["sentinelayer:approved"])
 
     approved, status = asyncio.run(check_cost_approval(1.0, config, ctx, gh))
     assert approved is True
