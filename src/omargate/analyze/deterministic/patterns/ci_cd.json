@@ -1,0 +1,61 @@
+{
+  "schema_version": "1.0",
+  "patterns": [
+    {
+      "id": "CICD-001",
+      "name": "Workflow Injection",
+      "severity": "P0",
+      "category": "ci-cd",
+      "description": "User-controlled input used in workflow context",
+      "regex": "\\$\\{\\{\\s*github\\.event\\.(issue|comment|review)",
+      "file_patterns": [".github/workflows/*.yml", ".github/workflows/*.yaml"],
+      "exclude_patterns": ["*.md", "*.rst", "*.txt"],
+      "message": "Potential workflow injection detected",
+      "recommendation": "Sanitize inputs and avoid direct interpolation",
+      "evidence_capture": "line",
+      "false_positive_hints": ["example", "docs", "test"]
+    },
+    {
+      "id": "CICD-002",
+      "name": "Unpinned Action",
+      "severity": "P2",
+      "category": "ci-cd",
+      "description": "GitHub Action uses an unpinned ref",
+      "regex": "uses:\\s*[^@]+@(main|master|latest)",
+      "file_patterns": [".github/workflows/*.yml", ".github/workflows/*.yaml"],
+      "exclude_patterns": ["*.md", "*.rst", "*.txt"],
+      "message": "Unpinned GitHub Action detected",
+      "recommendation": "Pin actions to a full commit SHA",
+      "evidence_capture": "line",
+      "false_positive_hints": ["example", "docs", "test"]
+    },
+    {
+      "id": "CICD-003",
+      "name": "Excessive Permissions",
+      "severity": "P2",
+      "category": "ci-cd",
+      "description": "Workflow requests write-all permissions",
+      "regex": "permissions:\\s*write-all",
+      "file_patterns": [".github/workflows/*.yml", ".github/workflows/*.yaml"],
+      "exclude_patterns": ["*.md", "*.rst", "*.txt"],
+      "message": "Excessive permissions detected",
+      "recommendation": "Restrict permissions to the minimum required",
+      "evidence_capture": "line",
+      "false_positive_hints": ["example", "docs", "test"]
+    },
+    {
+      "id": "CICD-004",
+      "name": "Secrets in Logs",
+      "severity": "P1",
+      "category": "ci-cd",
+      "description": "Secrets are echoed into logs",
+      "regex": "echo\\s+.*\\$\\{\\{\\s*secrets\\.",
+      "file_patterns": [".github/workflows/*.yml", ".github/workflows/*.yaml"],
+      "exclude_patterns": ["*.md", "*.rst", "*.txt"],
+      "message": "Secrets echoed to logs detected",
+      "recommendation": "Avoid printing secrets to logs",
+      "evidence_capture": "line",
+      "false_positive_hints": ["example", "docs", "test"]
+    }
+  ]
+}

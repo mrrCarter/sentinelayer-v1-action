@@ -1,0 +1,103 @@
+{
+  "schema_version": "1.0",
+  "patterns": [
+    {
+      "id": "QUAL-001",
+      "name": "TODO/FIXME Marker",
+      "severity": "P3",
+      "category": "quality",
+      "description": "TODO/FIXME marker left in code",
+      "regex": "\\b(TODO|FIXME|HACK|XXX|BUG)[\\s:]+",
+      "file_patterns": ["*.ts", "*.tsx", "*.js", "*.jsx", "*.py", "*.java", "*.go", "*.rb", "*.php", "*.cs", "*.kt", "*.scala", "*.swift", "*.rs", "*.sh", "*.bash"],
+      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
+      "message": "TODO/FIXME marker detected",
+      "recommendation": "Resolve or track TODOs before release",
+      "evidence_capture": "line",
+      "false_positive_hints": ["example", "docs"]
+    },
+    {
+      "id": "QUAL-002",
+      "name": "Explicit Any Type",
+      "severity": "P2",
+      "category": "quality",
+      "description": "Explicit any type weakens type safety",
+      "regex": ":\\s*any\\b|as\\s+any\\b",
+      "file_patterns": ["*.ts", "*.tsx"],
+      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
+      "message": "Explicit any type detected",
+      "recommendation": "Use precise types instead of any",
+      "evidence_capture": "line",
+      "false_positive_hints": ["example", "migration"]
+    },
+    {
+      "id": "QUAL-003",
+      "name": "Console Log",
+      "severity": "P3",
+      "category": "quality",
+      "description": "Console logging left in code",
+      "regex": "console\\.(log|debug|info)\\s*\\(",
+      "file_patterns": ["*.ts", "*.tsx", "*.js", "*.jsx"],
+      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
+      "message": "Console log detected",
+      "recommendation": "Remove debug logging or use structured logging",
+      "evidence_capture": "line",
+      "false_positive_hints": ["example", "docs", "test"]
+    },
+    {
+      "id": "QUAL-004",
+      "name": "Debugger Statement",
+      "severity": "P2",
+      "category": "quality",
+      "description": "Debugger statement left in code",
+      "regex": "\\bdebugger\\b",
+      "file_patterns": ["*.ts", "*.tsx", "*.js", "*.jsx"],
+      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
+      "message": "Debugger statement detected",
+      "recommendation": "Remove debugger statements before release",
+      "evidence_capture": "line",
+      "false_positive_hints": ["example", "docs", "test"]
+    },
+    {
+      "id": "QUAL-005",
+      "name": "Empty Catch Block",
+      "severity": "P2",
+      "category": "quality",
+      "description": "Empty catch block hides errors",
+      "regex": "catch\\s*\\([^)]*\\)\\s*\\{\\s*\\}",
+      "file_patterns": ["*.ts", "*.tsx", "*.js", "*.jsx"],
+      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
+      "message": "Empty catch block detected",
+      "recommendation": "Handle or log exceptions instead of empty catch",
+      "evidence_capture": "line",
+      "false_positive_hints": ["example", "generated"]
+    },
+    {
+      "id": "QUAL-006",
+      "name": "Magic Number",
+      "severity": "P3",
+      "category": "quality",
+      "description": "Large magic number detected",
+      "regex": "(?<![0-9a-zA-Z_.])[0-9]{4,}(?![0-9a-zA-Z_.])",
+      "file_patterns": ["*.ts", "*.tsx", "*.js", "*.jsx", "*.py", "*.java", "*.go", "*.rb", "*.php", "*.cs", "*.kt", "*.scala", "*.swift", "*.rs"],
+      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
+      "message": "Magic number detected",
+      "recommendation": "Replace magic numbers with named constants",
+      "evidence_capture": "line",
+      "false_positive_hints": ["example", "docs", "test"]
+    },
+    {
+      "id": "QUAL-007",
+      "name": "Long Function",
+      "severity": "P3",
+      "category": "quality",
+      "description": "Function exceeds recommended length",
+      "regex": "(?!)",
+      "file_patterns": ["*.ts", "*.tsx", "*.js", "*.jsx", "*.py", "*.java", "*.go", "*.rb", "*.php", "*.cs", "*.kt", "*.scala", "*.swift", "*.rs"],
+      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
+      "message": "Long function detected",
+      "recommendation": "Split long functions into smaller units",
+      "evidence_capture": "block",
+      "false_positive_hints": ["generated", "auto"]
+    }
+  ]
+}
