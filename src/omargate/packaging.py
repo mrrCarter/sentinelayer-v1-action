@@ -3,16 +3,26 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import List, Dict, Any
 
 from .models import Finding
 from .utils import sha256_hex, json_dumps
 
+def _finding_to_dict(finding: Any) -> Dict[str, Any]:
+    if isinstance(finding, dict):
+        return finding
+    if is_dataclass(finding):
+        return asdict(finding)
+    return dict(getattr(finding, "__dict__", {}))
+
+
 def write_findings_jsonl(path: Path, findings: List[Finding]) -> None:
     with path.open("w", encoding="utf-8") as f:
         for finding in findings:
-            f.write(json.dumps(finding.__dict__, sort_keys=True) + "\n")
+            payload = _finding_to_dict(finding)
+            f.write(json.dumps(payload, sort_keys=True) + "\n")
 
 def write_pack_summary(
     run_dir: Path,
