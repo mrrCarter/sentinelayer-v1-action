@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0",
+  "prompts": {
+    "security_review": {
+      "file": "SECURITY_REVIEW.md",
+      "description": "Cross-file security analysis for PR diffs",
+      "scan_modes": ["pr-diff", "deep"],
+      "max_context_tokens": 80000
+    },
+    "baseline_audit": {
+      "file": "BASELINE_AUDIT.md",
+      "description": "Full repository security audit",
+      "scan_modes": ["deep", "nightly"],
+      "max_context_tokens": 120000
+    }
+  },
+  "default_prompt": "security_review"
+}
