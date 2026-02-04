@@ -23,6 +23,18 @@ class OmarGateConfig(BaseSettings):
         default=1,
         description="Telemetry tier: 0=off, 1=aggregate, 2=metadata, 3=full artifacts",
     )
+    telemetry: bool = Field(
+        default=True,
+        description="Enable anonymous telemetry (opt-out)",
+    )
+    share_metadata: bool = Field(
+        default=False,
+        description="Opt-in to Tier 2 metadata (repo identity + finding metadata)",
+    )
+    share_artifacts: bool = Field(
+        default=False,
+        description="Opt-in to Tier 3 artifacts upload",
+    )
     training_opt_in: bool = Field(default=False, description="Optional training consent")
 
     # Scan configuration

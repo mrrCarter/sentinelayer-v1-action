@@ -28,6 +28,21 @@ inputs:
     required: false
     default: '1'
 
+  telemetry:
+    description: 'Enable anonymous telemetry (opt-out). true/false'
+    required: false
+    default: 'true'
+
+  share_metadata:
+    description: 'Opt-in to Tier 2 metadata (repo identity + finding metadata). true/false'
+    required: false
+    default: 'false'
+
+  share_artifacts:
+    description: 'Opt-in to Tier 3 artifacts upload. true/false'
+    required: false
+    default: 'false'
+
   training_opt_in:
     description: 'Optional training consent (de-identified). true/false'
     required: false
