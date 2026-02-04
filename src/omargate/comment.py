@@ -4,7 +4,7 @@ from typing import List, Optional
 
 from .models import GateResult, GateStatus
 
-MARKER_PREFIX = "<!-- sentinellayer:omar-gate:v1:"
+MARKER_PREFIX = "<!-- sentinelayer:omar-gate:v1:"
 
 def marker(repo_full_name: str, pr_number: int) -> str:
     return f"{MARKER_PREFIX}{repo_full_name}:{pr_number} -->"

@@ -80,7 +80,7 @@ def write_pack_summary(
 def _default_run_base() -> Path:
     workspace = os.environ.get("GITHUB_WORKSPACE")
     if workspace:
-        return Path(workspace) / ".sentinellayer" / "runs"
+        return Path(workspace) / ".sentinelayer" / "runs"
     return Path("/tmp/omar_runs")
 
 
