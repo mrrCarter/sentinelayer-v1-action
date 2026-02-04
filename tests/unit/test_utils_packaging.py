@@ -60,9 +60,15 @@ def test_packaging_writes_summary(tmp_path: Path) -> None:
         counts={"P0": 0, "P1": 0, "P2": 1, "P3": 0},
         tool_versions={"action": "1.0"},
         stages_completed=["packaging"],
+        fingerprint_count=1,
+        dedupe_key="dedupe-key",
+        policy_pack="omar",
+        policy_pack_version="v1",
         error=None,
     )
 
     data = json.loads(summary_path.read_text(encoding="utf-8"))
     assert data["counts"]["total"] == 1
     assert data["findings_file_sha256"] == sha256_hex(findings_path.read_bytes())
+    assert data["fingerprint_count"] == 1
+    assert data["dedupe_key"] == "dedupe-key"

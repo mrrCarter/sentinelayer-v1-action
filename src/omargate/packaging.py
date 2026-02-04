@@ -35,7 +35,17 @@ def write_pack_summary(
     stages_completed: List[str],
     review_brief_path: Path | None = None,
     error: str | None = None,
+    errors: List[str] | None = None,
+    fingerprint_count: int | None = None,
+    dedupe_key: str | None = None,
+    policy_pack: str | None = None,
+    policy_pack_version: str | None = None,
+    duration_ms: int | None = None,
 ) -> Path:
+    errors_list = list(errors or [])
+    if error:
+        errors_list.append(error)
+
     summary = {
         "schema_version": "1.0",
         "run_id": run_id,
@@ -46,13 +56,23 @@ def write_pack_summary(
         "findings_file_sha256": sha256_hex(findings_path.read_bytes()) if findings_path.exists() else None,
         "tool_versions": tool_versions,
         "stages_completed": stages_completed,
-        "duration_ms": None,
+        "duration_ms": duration_ms,
         "artifacts": {
             "findings_jsonl": True,
             "review_brief": review_brief_path is not None,
         },
         "error": error,
+        "errors": errors_list,
     }
+    if fingerprint_count is not None:
+        summary["fingerprint_count"] = int(fingerprint_count)
+    if dedupe_key is not None:
+        summary["dedupe_key"] = dedupe_key
+    if policy_pack is not None:
+        summary["policy_pack"] = policy_pack
+    if policy_pack_version is not None:
+        summary["policy_pack_version"] = policy_pack_version
+
     out = run_dir / "PACK_SUMMARY.json"
     out.write_text(json_dumps(summary), encoding="utf-8")
     return out
