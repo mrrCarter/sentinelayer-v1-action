@@ -31,6 +31,8 @@ SOURCE_LANGUAGES = {
     ".scala": "scala",
     ".sh": "shell",
     ".bash": "shell",
+    ".sql": ("database", "sql"),
+    ".psql": ("database", "sql"),
 }
 
 CONFIG_LANGUAGES = {
@@ -112,7 +114,11 @@ def classify_file(path: str) -> FileClassification:
         return FileClassification(category="generated", language=language)
 
     if ext in SOURCE_LANGUAGES:
-        return FileClassification(category="source", language=SOURCE_LANGUAGES[ext])
+        mapped = SOURCE_LANGUAGES[ext]
+        if isinstance(mapped, tuple):
+            category, language = mapped
+            return FileClassification(category=category, language=language)
+        return FileClassification(category="source", language=mapped)
 
     if ext in CONFIG_LANGUAGES:
         return FileClassification(category="config", language=CONFIG_LANGUAGES[ext])
