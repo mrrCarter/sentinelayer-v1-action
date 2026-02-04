@@ -17,7 +17,9 @@ from .github import GitHubClient
 from .idempotency import compute_idempotency_key
 from .logging import OmarLogger
 from .models import GateConfig
+from .artifacts import write_audit_report
 from .packaging import get_run_dir, write_findings_jsonl, write_pack_summary
+from .package import write_artifact_manifest
 from .preflight import (
     check_branch_protection,
     check_cost_approval,
@@ -166,6 +168,9 @@ async def async_main() -> int:
         pack_counts = {
             key: analysis.counts[key] for key in ("P0", "P1", "P2", "P3")
         }
+        fingerprint_count = sum(
+            1 for finding in analysis.findings if finding.get("fingerprint")
+        )
         pack_summary_path = write_pack_summary(
             run_dir=run_dir,
             run_id=run_id,
@@ -178,8 +183,32 @@ async def async_main() -> int:
             },
             stages_completed=["preflight", "ingest", "deterministic", "llm", "packaging"],
             review_brief_path=analysis.review_brief_path,
+            fingerprint_count=fingerprint_count,
+            dedupe_key=idem_key,
+            policy_pack=config.policy_pack,
+            policy_pack_version=config.policy_pack_version,
             error=None,
         )
+        try:
+            summary_payload = json.loads(pack_summary_path.read_text(encoding="utf-8"))
+            write_audit_report(
+                run_dir=run_dir,
+                run_id=run_id,
+                summary=summary_payload,
+                findings=analysis.findings,
+                ingest=analysis.ingest,
+                config={"severity_gate": config.severity_gate},
+                version=ACTION_VERSION,
+            )
+        except Exception as exc:
+            logger.warning("Audit report generation failed", error=str(exc))
+            analysis.warnings.append("Audit report generation failed")
+
+        try:
+            write_artifact_manifest(run_dir, run_id)
+        except Exception as exc:
+            logger.warning("Manifest generation failed", error=str(exc))
+            analysis.warnings.append("Manifest generation failed")
 
     # === GATE EVALUATION ===
     with logger.stage("gate_eval"):
