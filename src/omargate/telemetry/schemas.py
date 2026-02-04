@@ -1,0 +1,178 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .collector import TelemetryCollector
+
+
+def build_tier1_payload(collector: "TelemetryCollector") -> dict:
+    """
+    Build Tier 1 (anonymous) telemetry payload.
+
+    CRITICAL: This payload contains NO identifying information.
+    - repo_hash is one-way hash, not reversible
+    - No repo name, owner, PR number, SHA
+    - No finding details (just counts)
+    """
+    return {
+        "schema_version": "1.0",
+        "tier": 1,
+        "run": {
+            "run_id": collector.run_id,
+            "timestamp_utc": collector.start_time.isoformat(),
+            "duration_ms": collector.total_duration_ms(),
+            "state": collector.gate_status,
+        },
+        "repo": {
+            "repo_hash": collector.repo_hash,
+        },
+        "scan": {
+            "mode": collector.scan_mode,
+            "model_used": collector.model_used,
+            "model_fallback_used": collector.model_fallback_used,
+            "tokens_in": collector.tokens_in,
+            "tokens_out": collector.tokens_out,
+            "cost_estimate_usd": round(collector.estimated_cost_usd, 4),
+            "files_scanned": collector.files_scanned,
+        },
+        "findings": collector.counts,
+        "gate": {
+            "result": collector.gate_status,
+            "dedupe_skipped": collector.dedupe_skipped,
+            "rate_limit_skipped": collector.rate_limit_skipped,
+            "fork_blocked": collector.fork_blocked,
+        },
+        "stages": collector.stage_durations(),
+        "errors_count": len(collector.errors),
+    }
+
+
+def build_tier2_payload(
+    collector: "TelemetryCollector",
+    repo_owner: str,
+    repo_name: str,
+    branch: str,
+    pr_number: Optional[int],
+    head_sha: str,
+    is_fork_pr: bool,
+    policy_pack: str,
+    policy_pack_version: str,
+    action_version: str,
+    findings_summary: List[dict],
+    idempotency_key: str,
+    severity_threshold: str = "P1",
+) -> dict:
+    """
+    Build Tier 2 (identified) telemetry payload.
+
+    Requires explicit opt-in (share_metadata=true).
+    Includes repo identity and finding metadata (no code snippets).
+    """
+    return {
+        "schema_version": "1.0",
+        "tier": 2,
+        "run": {
+            "run_id": collector.run_id,
+            "timestamp_utc": collector.start_time.isoformat(),
+            "duration_ms": collector.total_duration_ms(),
+            "state": collector.gate_status,
+        },
+        "repo": {
+            "owner": repo_owner,
+            "name": repo_name,
+            "branch": branch,
+            "pr_number": pr_number,
+            "head_sha": head_sha,
+            "is_fork_pr": is_fork_pr,
+        },
+        "scan": {
+            "mode": collector.scan_mode,
+            "policy_pack": policy_pack,
+            "policy_pack_version": policy_pack_version,
+            "model_used": collector.model_used,
+            "tokens_in": collector.tokens_in,
+            "tokens_out": collector.tokens_out,
+            "cost_estimate_usd": round(collector.estimated_cost_usd, 4),
+        },
+        "findings": {
+            "summary": [
+                {
+                    "finding_id": f.get("id"),
+                    "severity": f.get("severity"),
+                    "category": f.get("category"),
+                    "file_path": f.get("file_path"),
+                    "line_start": f.get("line_start"),
+                    "line_end": f.get("line_end"),
+                    "fingerprint": f.get("fingerprint"),
+                    "confidence": f.get("confidence"),
+                    "source": f.get("source"),
+                }
+                for f in findings_summary
+            ],
+            "counts": collector.counts,
+        },
+        "gate": {
+            "severity_threshold": severity_threshold,
+            "result": collector.gate_status,
+            "bypass_reason": None,
+        },
+        "meta": {
+            "action_version": action_version,
+            "telemetry_tier": 2,
+            "idempotency_key": idempotency_key,
+        },
+    }
+
+
+def build_tier3_manifest(
+    collector: "TelemetryCollector",
+    tenant_id: str,
+    repo_id: str,
+    artifacts: List[dict],
+    s3_prefix: str,
+) -> dict:
+    """
+    Build Tier 3 artifact manifest for upload.
+
+    Requires explicit opt-in (share_artifacts=true).
+    References full artifacts stored in S3.
+    """
+    return {
+        "schema_version": "1.0",
+        "tier": 3,
+        "tenant_id": tenant_id,
+        "repo_id": repo_id,
+        "run_id": collector.run_id,
+        "artifact_root": f"{s3_prefix}/{tenant_id}/{repo_id}/{collector.run_id}/",
+        "uploaded_at_utc": datetime.now(timezone.utc).isoformat(),
+        "objects": artifacts,
+        "retention_days": 90,
+        "encryption": {
+            "mode": "SSE-S3",
+        },
+    }
+
+
+def findings_to_summary(findings: List[dict]) -> List[dict]:
+    """
+    Strip findings to Tier 2-safe summary.
+
+    Removes: snippet, message, recommendation (could contain code)
+    Keeps: id, severity, category, file_path, line_start/end, fingerprint, confidence, source
+    """
+    return [
+        {
+            "finding_id": f.get("id"),
+            "severity": f.get("severity"),
+            "category": f.get("category"),
+            "file_path": f.get("file_path"),
+            "line_start": f.get("line_start"),
+            "line_end": f.get("line_end"),
+            "fingerprint": f.get("fingerprint"),
+            "confidence": f.get("confidence"),
+            "source": f.get("source"),
+        }
+        for f in findings
+    ]
