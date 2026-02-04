@@ -1,0 +1,236 @@
+from __future__ import annotations
+
+from bisect import bisect_right
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Iterable, List
+
+import fnmatch
+import json
+import re
+
+MAX_SNIPPET_CHARS = 500
+MAX_SCAN_BYTES = 1_000_000
+LONG_FUNCTION_THRESHOLD = 80
+
+FUNCTION_START_PATTERNS = [
+    re.compile(r"^\s*def\s+\w+\s*\("),
+    re.compile(r"^\s*(?:async\s+)?function\s+\w+\s*\("),
+    re.compile(r"^\s*(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\([^)]*\)\s*=>"),
+    re.compile(r"^\s*(?:public|private|protected|static|\s)*\s*\w[\w<>\[\]]*\s+\w+\s*\([^)]*\)\s*\{"),
+]
+
+
+@dataclass
+class Finding:
+    id: str
+    pattern_id: str
+    severity: str
+    category: str
+    file_path: str
+    line_start: int
+    line_end: int
+    snippet: str
+    message: str
+    recommendation: str
+    confidence: float
+    source: str = "deterministic"
+
+
+def mask_secret_in_snippet(snippet: str, pattern_category: str) -> str:
+    if pattern_category != "secrets":
+        return snippet
+    masked = re.sub(
+        r'(["\'])([a-zA-Z0-9_-]{8,})\1',
+        lambda m: f"{m.group(1)}{m.group(2)[:4]}****{m.group(1)}",
+        snippet,
+    )
+    masked = re.sub(
+        r"\b([A-Za-z0-9_-]{8,})\b",
+        lambda m: f"{m.group(1)[:4]}****",
+        masked,
+    )
+    return masked
+
+
+def _truncate_snippet(snippet: str, max_chars: int = MAX_SNIPPET_CHARS) -> str:
+    if len(snippet) <= max_chars:
+        return snippet
+    if max_chars <= 3:
+        return snippet[:max_chars]
+    return f"{snippet[: max_chars - 3]}..."
+
+
+def _build_line_starts(content: str) -> List[int]:
+    line_starts: List[int] = []
+    offset = 0
+    for line in content.splitlines(keepends=True):
+        line_starts.append(offset)
+        offset += len(line)
+    if not line_starts:
+        line_starts.append(0)
+    return line_starts
+
+
+def _index_to_line(line_starts: List[int], idx: int) -> int:
+    return bisect_right(line_starts, idx)
+
+
+def _snippet_from_lines(lines: List[str], line_start: int, line_end: int) -> str:
+    if not lines:
+        return ""
+    start_idx = max(line_start - 1, 0)
+    end_idx = min(line_end, len(lines))
+    return "\n".join(lines[start_idx:end_idx])
+
+
+def _build_finding_id(pattern_id: str, file_path: str, line_start: int) -> str:
+    return f"{pattern_id}-{file_path}-{line_start}"
+
+
+class PatternScanner:
+    def __init__(self, patterns_dir: Path):
+        self.patterns = self._load_patterns(patterns_dir)
+
+    def _load_patterns(self, patterns_dir: Path) -> List[Dict[str, Any]]:
+        pattern_files = sorted(patterns_dir.glob("*.json"))
+        if not pattern_files:
+            raise ValueError(f"No pattern files found in {patterns_dir}")
+        patterns: List[Dict[str, Any]] = []
+        for pattern_file in pattern_files:
+            data = json.loads(pattern_file.read_text(encoding="utf-8"))
+            if data.get("schema_version") != "1.0":
+                raise ValueError(f"Unsupported schema version in {pattern_file}")
+            entries = data.get("patterns", [])
+            for entry in entries:
+                if "regex" not in entry:
+                    continue
+                compiled = re.compile(entry["regex"], re.MULTILINE | re.IGNORECASE)
+                enriched = dict(entry)
+                enriched["_compiled"] = compiled
+                patterns.append(enriched)
+        return patterns
+
+    def _file_matches_pattern(self, file_path: str, pattern: Dict[str, Any]) -> bool:
+        normalized = file_path.replace("\\", "/")
+        include_patterns = pattern.get("file_patterns") or ["*"]
+        if include_patterns and not any(fnmatch.fnmatch(normalized, pat) for pat in include_patterns):
+            return False
+        exclude_patterns = pattern.get("exclude_patterns") or []
+        if any(fnmatch.fnmatch(normalized, pat) for pat in exclude_patterns):
+            return False
+        return True
+
+    def _mask_sensitive(self, snippet: str, pattern: Dict[str, Any]) -> str:
+        return mask_secret_in_snippet(snippet, pattern.get("category", ""))
+
+    def _scan_long_functions(self, file_path: str, lines: List[str], pattern: Dict[str, Any]) -> List[Finding]:
+        if not lines:
+            return []
+        start_indices: List[int] = []
+        for idx, line in enumerate(lines):
+            for regex in FUNCTION_START_PATTERNS:
+                if regex.match(line):
+                    start_indices.append(idx)
+                    break
+        if not start_indices:
+            return []
+        start_indices.append(len(lines))
+        findings: List[Finding] = []
+        for idx, start in enumerate(start_indices[:-1]):
+            end = start_indices[idx + 1] - 1
+            if end < start:
+                continue
+            length = end - start + 1
+            if length < LONG_FUNCTION_THRESHOLD:
+                continue
+            line_start = start + 1
+            line_end = end + 1
+            snippet = _snippet_from_lines(lines, line_start, line_end)
+            snippet = self._mask_sensitive(snippet, pattern)
+            snippet = _truncate_snippet(snippet)
+            findings.append(
+                Finding(
+                    id=_build_finding_id(pattern["id"], file_path, line_start),
+                    pattern_id=pattern["id"],
+                    severity=pattern["severity"],
+                    category=pattern["category"],
+                    file_path=file_path,
+                    line_start=line_start,
+                    line_end=line_end,
+                    snippet=snippet,
+                    message=pattern["message"],
+                    recommendation=pattern["recommendation"],
+                    confidence=1.0,
+                )
+            )
+        return findings
+
+    def _scan_content(self, file_path: Path, content: str, patterns: Iterable[Dict[str, Any]]) -> List[Finding]:
+        rel_path = file_path.as_posix()
+        line_starts = _build_line_starts(content)
+        lines = content.splitlines()
+        findings: List[Finding] = []
+        for pattern in patterns:
+            if not self._file_matches_pattern(rel_path, pattern):
+                continue
+            if pattern.get("id") == "QUAL-007":
+                findings.extend(self._scan_long_functions(rel_path, lines, pattern))
+                continue
+            regex = pattern.get("_compiled")
+            if not regex:
+                continue
+            for match in regex.finditer(content):
+                if match.start() == match.end():
+                    continue
+                line_start = _index_to_line(line_starts, match.start())
+                end_index = max(match.end() - 1, match.start())
+                line_end = _index_to_line(line_starts, end_index)
+                snippet = _snippet_from_lines(lines, line_start, line_end)
+                snippet = self._mask_sensitive(snippet, pattern)
+                snippet = _truncate_snippet(snippet)
+                findings.append(
+                    Finding(
+                        id=_build_finding_id(pattern["id"], rel_path, line_start),
+                        pattern_id=pattern["id"],
+                        severity=pattern["severity"],
+                        category=pattern["category"],
+                        file_path=rel_path,
+                        line_start=line_start,
+                        line_end=line_end,
+                        snippet=snippet,
+                        message=pattern["message"],
+                        recommendation=pattern["recommendation"],
+                        confidence=1.0,
+                    )
+                )
+        return findings
+
+    def scan_file(self, file_path: Path, content: str) -> List[Finding]:
+        return self._scan_content(file_path, content, self.patterns)
+
+    def scan_file_with_patterns(
+        self, file_path: Path, content: str, patterns: Iterable[Dict[str, Any]]
+    ) -> List[Finding]:
+        return self._scan_content(file_path, content, patterns)
+
+    def scan_files(self, files: List[Dict[str, Any]], repo_root: Path) -> List[Finding]:
+        findings: List[Finding] = []
+        for entry in sorted(files, key=lambda item: item.get("path") or ""):
+            rel_path = entry.get("path")
+            if not rel_path:
+                continue
+            size_bytes = entry.get("size_bytes")
+            if isinstance(size_bytes, int) and size_bytes > MAX_SCAN_BYTES:
+                continue
+            full_path = repo_root / rel_path
+            try:
+                with full_path.open("rb") as handle:
+                    data = handle.read(MAX_SCAN_BYTES + 1)
+            except OSError:
+                continue
+            if len(data) > MAX_SCAN_BYTES:
+                continue
+            content = data.decode("utf-8", errors="replace")
+            findings.extend(self.scan_file(Path(rel_path), content))
+        return findings
