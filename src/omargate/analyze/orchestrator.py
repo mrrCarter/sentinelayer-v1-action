@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
+from ..artifacts import generate_review_brief
 from ..config import OmarGateConfig
 from ..ingest import run_ingest
 from ..logging import OmarLogger
@@ -24,6 +25,7 @@ class AnalysisResult:
     llm_success: bool
     llm_usage: Optional[dict]
     warnings: List[str]
+    review_brief_path: Optional[Path]
     scan_mode: str
     total_files_scanned: int
     hotspots_found: List[str]
@@ -67,6 +69,10 @@ class AnalysisOrchestrator:
         scan_mode: str = "pr-diff",
         diff_content: Optional[str] = None,
         changed_files: Optional[List[str]] = None,
+        run_dir: Optional[Path] = None,
+        run_id: Optional[str] = None,
+        version: Optional[str] = None,
+        dashboard_url: Optional[str] = None,
     ) -> AnalysisResult:
         """
         Run complete analysis pipeline.
@@ -137,6 +143,22 @@ class AnalysisOrchestrator:
         all_findings = self._merge_findings(det_findings, llm_findings)
         counts = self._count_by_severity(all_findings)
 
+        review_brief_path: Optional[Path] = None
+        if run_dir and run_id:
+            try:
+                review_brief_path = generate_review_brief(
+                    run_dir=run_dir,
+                    run_id=run_id,
+                    findings=all_findings,
+                    ingest=ingest,
+                    scan_mode=scan_mode,
+                    version=version or "unknown",
+                    dashboard_url=dashboard_url,
+                )
+            except Exception as exc:
+                self.logger.warning("Review brief generation failed", error=str(exc))
+                warnings.append("Review brief generation failed")
+
         hotspots_with_findings = self._identify_hotspots_with_findings(
             all_findings, ingest.get("hotspots", {})
         )
@@ -152,6 +174,7 @@ class AnalysisOrchestrator:
             llm_success=llm_success,
             llm_usage=llm_usage,
             warnings=warnings,
+            review_brief_path=review_brief_path,
             scan_mode=scan_mode,
             total_files_scanned=int(stats.get("in_scope_files", 0) or 0),
             hotspots_found=hotspots_with_findings,

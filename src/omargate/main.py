@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -16,7 +17,7 @@ from .github import GitHubClient
 from .idempotency import compute_idempotency_key
 from .logging import OmarLogger
 from .models import GateConfig
-from .packaging import new_run_dir, write_findings_jsonl, write_pack_summary
+from .packaging import get_run_dir, write_findings_jsonl, write_pack_summary
 from .preflight import (
     check_branch_protection,
     check_cost_approval,
@@ -52,8 +53,8 @@ async def async_main() -> int:
         return 2
 
     repo_root = Path(os.environ.get("GITHUB_WORKSPACE", "."))
-    run_dir = new_run_dir(Path("/tmp/omar_runs"))
-    run_id = run_dir.name
+    run_id = str(uuid.uuid4())
+    run_dir = get_run_dir(run_id)
     logger = OmarLogger(run_id)
 
     logger.info(
@@ -63,6 +64,10 @@ async def async_main() -> int:
         head_sha=ctx.head_sha,
         scan_mode=config.scan_mode,
     )
+
+    dashboard_url = None
+    if config.plexaura_token.get_secret_value():
+        dashboard_url = f"https://sentinellayer.com/runs/{run_id}"
 
     idem_key = compute_idempotency_key(
         repo=ctx.repo_full_name,
@@ -147,6 +152,10 @@ async def async_main() -> int:
         scan_mode=config.scan_mode,
         diff_content=diff_content,
         changed_files=changed_files,
+        run_dir=run_dir,
+        run_id=run_id,
+        version=ACTION_VERSION,
+        dashboard_url=dashboard_url,
     )
 
     # === PACKAGING ===
@@ -168,6 +177,7 @@ async def async_main() -> int:
                 "policy_pack": config.policy_pack_version,
             },
             stages_completed=["preflight", "ingest", "deterministic", "llm", "packaging"],
+            review_brief_path=analysis.review_brief_path,
             error=None,
         )
 
@@ -188,10 +198,6 @@ async def async_main() -> int:
     # === PUBLISHING ===
     with logger.stage("publish"):
         cost_usd = analysis.llm_usage.get("cost_usd", 0.0) if analysis.llm_usage else 0.0
-
-        dashboard_url = None
-        if config.plexaura_token.get_secret_value():
-            dashboard_url = f"https://sentinellayer.com/runs/{run_id}"
 
         comment_body = render_pr_comment(
             result=gate_result,
