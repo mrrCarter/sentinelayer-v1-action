@@ -9,7 +9,12 @@ from .models import ApprovalMode, ForkPolicy, LLMFailurePolicy, ScanMode, Severi
 class OmarGateConfig(BaseSettings):
     """Configuration loaded from GitHub Actions inputs."""
 
-    model_config = SettingsConfigDict(env_prefix="INPUT_", frozen=True, extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="INPUT_",
+        frozen=True,
+        extra="ignore",
+        protected_namespaces=(),  # Allow fields starting with 'model_'
+    )
 
     # Required
     openai_api_key: SecretStr = Field(..., description="OpenAI API key for LLM calls (BYO)")
