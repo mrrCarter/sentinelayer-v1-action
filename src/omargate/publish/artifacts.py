@@ -7,6 +7,7 @@ from typing import Iterable
 DEFAULT_ARTIFACTS = [
     "PACK_SUMMARY.json",
     "FINDINGS.jsonl",
+    "INGEST.json",
     "REVIEW_BRIEF.md",
     "AUDIT_REPORT.md",
     "ARTIFACT_MANIFEST.json",
