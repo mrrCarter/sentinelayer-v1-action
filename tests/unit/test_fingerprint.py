@@ -1,8 +1,6 @@
-import pytest
 from omargate.package.fingerprint import (
     normalize_snippet,
     compute_fingerprint,
-    fingerprint_finding,
     add_fingerprints_to_findings,
 )
 

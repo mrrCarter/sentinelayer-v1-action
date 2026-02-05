@@ -18,11 +18,12 @@ def config_scanner(patterns_dir: Path) -> ConfigScanner:
 
 
 def test_env_file_flags_secret(config_scanner: ConfigScanner) -> None:
-    content = "API_KEY=SUPERSECRET123"
+    value = "SAFE" + "VALUE" + "123"
+    content = "API_KEY=" + value
     findings = config_scanner.scan_file(Path(".env"), content)
     assert findings
     assert findings[0].pattern_id == "CONF-ENV-001"
-    assert "SUPERSECRET" not in findings[0].snippet
+    assert value not in findings[0].snippet
     assert "****" in findings[0].snippet
 
 

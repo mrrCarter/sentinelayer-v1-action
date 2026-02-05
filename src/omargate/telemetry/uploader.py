@@ -100,6 +100,72 @@ async def upload_artifacts(
             logger.warning("Artifact upload requires sentinelayer_token")
         return False
 
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{SENTINELAYER_API_URL}/api/v1/artifacts/upload-urls",
+                json={
+                    "run_id": manifest.get("run_id"),
+                    "objects": [obj.get("name") for obj in manifest.get("objects", [])],
+                },
+                headers={"Authorization": f"Bearer {sentinelayer_token}"},
+            )
+
+            if response.status_code != 200:
+                if logger:
+                    logger.warning(
+                        "Failed to get upload URLs",
+                        status=response.status_code,
+                    )
+                return False
+
+            urls = response.json().get("urls", {})
+
+        uploaded_count = 0
+        for obj in manifest.get("objects", []):
+            name = obj.get("name")
+            if not name:
+                continue
+
+            file_path = run_dir / name
+            if not file_path.exists():
+                continue
+
+            upload_url = urls.get(name)
+            if not upload_url:
+                continue
+
+            async with httpx.AsyncClient(timeout=60) as client:
+                with open(file_path, "rb") as f:
+                    put_response = await client.put(
+                        upload_url,
+                        content=f.read(),
+                        headers={
+                            "Content-Type": obj.get(
+                                "content_type", "application/octet-stream"
+                            )
+                        },
+                    )
+
+            if put_response.status_code not in (200, 201, 204):
+                if logger:
+                    logger.warning(
+                        "Artifact upload failed",
+                        file=name,
+                        status=put_response.status_code,
+                    )
+                return False
+
+            uploaded_count += 1
+
+        if logger:
+            logger.info("Artifacts uploaded", count=uploaded_count)
+        return True
+    except Exception as exc:
+        if logger:
+            logger.warning("Artifact upload error", error=str(exc))
+        return False
+
 
 async def fetch_oidc_token(logger: Optional[OmarLogger] = None) -> Optional[str]:
     """Fetch GitHub Actions OIDC token if available."""
@@ -135,58 +201,3 @@ async def fetch_oidc_token(logger: Optional[OmarLogger] = None) -> Optional[str]
         if logger:
             logger.warning("OIDC token request error", error=str(exc))
         return None
-
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                f"{SENTINELAYER_API_URL}/api/v1/artifacts/upload-urls",
-                json={
-                    "run_id": manifest.get("run_id"),
-                    "objects": [obj.get("name") for obj in manifest.get("objects", [])],
-                },
-                headers={"Authorization": f"Bearer {sentinelayer_token}"},
-            )
-
-            if response.status_code != 200:
-                if logger:
-                    logger.warning(
-                        "Failed to get upload URLs",
-                        status=response.status_code,
-                    )
-                return False
-
-            urls = response.json().get("urls", {})
-
-        for obj in manifest.get("objects", []):
-            name = obj.get("name")
-            if not name:
-                continue
-            file_path = run_dir / name
-
-            if not file_path.exists():
-                continue
-
-            upload_url = urls.get(name)
-            if not upload_url:
-                continue
-
-            async with httpx.AsyncClient(timeout=60) as client:
-                with open(file_path, "rb") as f:
-                    await client.put(
-                        upload_url,
-                        content=f.read(),
-                        headers={
-                            "Content-Type": obj.get(
-                                "content_type", "application/octet-stream"
-                            )
-                        },
-                    )
-
-        if logger:
-            logger.info("Artifacts uploaded", count=len(manifest.get("objects", [])))
-
-        return True
-    except Exception as exc:
-        if logger:
-            logger.warning("Artifact upload error", error=str(exc))
-        return False

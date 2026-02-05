@@ -217,9 +217,16 @@ class ContextBuilder:
     ) -> List[str]:
         """Return files in priority order for context inclusion."""
         priority: List[str] = []
+        ingest_paths = {
+            file_info.get("path")
+            for file_info in ingest.get("files", [])
+            if file_info.get("path")
+        }
 
         if scan_mode == "pr-diff" and changed_files:
             for rel_path in changed_files:
+                if rel_path not in ingest_paths:
+                    continue
                 if rel_path not in priority:
                     priority.append(rel_path)
 

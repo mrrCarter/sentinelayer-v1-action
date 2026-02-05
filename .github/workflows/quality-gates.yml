@@ -1,0 +1,44 @@
+name: Quality Gates
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  quality-gates:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: src
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest ruff mypy
+
+      - name: Lint
+        run: ruff check src tests
+
+      - name: Type Check
+        run: |
+          mypy --follow-imports=skip --ignore-missing-imports \
+            src/omargate/analyze/llm/context_builder.py \
+            src/omargate/telemetry/uploader.py
+
+      - name: Unit + Integration Tests
+        run: python -m pytest tests/unit tests/integration -q

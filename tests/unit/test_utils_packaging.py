@@ -5,7 +5,8 @@ from pathlib import Path
 
 from omargate.idempotency import compute_idempotency_key
 from omargate.models import Finding
-from omargate.packaging import new_run_dir, write_findings_jsonl, write_pack_summary
+import omargate.packaging as packaging
+from omargate.packaging import get_run_dir, new_run_dir, write_findings_jsonl, write_pack_summary
 from omargate.utils import sha256_hex
 
 
@@ -72,3 +73,34 @@ def test_packaging_writes_summary(tmp_path: Path) -> None:
     assert data["findings_file_sha256"] == sha256_hex(findings_path.read_bytes())
     assert data["fingerprint_count"] == 1
     assert data["dedupe_key"] == "dedupe-key"
+
+
+def test_get_run_dir_prefers_workspace(tmp_path: Path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(workspace))
+    monkeypatch.delenv("RUNNER_TEMP", raising=False)
+    monkeypatch.delenv("SENTINELAYER_RUNS_DIR", raising=False)
+
+    run_dir = get_run_dir("run-123")
+
+    expected_base = workspace / ".sentinelayer" / "runs"
+    assert run_dir.parent == expected_base
+
+
+def test_get_run_dir_falls_back_to_runner_temp(tmp_path: Path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    runner_temp = tmp_path / "runner_temp"
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(workspace))
+    monkeypatch.setenv("RUNNER_TEMP", str(runner_temp))
+    monkeypatch.delenv("SENTINELAYER_RUNS_DIR", raising=False)
+
+    def fake_writable(path: Path) -> bool:
+        return path != workspace / ".sentinelayer" / "runs"
+
+    monkeypatch.setattr(packaging, "ensure_writable_dir", fake_writable)
+
+    run_dir = get_run_dir("run-456")
+
+    expected_base = runner_temp / "sentinelayer" / "runs"
+    assert run_dir.parent == expected_base

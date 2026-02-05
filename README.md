@@ -18,6 +18,7 @@ This is a **starter scaffold** for the Sentinelayer Model 2 GitHub Action descri
 ## Quick start (workflow)
 
 > Minimal copy/paste example. Branch protection is required for real enforcement.
+> Required permissions: `contents: read`, `pull-requests: write`, `checks: write`.
 
 ```yaml
 name: Omar Gate
@@ -30,9 +31,10 @@ permissions:
   contents: read
   pull-requests: write
   checks: write
+  # Optional (enable extra features):
   issues: write       # required for label-based cost approval
   actions: read       # required for daily cap via workflow runs
-  id-token: write     # optional: enables OIDC auth to Sentinelayer (no stored token)
+  id-token: write     # enables OIDC auth to Sentinelayer (no stored token)
 
 jobs:
   omar-gate:

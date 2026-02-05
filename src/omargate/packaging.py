@@ -82,19 +82,28 @@ def _default_run_base() -> Path:
     Get base directory for run artifacts.
 
     Prefer the GitHub workspace when it is writable so artifacts are available to
-    later workflow steps. Fall back to /tmp if the workspace is not writable
-    (common in local runners like act on Windows).
+    later workflow steps. Fall back to $RUNNER_TEMP when available, and only
+    then /tmp with a warning when persistence is not guaranteed.
     """
     override = os.environ.get("SENTINELAYER_RUNS_DIR")
     if override:
-        return Path(override)
-
-    workspace = os.environ.get("GITHUB_WORKSPACE")
-    if workspace:
-        candidate = Path(workspace) / ".sentinellayer" / "runs"
+        candidate = Path(override)
         if ensure_writable_dir(candidate):
             return candidate
 
+    workspace = os.environ.get("GITHUB_WORKSPACE")
+    if workspace:
+        candidate = Path(workspace) / ".sentinelayer" / "runs"
+        if ensure_writable_dir(candidate):
+            return candidate
+
+    runner_temp = os.environ.get("RUNNER_TEMP")
+    if runner_temp:
+        candidate = Path(runner_temp) / "sentinelayer" / "runs"
+        if ensure_writable_dir(candidate):
+            return candidate
+
+    print("::warning::Falling back to /tmp for run artifacts; outputs may not persist.")
     return Path("/tmp/sentinellayer_runs")
 
 
@@ -103,7 +112,7 @@ def get_run_dir(run_id: str) -> Path:
     Get run directory in a location that persists after container exits.
 
     Uses a writable $GITHUB_WORKSPACE if available (mounted volume).
-    Falls back to /tmp when the workspace isn't writable.
+    Falls back to $RUNNER_TEMP, then /tmp when the workspace isn't writable.
     """
     base = _default_run_base()
     run_dir = base / run_id
