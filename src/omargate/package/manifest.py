@@ -29,6 +29,7 @@ def generate_artifact_manifest(
     artifact_files = [
         ("PACK_SUMMARY.json", "application/json"),
         ("FINDINGS.jsonl", "application/jsonl"),
+        ("INGEST.json", "application/json"),
         ("REVIEW_BRIEF.md", "text/markdown"),
         ("AUDIT_REPORT.md", "text/markdown"),
     ]
