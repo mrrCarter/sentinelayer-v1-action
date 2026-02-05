@@ -40,7 +40,7 @@ from .telemetry import (
 )
 from .telemetry.schemas import build_tier1_payload, build_tier2_payload, findings_to_summary
 from .telemetry.uploader import upload_artifacts, upload_telemetry
-from .utils import ensure_writable_dir
+from .utils import ensure_writable_dir, json_dumps
 
 ACTION_VERSION = "1.2.0"
 ACTION_MAJOR_VERSION = "1"
@@ -241,6 +241,8 @@ async def async_main() -> int:
     collector.stage_start("packaging")
     try:
         with logger.stage("packaging"):
+            ingest_path = run_dir / "INGEST.json"
+            ingest_path.write_text(json_dumps(analysis.ingest), encoding="utf-8")
             findings_path = run_dir / "FINDINGS.jsonl"
             write_findings_jsonl(findings_path, analysis.findings)
 

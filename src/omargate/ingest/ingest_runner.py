@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import json
 import subprocess
 import time
@@ -22,6 +23,7 @@ def run_ingest(
     logger: Optional[OmarLogger] = None,
 ) -> Dict[str, Any]:
     repo_root = repo_root.resolve()
+    ignore_patterns = _load_ignore_patterns(repo_root)
     node_result = _run_node_mapper(repo_root, max_files, max_file_size_bytes)
 
     raw_files = node_result.get("files", [])
@@ -42,6 +44,8 @@ def run_ingest(
     for item in raw_files:
         rel_path = item.get("path")
         if not rel_path:
+            continue
+        if _matches_ignore(rel_path, ignore_patterns):
             continue
         size_bytes = int(item.get("size_bytes", 0))
         if size_bytes > max_file_size_bytes:
@@ -99,6 +103,48 @@ def run_ingest(
         "hotspots": hotspots,
         "dependencies": dependencies,
     }
+
+
+def _load_ignore_patterns(repo_root: Path) -> List[str]:
+    ignore_path = repo_root / ".sentinelayerignore"
+    if not ignore_path.exists():
+        return []
+    try:
+        raw = ignore_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    patterns: List[str] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        patterns.append(stripped)
+    return patterns
+
+
+def _matches_ignore(path: str, patterns: List[str]) -> bool:
+    if not patterns:
+        return False
+    normalized = path.replace("\\", "/")
+    ignored = False
+    for pattern in patterns:
+        negated = pattern.startswith("!")
+        pat = pattern[1:] if negated else pattern
+        pat = pat.strip()
+        if not pat:
+            continue
+        if pat.endswith("/"):
+            match = normalized.startswith(pat.rstrip("/") + "/")
+        else:
+            if "/" in pat:
+                match = fnmatch.fnmatch(normalized, pat)
+            else:
+                match = fnmatch.fnmatch(Path(normalized).name, pat) or fnmatch.fnmatch(
+                    normalized, pat
+                )
+        if match:
+            ignored = not negated
+    return ignored
 
 
 def _run_node_mapper(repo_root: Path, max_files: int, max_file_size_bytes: int) -> Dict[str, Any]:
