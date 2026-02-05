@@ -365,38 +365,49 @@ async def async_main() -> int:
                 analysis.llm_usage.get("cost_usd", 0.0) if analysis.llm_usage else 0.0
             )
 
-            if ctx.pr_number:
-                github_run_id = os.environ.get("GITHUB_RUN_ID")
-                server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
-                artifacts_url = (
-                    f"{server_url}/{ctx.repo_full_name}/actions/runs/{github_run_id}"
-                    if github_run_id
-                    else None
-                )
-                comment_body = render_pr_comment(
-                    result=gate_result,
-                    run_id=run_id,
-                    repo_full_name=ctx.repo_full_name,
-                    pr_number=ctx.pr_number,
-                    dashboard_url=dashboard_url,
-                    artifacts_url=artifacts_url,
-                    cost_usd=cost_usd,
-                    version=ACTION_VERSION,
-                    findings=analysis.findings[:5],
-                    warnings=analysis.warnings,
-                    scan_mode=config.scan_mode,
-                    policy_pack=config.policy_pack,
-                    policy_pack_version=config.policy_pack_version,
-                    duration_ms=summary_payload.get("duration_ms") or scan_duration_ms,
-                    deterministic_count=analysis.deterministic_count,
-                    llm_count=analysis.llm_count,
-                    dedupe_key=gate_result.dedupe_key or idem_key,
-                )
-                gh.create_or_update_pr_comment(
-                    ctx.pr_number,
-                    comment_body,
-                    marker_prefix(),
-                )
+            if not gh.token:
+                logger.warning("GitHub token missing; skipping publish calls")
+                analysis.warnings.append("GitHub token missing; skipped publish calls")
+            else:
+                if ctx.pr_number:
+                    try:
+                        github_run_id = os.environ.get("GITHUB_RUN_ID")
+                        server_url = os.environ.get(
+                            "GITHUB_SERVER_URL", "https://github.com"
+                        )
+                        artifacts_url = (
+                            f"{server_url}/{ctx.repo_full_name}/actions/runs/{github_run_id}"
+                            if github_run_id
+                            else None
+                        )
+                        comment_body = render_pr_comment(
+                            result=gate_result,
+                            run_id=run_id,
+                            repo_full_name=ctx.repo_full_name,
+                            pr_number=ctx.pr_number,
+                            dashboard_url=dashboard_url,
+                            artifacts_url=artifacts_url,
+                            cost_usd=cost_usd,
+                            version=ACTION_VERSION,
+                            findings=analysis.findings[:5],
+                            warnings=analysis.warnings,
+                            scan_mode=config.scan_mode,
+                            policy_pack=config.policy_pack,
+                            policy_pack_version=config.policy_pack_version,
+                            duration_ms=summary_payload.get("duration_ms")
+                            or scan_duration_ms,
+                            deterministic_count=analysis.deterministic_count,
+                            llm_count=analysis.llm_count,
+                            dedupe_key=gate_result.dedupe_key or idem_key,
+                        )
+                        gh.create_or_update_pr_comment(
+                            ctx.pr_number,
+                            comment_body,
+                            marker_prefix(),
+                        )
+                    except Exception as exc:
+                        logger.warning("PR comment failed", error=str(exc))
+                        analysis.warnings.append("PR comment failed")
 
             counts = summary_payload.get("counts", {}) or analysis.counts
             summary_text = (
@@ -416,17 +427,22 @@ async def async_main() -> int:
                 "error": "failure",
             }
             annotations = findings_to_annotations(analysis.findings)
-            gh.create_check_run(
-                name=CHECK_NAME,
-                head_sha=ctx.head_sha,
-                conclusion=conclusion_map.get(status_key, "failure"),
-                summary=summary_text,
-                title=f"Omar Gate: {status_key.upper()}",
-                text=gate_result.reason,
-                details_url=dashboard_url,
-                external_id=idem_key,
-                annotations=annotations,
-            )
+            if gh.token:
+                try:
+                    gh.create_check_run(
+                        name=CHECK_NAME,
+                        head_sha=ctx.head_sha,
+                        conclusion=conclusion_map.get(status_key, "failure"),
+                        summary=summary_text,
+                        title=f"Omar Gate: {status_key.upper()}",
+                        text=gate_result.reason,
+                        details_url=dashboard_url,
+                        external_id=idem_key,
+                        annotations=annotations,
+                    )
+                except Exception as exc:
+                    logger.warning("Check run creation failed", error=str(exc))
+                    analysis.warnings.append("Check run creation failed")
 
             write_step_summary(
                 gate_result=gate_result,
