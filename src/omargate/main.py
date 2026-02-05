@@ -40,6 +40,7 @@ from .telemetry import (
 )
 from .telemetry.schemas import build_tier1_payload, build_tier2_payload, findings_to_summary
 from .telemetry.uploader import upload_artifacts, upload_telemetry
+from .utils import ensure_writable_dir
 
 ACTION_VERSION = "1.2.0"
 ACTION_MAJOR_VERSION = "1"
@@ -293,9 +294,24 @@ async def async_main() -> int:
                 analysis.warnings.append("Manifest generation failed")
 
             try:
-                workspace = Path(os.environ.get("GITHUB_WORKSPACE", "."))
-                artifacts_dir = workspace / ".sentinelayer" / "artifacts"
-                prepare_artifacts_for_upload(run_dir, artifacts_dir)
+                artifacts_override = os.environ.get("SENTINELAYER_ARTIFACTS_DIR")
+                if artifacts_override:
+                    artifacts_dir = Path(artifacts_override)
+                else:
+                    workspace = os.environ.get("GITHUB_WORKSPACE")
+                    artifacts_dir = (
+                        Path(workspace) / ".sentinelayer" / "artifacts"
+                        if workspace
+                        else None
+                    )
+
+                if artifacts_dir and ensure_writable_dir(artifacts_dir):
+                    prepare_artifacts_for_upload(run_dir, artifacts_dir)
+                else:
+                    logger.info(
+                        "Artifact preparation skipped",
+                        reason="workspace not writable",
+                    )
             except Exception as exc:
                 logger.warning("Artifact preparation failed", error=str(exc))
                 analysis.warnings.append("Artifact preparation failed")
