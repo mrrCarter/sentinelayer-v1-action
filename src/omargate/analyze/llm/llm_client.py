@@ -29,7 +29,7 @@ class LLMClient:
     def __init__(
         self,
         api_key: str,
-        primary_model: str = "gpt-5.2-codex",
+        primary_model: str = "gpt-5.3-codex",
         fallback_model: str = "gpt-4.1",
         timeout_seconds: int = 120,
         max_retries: int = 2,
@@ -154,6 +154,7 @@ class LLMClient:
     def estimate_cost(self, model: str, tokens_in: int, tokens_out: int) -> float:
         """Estimate cost in USD based on model pricing."""
         pricing = {
+            "gpt-5.3-codex": {"input": 0.00175, "output": 0.014},
             "gpt-5.2-codex": {"input": 0.00175, "output": 0.014},
             "gpt-4.1": {"input": 0.002, "output": 0.008},
             "gpt-4.1-mini": {"input": 0.0004, "output": 0.0016},
