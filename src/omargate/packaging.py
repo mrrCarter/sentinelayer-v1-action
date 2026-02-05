@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 from .models import Finding
-from .utils import sha256_hex, json_dumps
+from .utils import ensure_writable_dir, sha256_hex, json_dumps
 
 def _finding_to_dict(finding: Any) -> Dict[str, Any]:
     if isinstance(finding, dict):
@@ -92,21 +92,10 @@ def _default_run_base() -> Path:
     workspace = os.environ.get("GITHUB_WORKSPACE")
     if workspace:
         candidate = Path(workspace) / ".sentinellayer" / "runs"
-        if _ensure_writable_dir(candidate):
+        if ensure_writable_dir(candidate):
             return candidate
 
     return Path("/tmp/sentinellayer_runs")
-
-
-def _ensure_writable_dir(path: Path) -> bool:
-    try:
-        path.mkdir(parents=True, exist_ok=True)
-        test_file = path / ".write_test"
-        test_file.write_text("ok", encoding="utf-8")
-        test_file.unlink(missing_ok=True)
-        return True
-    except OSError:
-        return False
 
 
 def get_run_dir(run_id: str) -> Path:
