@@ -13,7 +13,7 @@ inputs:
 
   # GitHub integration (recommended)
   github_token:
-    description: 'GitHub token used to post check runs/comments and query workflow history (recommended: ${{ github.token }})'
+    description: 'GitHub token for posting check runs and comments (use github.token)'
     required: false
     default: ''
 
