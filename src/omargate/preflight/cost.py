@@ -15,9 +15,13 @@ def estimate_cost(
     """Estimate LLM cost in USD."""
     estimated_tokens = total_lines * 12
     cost_per_1k = {
+        "gpt-5.2-codex": 0.00175,
+        "gpt-4.1": 0.002,
+        "gpt-4.1-mini": 0.0004,
+        "gpt-4.1-nano": 0.0001,
         "gpt-4o": 0.005,
         "gpt-4o-mini": 0.00015,
-    }.get(model, 0.01)
+    }.get(model, 0.002)
     return (estimated_tokens / 1000) * cost_per_1k
 
 

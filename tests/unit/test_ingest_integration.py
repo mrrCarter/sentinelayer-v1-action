@@ -104,3 +104,39 @@ def test_run_ingest_respects_ignore_file(tmp_path: Path, monkeypatch: pytest.Mon
     paths = [entry["path"] for entry in result["files"]]
     assert "tests/secret.py" not in paths
     assert "src/app.py" in paths
+
+
+def test_run_ingest_default_ignores_tests_and_env_local(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_root = tmp_path / "repo"
+    (repo_root / "tests").mkdir(parents=True)
+    (repo_root / "src").mkdir(parents=True)
+
+    env_file = repo_root / ".env.local"
+    env_file.write_text("OPENAI_API_KEY=dummy\n", encoding="utf-8")
+    ignored_file = repo_root / "tests" / "secret.py"
+    ignored_file.write_text("password = 'fake'\n", encoding="utf-8")
+    kept_file = repo_root / "src" / "app.py"
+    kept_file.write_text("print('ok')\n", encoding="utf-8")
+
+    node_payload = {
+        "files": [
+            {"path": ".env.local", "size_bytes": env_file.stat().st_size},
+            {"path": "tests/secret.py", "size_bytes": ignored_file.stat().st_size},
+            {"path": "src/app.py", "size_bytes": kept_file.stat().st_size},
+        ],
+        "stats": {"binary_files": 0, "too_large": 0, "truncated": False},
+    }
+
+    def fake_run(args, **kwargs):
+        return StubCompleted(json.dumps(node_payload))
+
+    monkeypatch.setattr(ingest_runner.subprocess, "run", fake_run)
+
+    result = run_ingest(repo_root)
+
+    paths = [entry["path"] for entry in result["files"]]
+    assert ".env.local" not in paths
+    assert "tests/secret.py" not in paths
+    assert "src/app.py" in paths

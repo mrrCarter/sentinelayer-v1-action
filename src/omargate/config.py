@@ -47,8 +47,8 @@ class OmarGateConfig(BaseSettings):
     severity_gate: SeverityGate = Field(default="P1")
 
     # Model settings
-    model: str = Field(default="gpt-4o")
-    model_fallback: str = Field(default="gpt-4o-mini")
+    model: str = Field(default="gpt-5.2-codex")
+    model_fallback: str = Field(default="gpt-4.1")
     llm_failure_policy: LLMFailurePolicy = Field(default="block")
 
     # Rate limiting / cost control

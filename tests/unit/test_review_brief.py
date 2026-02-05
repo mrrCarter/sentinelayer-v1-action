@@ -155,7 +155,7 @@ def test_review_brief_no_persona_names() -> None:
 
 @pytest.mark.anyio
 async def test_review_brief_failure_non_gating(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("INPUT_OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("INPUT_OPENAI_API_KEY", "sk_test_dummy")
     config = OmarGateConfig()
     logger = OmarLogger("test-run")
 

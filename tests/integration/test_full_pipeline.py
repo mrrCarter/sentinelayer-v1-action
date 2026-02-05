@@ -17,17 +17,16 @@ def test_repo(tmp_path):
     """Create a test repository with known vulnerabilities."""
     auth_file = tmp_path / "src" / "auth.py"
     auth_file.parent.mkdir(parents=True, exist_ok=True)
+    api_key_value = "sk_test_" + ("a" * 20)
     auth_file.write_text(
-        """
-# Authentication module
-API_KEY = \"sk-1234567890abcdefghijklmnop\"  # SEC-001: Hardcoded API key
-
-def login(username, password):
-    # TODO: Add rate limiting  # QUAL-001
-    query = f\"SELECT * FROM users WHERE username = '{username}'\"  # SEC-008: SQL injection
-    return execute(query)
-""".strip()
-        + "\n"
+        (
+            "# Authentication module\n"
+            'API_KEY = "' + api_key_value + '"  # SEC-001: Hardcoded API key\n\n'
+            "def login(username, password):\n"
+            "    # TODO: Add rate limiting  # QUAL-001\n"
+            "    query = f\"SELECT * FROM users WHERE username = '{username}'\"  # SEC-008: SQL injection\n"
+            "    return execute(query)\n"
+        )
     )
 
     utils_file = tmp_path / "src" / "utils.py"
@@ -48,7 +47,7 @@ def mock_config():
     with patch.dict(
         os.environ,
         {
-            "INPUT_OPENAI_API_KEY": "sk-test-key",
+            "INPUT_OPENAI_API_KEY": "sk_test_dummy",
             "INPUT_SCAN_MODE": "deep",
             "INPUT_SEVERITY_GATE": "P1",
         },
