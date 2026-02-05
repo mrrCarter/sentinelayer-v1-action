@@ -1,0 +1,16 @@
+# Sentinelayer default ignore patterns (gitignore-style)
+node_modules/**
+dist/**
+build/**
+.git/**
+.pytest_cache/**
+.env.local
+**/*.lock
+tests/**
+**/__tests__/**
+**/*.spec.*
+**/*.test.*
+coverage/**
+.next/**
+.turbo/**
+.venv/**

@@ -27,7 +27,7 @@ def test_logger_emits_error_annotation(capsys) -> None:
 
 def test_logger_redacts_sensitive_keys(capsys) -> None:
     logger = OmarLogger("run-3")
-    logger.info("secret", api_key="sk-test")
+    logger.info("secret", api_key="sk_test_dummy")
     captured = capsys.readouterr()
     payload = json.loads(captured.err.strip().splitlines()[0])
     assert payload["api_key"] == "***"

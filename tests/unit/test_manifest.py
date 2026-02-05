@@ -1,4 +1,3 @@
-import pytest
 from pathlib import Path
 from omargate.package.manifest import generate_artifact_manifest, write_artifact_manifest
 

@@ -193,7 +193,7 @@ def generate_audit_report(
             "| Field | Value |",
             "|-------|-------|",
             f"| Run ID | `{run_id}` |",
-            f"| Dedupe Key | `{summary.get('dedupe_key', 'n/a')[:16]}...` |",
+            f"| Dedupe Key | `{summary.get('dedupe_key', 'n/a')[:8]}...` |",
             f"| Policy Pack | {summary.get('policy_pack', 'omar')} |",
             f"| Policy Version | {summary.get('policy_pack_version', '1.0')} |",
             f"| Stages | {', '.join(summary.get('stages_completed', []))} |",

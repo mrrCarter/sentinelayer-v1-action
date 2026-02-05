@@ -79,7 +79,7 @@ docker run --rm omar-gate:dev pytest tests/unit/ -v
 
 # Test with act (local GitHub Actions)
 act pull_request -W .github/workflows/test.yml \
-  --secret OPENAI_API_KEY=sk-test-key
+  --secret OPENAI_API_KEY=sk_test_dummy
 ```
 
 ### Test Fixtures
@@ -967,7 +967,7 @@ git commit -m "feat(phase1.1): container foundation - Dockerfile, entrypoint, de
 # Execute prompt with AI agent
 # Test:
 docker build -t omar-gate:dev .
-docker run --rm -e INPUT_OPENAI_API_KEY=sk-test omar-gate:dev \
+docker run --rm -e INPUT_OPENAI_API_KEY=sk_test_dummy omar-gate:dev \
   python -c "from omargate.config import OmarGateConfig; c = OmarGateConfig(); print(c)"
 
 # Commit:

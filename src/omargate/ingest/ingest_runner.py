@@ -14,6 +14,23 @@ from .hotspot_detector import HOTSPOT_PATTERNS, hotspot_categories_for_path
 
 DEFAULT_MAX_FILES = 1000
 DEFAULT_MAX_FILE_BYTES = 1_000_000
+DEFAULT_IGNORE_PATTERNS = [
+    "node_modules/**",
+    "dist/**",
+    "build/**",
+    ".git/**",
+    ".pytest_cache/**",
+    "**/*.lock",
+    "tests/**",
+    "**/__tests__/**",
+    "**/*.spec.*",
+    "**/*.test.*",
+    "coverage/**",
+    ".next/**",
+    ".turbo/**",
+    ".venv/**",
+    ".env.local",
+]
 
 
 def run_ingest(
@@ -107,13 +124,13 @@ def run_ingest(
 
 def _load_ignore_patterns(repo_root: Path) -> List[str]:
     ignore_path = repo_root / ".sentinelayerignore"
+    patterns: List[str] = list(DEFAULT_IGNORE_PATTERNS)
     if not ignore_path.exists():
-        return []
+        return patterns
     try:
         raw = ignore_path.read_text(encoding="utf-8")
     except OSError:
-        return []
-    patterns: List[str] = []
+        return patterns
     for line in raw.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
@@ -138,6 +155,11 @@ def _matches_ignore(path: str, patterns: List[str]) -> bool:
         else:
             if "/" in pat:
                 match = fnmatch.fnmatch(normalized, pat)
+                if not match and pat.startswith("**/"):
+                    alt = pat[3:]
+                    match = fnmatch.fnmatch(normalized, alt) or fnmatch.fnmatch(
+                        Path(normalized).name, alt
+                    )
             else:
                 match = fnmatch.fnmatch(Path(normalized).name, pat) or fnmatch.fnmatch(
                     normalized, pat

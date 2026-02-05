@@ -105,7 +105,7 @@ def render_pr_comment(
     status_badge = _status_badge(result.status)
     duration_value = f"{int(duration_ms)}ms" if duration_ms is not None else "n/a"
     cost_value = f"${cost_usd:.2f}" if cost_usd is not None else "n/a"
-    dedupe_short = (dedupe_key or "n/a")[:12]
+    dedupe_short = (dedupe_key or "n/a")[:8]
     run_id_short = run_id[:8]
 
     warnings_section = _warnings_section(warnings)

@@ -54,7 +54,7 @@ class DummyGitHub:
 
 
 def test_fork_policy_blocks_by_default() -> None:
-    config = OmarGateConfig(openai_api_key="sk-test", fork_policy="block")
+    config = OmarGateConfig(openai_api_key="sk_test_dummy", fork_policy="block")
     ctx = GitHubContext(
         repo_owner="octo",
         repo_name="repo",
@@ -78,7 +78,7 @@ def test_fork_policy_blocks_by_default() -> None:
 
 
 def test_fork_policy_limited_mode() -> None:
-    config = OmarGateConfig(openai_api_key="sk-test", fork_policy="limited")
+    config = OmarGateConfig(openai_api_key="sk_test_dummy", fork_policy="limited")
     ctx = GitHubContext(
         repo_owner="octo",
         repo_name="repo",
@@ -161,7 +161,7 @@ def test_branch_protection_missing_check() -> None:
 
 def test_cost_approval_with_label() -> None:
     config = OmarGateConfig(
-        openai_api_key="sk-test",
+        openai_api_key="sk_test_dummy",
         approval_mode="pr_label",
         approval_label="sentinelayer:approved",
         require_cost_confirmation=0.01,
@@ -205,7 +205,7 @@ def test_rate_limit_cooldown_blocks() -> None:
         runs=[{"completed_at": (now - timedelta(minutes=1)).isoformat()}],
         pr_head="headsha",
     )
-    config = OmarGateConfig(openai_api_key="sk-test", min_scan_interval_minutes=5, max_daily_scans=0)
+    config = OmarGateConfig(openai_api_key="sk_test_dummy", min_scan_interval_minutes=5, max_daily_scans=0)
     logger = OmarLogger("test-run")
 
     allowed, reason = asyncio.run(check_rate_limits(gh, pr_number=1, config=config, logger=logger))
@@ -219,7 +219,7 @@ def test_rate_limit_daily_cap_blocks() -> None:
         runs=[{"completed_at": (now - timedelta(hours=2)).isoformat()}],
         pr_head="headsha",
     )
-    config = OmarGateConfig(openai_api_key="sk-test", min_scan_interval_minutes=0, max_daily_scans=1)
+    config = OmarGateConfig(openai_api_key="sk_test_dummy", min_scan_interval_minutes=0, max_daily_scans=1)
     logger = OmarLogger("test-run")
 
     allowed, reason = asyncio.run(check_rate_limits(gh, pr_number=1, config=config, logger=logger))

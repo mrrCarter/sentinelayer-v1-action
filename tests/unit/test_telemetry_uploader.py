@@ -127,6 +127,69 @@ async def test_upload_artifacts_requires_token() -> None:
 
 
 @pytest.mark.anyio
+async def test_upload_artifacts_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Artifacts upload succeeds when URLs are issued and uploads return 200."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    artifact = run_dir / "AUDIT_REPORT.md"
+    artifact.write_text("report", encoding="utf-8")
+
+    manifest = {
+        "run_id": "run-1",
+        "objects": [
+            {"name": "AUDIT_REPORT.md", "content_type": "text/markdown"},
+        ],
+    }
+
+    client = DummyAsyncClient(
+        responses=[
+            DummyResponse(
+                status_code=200,
+                json_data={"urls": {"AUDIT_REPORT.md": "https://upload.example.com/1"}},
+            ),
+            DummyResponse(status_code=200),
+        ]
+    )
+    monkeypatch.setattr("omargate.telemetry.uploader.httpx.AsyncClient", lambda *args, **kwargs: client)
+
+    result = await upload_artifacts(run_dir, manifest, sentinelayer_token="sentinelayer-token")
+    assert result is True
+    assert [req["method"] for req in client.requests] == ["post", "put"]
+
+
+@pytest.mark.anyio
+async def test_upload_artifacts_fails_when_put_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Artifacts upload fails when an object PUT request fails."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    artifact = run_dir / "FINDINGS.jsonl"
+    artifact.write_text("{}", encoding="utf-8")
+
+    manifest = {
+        "run_id": "run-2",
+        "objects": [
+            {"name": "FINDINGS.jsonl", "content_type": "application/x-ndjson"},
+        ],
+    }
+
+    client = DummyAsyncClient(
+        responses=[
+            DummyResponse(
+                status_code=200,
+                json_data={"urls": {"FINDINGS.jsonl": "https://upload.example.com/2"}},
+            ),
+            DummyResponse(status_code=403),
+        ]
+    )
+    monkeypatch.setattr("omargate.telemetry.uploader.httpx.AsyncClient", lambda *args, **kwargs: client)
+
+    result = await upload_artifacts(run_dir, manifest, sentinelayer_token="sentinelayer-token")
+    assert result is False
+
+
+@pytest.mark.anyio
 async def test_fetch_oidc_token_success(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fetches OIDC token when env is present."""
     monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://example.com/oidc")

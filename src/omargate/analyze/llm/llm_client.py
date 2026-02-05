@@ -29,8 +29,8 @@ class LLMClient:
     def __init__(
         self,
         api_key: str,
-        primary_model: str = "gpt-4o",
-        fallback_model: str = "gpt-4o-mini",
+        primary_model: str = "gpt-5.2-codex",
+        fallback_model: str = "gpt-4.1",
         timeout_seconds: int = 120,
         max_retries: int = 2,
     ) -> None:
@@ -154,9 +154,12 @@ class LLMClient:
     def estimate_cost(self, model: str, tokens_in: int, tokens_out: int) -> float:
         """Estimate cost in USD based on model pricing."""
         pricing = {
+            "gpt-5.2-codex": {"input": 0.00175, "output": 0.014},
+            "gpt-4.1": {"input": 0.002, "output": 0.008},
+            "gpt-4.1-mini": {"input": 0.0004, "output": 0.0016},
+            "gpt-4.1-nano": {"input": 0.0001, "output": 0.0004},
             "gpt-4o": {"input": 0.005, "output": 0.015},
             "gpt-4o-mini": {"input": 0.00015, "output": 0.0006},
-            "gpt-4-turbo": {"input": 0.01, "output": 0.03},
         }
-        rates = pricing.get(model, {"input": 0.01, "output": 0.03})
+        rates = pricing.get(model, {"input": 0.002, "output": 0.008})
         return (tokens_in / 1000 * rates["input"]) + (tokens_out / 1000 * rates["output"])
