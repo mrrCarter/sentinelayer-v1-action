@@ -17,5 +17,9 @@ jobs:
       - name: Sentinelayer Security Review
         uses: mrrCarter/sentinelayer-v1-action@main
         with:
-          api_url: https://api.sentinelayer.com
-          gate_mode: advisory
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          github_token: ${{ github.token }}
+          severity_gate: P1
+          scan_mode: pr-diff
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
