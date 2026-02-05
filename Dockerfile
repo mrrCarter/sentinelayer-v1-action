@@ -21,10 +21,7 @@ FROM python:3.11-alpine AS runtime
 RUN apk add --no-cache \
         ca-certificates \
         libstdc++ \
-        nodejs \
-        npm \
-    && corepack enable \
-    && corepack prepare pnpm@8.15.5 --activate
+        nodejs
 
 RUN addgroup -S app && adduser -S -G app -u 10001 app
 
