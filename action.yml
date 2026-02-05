@@ -62,12 +62,12 @@ inputs:
   model:
     description: 'Primary OpenAI model'
     required: false
-    default: 'gpt-4o'
+    default: 'gpt-5.2-codex'
 
   model_fallback:
     description: 'Fallback OpenAI model'
     required: false
-    default: 'gpt-4o-mini'
+    default: 'gpt-4.1'
 
   llm_failure_policy:
     description: 'If LLM call fails: block (fail-closed), deterministic_only, allow_with_warning'
@@ -163,7 +163,3 @@ outputs:
 runs:
   using: 'docker'
   image: 'Dockerfile'
-  env:
-    OPENAI_API_KEY: ${{ inputs.openai_api_key }}
-    SENTINELAYER_TOKEN: ${{ inputs.sentinelayer_token }}
-    GITHUB_TOKEN: ${{ inputs.github_token }}

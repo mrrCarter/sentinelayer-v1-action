@@ -5,7 +5,17 @@ if [ "$#" -gt 0 ]; then
   exec "$@"
 fi
 
-required_envs="GITHUB_EVENT_PATH GITHUB_REPOSITORY GITHUB_OUTPUT GITHUB_TOKEN"
+# Map GitHub Actions inputs (INPUT_*) to expected environment variables
+# Inputs come in as INPUT_OPENAI_API_KEY, INPUT_GITHUB_TOKEN, etc.
+export OPENAI_API_KEY="${INPUT_OPENAI_API_KEY:-${OPENAI_API_KEY:-}}"
+export SENTINELAYER_TOKEN="${INPUT_SENTINELAYER_TOKEN:-${SENTINELAYER_TOKEN:-}}"
+
+# GITHUB_TOKEN can come from env or input
+if [ -z "${GITHUB_TOKEN:-}" ] && [ -n "${INPUT_GITHUB_TOKEN:-}" ]; then
+  export GITHUB_TOKEN="${INPUT_GITHUB_TOKEN}"
+fi
+
+required_envs="GITHUB_EVENT_PATH GITHUB_REPOSITORY GITHUB_OUTPUT"
 for name in $required_envs; do
   value="$(printenv "$name" || true)"
   if [ -z "$value" ]; then
@@ -13,6 +23,12 @@ for name in $required_envs; do
     exit 2
   fi
 done
+
+# Validate required inputs
+if [ -z "${OPENAI_API_KEY:-}" ]; then
+  echo "Missing required input: openai_api_key" >&2
+  exit 2
+fi
 
 export PYTHONPATH="/app/src:${PYTHONPATH:-}"
 
