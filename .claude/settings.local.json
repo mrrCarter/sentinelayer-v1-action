@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "Bash(tree:*)",
+      "Bash(findstr:*)",
+      "Bash(set:*)",
+      "Bash(pytest:*)",
+      "Bash(python -m pytest:*)",
+      "WebFetch(domain:platform.openai.com)",
+      "WebFetch(domain:openai.com)",
+      "WebFetch(domain:developers.openai.com)",
+      "Bash(git rev-list:*)",
+      "Bash(git status:*)",
+      "Bash(git push:*)",
+      "Bash(k6 version:*)",
+      "Bash(docker version:*)"
+    ]
+  }
+}
