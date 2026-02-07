@@ -10,4 +10,8 @@ locals {
   }
 
   api_domain = "api.${var.domain_name}"
+
+  artifacts_prefix              = "${var.project_name}/${var.environment}/"
+  rds_master_secret_arn         = try(aws_db_instance.postgres.master_user_secret[0].secret_arn, null)
+  rds_final_snapshot_identifier = var.rds_final_snapshot_identifier != "" ? var.rds_final_snapshot_identifier : "${local.name_prefix}-final"
 }

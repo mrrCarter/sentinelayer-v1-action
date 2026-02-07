@@ -1,29 +1,12 @@
-resource "aws_secretsmanager_secret" "db_auth" {
-  name = "${local.name_prefix}/db_auth"
-  tags = local.tags
-}
-
-resource "aws_secretsmanager_secret_version" "db_auth" {
-  secret_id     = aws_secretsmanager_secret.db_auth.id
-  secret_string = jsonencode({
-    username = aws_db_instance.postgres.username
-    password = aws_db_instance.postgres.password
-    engine   = "postgres"
-    host     = aws_db_instance.postgres.address
-    port     = 5432
-    dbname   = aws_db_instance.postgres.db_name
-  })
-}
-
 resource "aws_iam_role" "rds_proxy" {
-  name               = "${local.name_prefix}-rds-proxy-role"
+  name = "${local.name_prefix}-rds-proxy-role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
+        Effect    = "Allow"
         Principal = { Service = "rds.amazonaws.com" }
-        Action = "sts:AssumeRole"
+        Action    = "sts:AssumeRole"
       }
     ]
   })
@@ -38,8 +21,8 @@ resource "aws_iam_role_policy" "rds_proxy_secrets" {
     Statement = [
       {
         Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = [aws_secretsmanager_secret.db_auth.arn]
+        Action   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+        Resource = [local.rds_master_secret_arn]
       }
     ]
   })
@@ -50,14 +33,14 @@ resource "aws_db_proxy" "postgres" {
   engine_family          = "POSTGRESQL"
   role_arn               = aws_iam_role.rds_proxy.arn
   vpc_subnet_ids         = module.vpc.private_subnets
-  vpc_security_group_ids = [aws_security_group.db.id] # proxy -> db
+  vpc_security_group_ids = [aws_security_group.rds_proxy.id]
 
-  require_tls            = true
-  idle_client_timeout    = 1800
+  require_tls         = true
+  idle_client_timeout = 1800
 
   auth {
     auth_scheme = "SECRETS"
-    secret_arn  = aws_secretsmanager_secret.db_auth.arn
+    secret_arn  = local.rds_master_secret_arn
     iam_auth    = "DISABLED"
   }
 
@@ -75,7 +58,8 @@ resource "aws_db_proxy_default_target_group" "postgres" {
 }
 
 resource "aws_db_proxy_target" "postgres" {
-  db_proxy_name          = aws_db_proxy.postgres.name
-  target_group_name      = aws_db_proxy_default_target_group.postgres.name
-  db_instance_identifier = aws_db_instance.postgres.id
+  db_proxy_name     = aws_db_proxy.postgres.name
+  target_group_name = aws_db_proxy_default_target_group.postgres.name
+  # AWS expects the DB instance *identifier* (lowercase/hyphens), not the internal resource id (db-...).
+  db_instance_identifier = aws_db_instance.postgres.identifier
 }

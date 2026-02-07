@@ -1,0 +1,19 @@
+project_name            = "sentinelayer"
+environment             = "prod"
+aws_region              = "us-east-1"
+domain_name             = "sentinelayer.com"
+route53_zone_id         = "Z1234567890ABC"
+api_runtime_secret_arn  = "arn:aws:secretsmanager:us-east-1:123456789012:secret:sentinelayer/prod/api-runtime-AbCdEf"
+
+# Optional sizing overrides
+api_container_port      = 8000
+desired_count           = 2
+max_count               = 20
+api_cpu                 = 512
+api_memory              = 1024
+api_image_tag           = "v0.1.0"
+
+# Data protection defaults are set for prod-safe behavior.
+# Override only for non-prod ephemeral environments.
+rds_deletion_protection = true
+rds_skip_final_snapshot = false

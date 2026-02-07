@@ -31,7 +31,12 @@ output "cloudwatch_log_group" {
   value = aws_cloudwatch_log_group.api.name
 }
 
-output "db_auth_secret_arn" {
-  value = aws_secretsmanager_secret.db_auth.arn
-  description = "Secret containing DB auth JSON."
+output "rds_master_secret_arn" {
+  value       = local.rds_master_secret_arn
+  description = "AWS-managed RDS master credentials secret ARN."
+}
+
+output "api_runtime_secret_arn" {
+  value       = var.api_runtime_secret_arn
+  description = "API runtime secret ARN (app contract secret managed out-of-band)."
 }
