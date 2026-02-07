@@ -19,8 +19,6 @@ Terraform module for SentinelLayer API infrastructure with stricter state hygien
 
 ECS injects app runtime secrets from **one external Secrets Manager secret ARN** (`api_runtime_secret_arn`) with JSON keys:
 
-- `database_url`
-- `timescale_url`
 - `github_client_id`
 - `github_client_secret`
 - `jwt_secret`
@@ -29,13 +27,14 @@ Example secret payload:
 
 ```json
 {
-  "database_url": "postgresql+asyncpg://sentinelayer:REPLACE@proxy-endpoint:5432/sentinelayer",
-  "timescale_url": "postgresql+asyncpg://sentinelayer:REPLACE@proxy-endpoint:5432/sentinelayer",
   "github_client_id": "REPLACE",
   "github_client_secret": "REPLACE",
   "jwt_secret": "REPLACE"
 }
 ```
+
+Database URLs are constructed at container start from the AWS-managed RDS master secret (`manage_master_user_password=true`),
+so RDS password rotation does not require manual updates to `api_runtime_secret_arn`.
 
 Terraform does not store these values in state.
 
@@ -63,13 +62,31 @@ terraform plan -var-file=envs/prod.tfvars
 terraform apply -var-file=envs/prod.tfvars
 ```
 
+PowerShell note: if Terraform complains about args parsing, use:
+
+```powershell
+terraform plan "-var-file=envs\\prod.tfvars"
+terraform apply "-var-file=envs\\prod.tfvars"
+```
+
 5. Build/push API image:
 
 ```bash
 aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com
+
+# Build the FastAPI service image (DO NOT use the repo-root Dockerfile; that's the GitHub Action image).
 docker build -t sentinelayer-api:local -f ../sentinelayer-api/Dockerfile ../sentinelayer-api
-docker tag sentinelayer-api:local $(terraform output -raw ecr_repository_url):v0.1.0
-docker push $(terraform output -raw ecr_repository_url):v0.1.0
+
+# Use a unique tag (ECR repo is IMMUTABLE; tags cannot be overwritten).
+API_TAG="api-$(git rev-parse --short=12 HEAD)"
+docker tag sentinelayer-api:local "$(terraform output -raw ecr_repository_url):${API_TAG}"
+docker push "$(terraform output -raw ecr_repository_url):${API_TAG}"
+```
+
+Or (PowerShell), from repo root:
+
+```powershell
+.\sentinellayer-aws-terraform-v0.1\scripts\push_api_image.ps1 -Region us-east-1 -RepositoryName sentinelayer-prod-api -Tag "api-REPLACE_ME"
 ```
 
 ## Bootstrap sequence (new environment)
@@ -78,12 +95,8 @@ If you are creating a brand-new environment, use a two-pass rollout:
 
 1. Create runtime secret with placeholder values and set `desired_count = 0`.
 2. `terraform apply` to provision infra (RDS Proxy + Redis + ECS service).
-3. Pull outputs:
-   - `terraform output -raw rds_proxy_endpoint`
-   - `terraform output -raw rds_master_secret_arn`
-4. Read the RDS master secret in AWS and build `database_url` / `timescale_url`.
-5. Update the runtime secret JSON.
-6. Set `desired_count` to your target count and apply again.
+3. Update the runtime secret JSON (GitHub OAuth + JWT).
+4. Set `desired_count` to your target count and apply again.
 
 ## Drift routine (required)
 
