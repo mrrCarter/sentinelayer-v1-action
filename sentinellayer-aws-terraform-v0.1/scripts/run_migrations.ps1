@@ -42,14 +42,20 @@ $cliInput = @{
 }
 
 $tmp = Join-Path $env:TEMP ("ecs-migrate-" + [guid]::NewGuid().ToString("n") + ".json")
-$cliInput | ConvertTo-Json -Depth 20 | Set-Content -Encoding utf8 $tmp
+$cliJson = $cliInput | ConvertTo-Json -Depth 20
+# AWS CLI JSON parser will choke on a UTF-8 BOM. Write UTF-8 *without* BOM.
+[System.IO.File]::WriteAllText($tmp, $cliJson, [System.Text.UTF8Encoding]::new($false))
 
-$run = aws ecs run-task `
+$raw = aws ecs run-task `
   --cli-input-json ("file://$tmp") `
   --region $Region `
-  --output json | ConvertFrom-Json
+  --output json 2>&1
+if ($LASTEXITCODE -ne 0) {
+  throw "aws ecs run-task failed: $raw"
+}
+$run = $raw | ConvertFrom-Json
 
-if ($run.failures -and $run.failures.Count -gt 0) {
+if ($run.PSObject.Properties["failures"] -and $run.failures.Count -gt 0) {
   $run.failures | ConvertTo-Json -Depth 10 | Write-Output
   throw "run-task returned failures"
 }
