@@ -17,7 +17,9 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.timescale_url)
+# Alembic uses ConfigParser which treats '%' as interpolation. URL-encoded credentials
+# (e.g. `%2F`) must be escaped as `%%` to avoid "invalid interpolation syntax".
+config.set_main_option("sqlalchemy.url", settings.timescale_url.replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:

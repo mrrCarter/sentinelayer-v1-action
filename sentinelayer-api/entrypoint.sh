@@ -19,6 +19,9 @@ set -eu
 DB_PORT="${DB_PORT:-5432}"
 DB_SCHEME="${DB_SCHEME:-postgresql+asyncpg}"
 
+# Ensure the app package (`src.*`) is importable for both uvicorn and alembic.
+export PYTHONPATH="/app:${PYTHONPATH:-}"
+
 if [ -n "${DB_USERNAME:-}" ] && [ -n "${DB_PASSWORD:-}" ] && [ -n "${DB_HOST:-}" ] && [ -n "${DB_NAME:-}" ]; then
   # URL-encode credentials (master passwords often contain reserved characters)
   ENC_USER="$(python -c 'import os,urllib.parse; print(urllib.parse.quote_plus(os.environ["DB_USERNAME"]))')"
