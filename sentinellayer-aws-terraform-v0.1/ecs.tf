@@ -9,9 +9,9 @@ resource "aws_iam_role" "ecs_task_execution" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
+        Effect    = "Allow"
         Principal = { Service = "ecs-tasks.amazonaws.com" }
-        Action = "sts:AssumeRole"
+        Action    = "sts:AssumeRole"
       }
     ]
   })
@@ -20,13 +20,34 @@ resource "aws_iam_role" "ecs_task_execution" {
 
 resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
   role       = aws_iam_role.ecs_task_execution.name
-  policy_arn  = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_iam_role_policy" "ecs_task_execution_secrets" {
+  name = "${local.name_prefix}-ecs-exec-secrets"
+  role = aws_iam_role.ecs_task_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+        Resource = [
+          var.api_runtime_secret_arn
+        ]
+      }
+    ]
+  })
 }
 
 resource "aws_iam_role" "ecs_task" {
-  name = "${local.name_prefix}-ecs-task-role"
+  name               = "${local.name_prefix}-ecs-task-role"
   assume_role_policy = aws_iam_role.ecs_task_execution.assume_role_policy
-  tags = local.tags
+  tags               = local.tags
 }
 
 resource "aws_iam_role_policy" "ecs_task_access" {
@@ -39,24 +60,23 @@ resource "aws_iam_role_policy" "ecs_task_access" {
       {
         Effect = "Allow"
         Action = [
-          "secretsmanager:GetSecretValue",
-          "secretsmanager:DescribeSecret"
+          "s3:ListBucket"
         ]
-        Resource = [
-          aws_secretsmanager_secret.db_auth.arn
-        ]
+        Resource = [aws_s3_bucket.artifacts.arn]
+        Condition = {
+          StringLike = {
+            "s3:prefix" = ["${local.artifacts_prefix}*"]
+          }
+        }
       },
       {
         Effect = "Allow"
         Action = [
           "s3:PutObject",
           "s3:GetObject",
-          "s3:ListBucket"
+          "s3:AbortMultipartUpload"
         ]
-        Resource = [
-          aws_s3_bucket.artifacts.arn,
-          "${aws_s3_bucket.artifacts.arn}/*"
-        ]
+        Resource = ["${aws_s3_bucket.artifacts.arn}/${local.artifacts_prefix}*"]
       }
     ]
   })
@@ -68,8 +88,8 @@ resource "aws_ecs_task_definition" "api" {
   network_mode             = "awsvpc"
   cpu                      = tostring(var.api_cpu)
   memory                   = tostring(var.api_memory)
-  execution_role_arn        = aws_iam_role.ecs_task_execution.arn
-  task_role_arn             = aws_iam_role.ecs_task.arn
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
 
   container_definitions = jsonencode([
     {
@@ -87,13 +107,17 @@ resource "aws_ecs_task_definition" "api" {
       environment = [
         { name = "S3_BUCKET", value = aws_s3_bucket.artifacts.bucket },
         { name = "S3_REGION", value = var.aws_region },
+        { name = "S3_PREFIX", value = local.artifacts_prefix },
+        { name = "REDIS_URL", value = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" },
         { name = "GITHUB_OIDC_ISSUER", value = "https://token.actions.githubusercontent.com" }
       ]
 
-      # DB + Redis endpoints are not secrets; credentials are via Secrets Manager JSON (db_auth)
-      # Your app can parse this secret OR you can split into separate secrets later.
       secrets = [
-        { name = "DB_AUTH_JSON", valueFrom = aws_secretsmanager_secret.db_auth.arn }
+        { name = "DATABASE_URL", valueFrom = "${var.api_runtime_secret_arn}:database_url::" },
+        { name = "TIMESCALE_URL", valueFrom = "${var.api_runtime_secret_arn}:timescale_url::" },
+        { name = "GITHUB_CLIENT_ID", valueFrom = "${var.api_runtime_secret_arn}:github_client_id::" },
+        { name = "GITHUB_CLIENT_SECRET", valueFrom = "${var.api_runtime_secret_arn}:github_client_secret::" },
+        { name = "JWT_SECRET", valueFrom = "${var.api_runtime_secret_arn}:jwt_secret::" }
       ]
 
       logConfiguration = {
@@ -106,11 +130,11 @@ resource "aws_ecs_task_definition" "api" {
       }
 
       healthCheck = {
-        command  = ["CMD-SHELL", "curl -fsS http://localhost:${var.api_container_port}/ready || exit 1"]
-        interval = 30
-        timeout  = 5
-        retries  = 3
-        startPeriod = 30
+        command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:${var.api_container_port}/ready', timeout=2).read()\" || exit 1"]
+        interval    = 30
+        timeout     = 5
+        retries     = 3
+        startPeriod = 60
       }
     }
   ])
@@ -126,8 +150,8 @@ resource "aws_ecs_service" "api" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets         = module.vpc.private_subnets
-    security_groups = [aws_security_group.api.id]
+    subnets          = module.vpc.private_subnets
+    security_groups  = [aws_security_group.api.id]
     assign_public_ip = false
   }
 
@@ -140,10 +164,9 @@ resource "aws_ecs_service" "api" {
   deployment_minimum_healthy_percent = 50
   deployment_maximum_percent         = 200
 
-  # If you deploy new task definitions via CI/CD (recommended),
-  # ignore drift here so Terraform doesn't fight your pipeline.
-  lifecycle {
-    ignore_changes = [task_definition]
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
   }
 
   depends_on = [aws_lb_listener.https]
@@ -171,7 +194,7 @@ resource "aws_appautoscaling_policy" "api_cpu" {
       predefined_metric_type = "ECSServiceAverageCPUUtilization"
     }
     target_value       = 60
-    scale_in_cooldown   = 60
-    scale_out_cooldown  = 60
+    scale_in_cooldown  = 60
+    scale_out_cooldown = 60
   }
 }

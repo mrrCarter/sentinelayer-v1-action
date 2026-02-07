@@ -14,4 +14,16 @@ node_modules/
 .env.*
 !.env.example
 
+# Terraform local state artifacts
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+backend.hcl
+crash.log
+crash.*.log
+.terraformrc
+terraform.rc
+
 nul
