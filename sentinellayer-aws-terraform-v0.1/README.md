@@ -8,7 +8,7 @@ Terraform module for SentinelLayer API infrastructure with stricter state hygien
 - ALB (HTTP->HTTPS redirect) + ACM certificate (DNS validated)
 - ECS Fargate service for `sentinelayer-api`
 - ECR repository
-- RDS PostgreSQL 15 (Multi-AZ) with AWS-managed master password secret
+- RDS PostgreSQL 15 (single-AZ or Multi-AZ) with AWS-managed master password secret
 - RDS Proxy
 - ElastiCache Redis
 - S3 artifacts bucket (public access block, encryption, versioning, TLS-only policy, 90-day lifecycle)
@@ -57,16 +57,17 @@ cp envs/prod.tfvars.example envs/prod.tfvars
 4. Init/plan/apply:
 
 ```bash
-terraform init -backend-config=backend.hcl
-terraform plan -var-file=envs/prod.tfvars
-terraform apply -var-file=envs/prod.tfvars
+terraform init -backend-config backend.hcl
+terraform plan -var-file envs/prod.tfvars
+terraform apply -var-file envs/prod.tfvars
 ```
 
-PowerShell note: if Terraform complains about args parsing, use:
+PowerShell note: prefer space-separated flags:
 
 ```powershell
-terraform plan "-var-file=envs\\prod.tfvars"
-terraform apply "-var-file=envs\\prod.tfvars"
+terraform init -backend-config backend.hcl
+terraform plan -var-file envs\\prod.tfvars
+terraform apply -var-file envs\\prod.tfvars
 ```
 
 5. Build/push API image:
@@ -93,15 +94,19 @@ Or (PowerShell), from repo root:
 
 If you are creating a brand-new environment, use a two-pass rollout:
 
-1. Create runtime secret with placeholder values and set `desired_count = 0`.
-2. `terraform apply` to provision infra (RDS Proxy + Redis + ECS service).
+1. Create runtime secret with placeholder values and set `min_count = 0` and `max_count = 0`.
+2. `terraform apply` to provision infra (RDS Proxy + Redis + ECS service) without running tasks.
 3. Update the runtime secret JSON (GitHub OAuth + JWT).
-4. Set `desired_count` to your target count and apply again.
+4. Set `min_count`/`max_count` to your target range and apply again.
+
+Note: `desired_count` is treated as an initial value only. Terraform intentionally ignores
+`aws_ecs_service.desired_count` drift because Application Auto Scaling updates it at runtime.
+Use `min_count`/`max_count` to control steady-state capacity.
 
 ## Drift routine (required)
 
 ```bash
-terraform plan -refresh-only -var-file=envs/prod.tfvars -out=drift-prod.tfplan
+terraform plan -refresh-only -var-file envs/prod.tfvars -out=drift-prod.tfplan
 terraform show -no-color drift-prod.tfplan > drift-prod.txt
 ```
 
