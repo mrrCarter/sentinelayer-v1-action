@@ -168,7 +168,14 @@ resource "aws_ecs_service" "api" {
     container_port   = var.api_container_port
   }
 
-  deployment_minimum_healthy_percent = 50
+  # With autoscaling enabled, the desired count will legitimately drift. Ignore that drift,
+  # otherwise drift checks and deploy applies will constantly fight Application Auto Scaling.
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
+
+  # Keep capacity during deployments (especially important when min_count can be 1).
+  deployment_minimum_healthy_percent = 100
   deployment_maximum_percent         = 200
 
   deployment_circuit_breaker {
@@ -205,6 +212,26 @@ resource "aws_appautoscaling_policy" "api_cpu" {
       predefined_metric_type = "ECSServiceAverageCPUUtilization"
     }
     target_value       = 60
+    scale_in_cooldown  = 60
+    scale_out_cooldown = 60
+  }
+}
+
+resource "aws_appautoscaling_policy" "api_memory" {
+  count = var.enable_autoscaling ? 1 : 0
+
+  name               = "${local.name_prefix}-api-memory"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.api[0].resource_id
+  scalable_dimension = aws_appautoscaling_target.api[0].scalable_dimension
+  service_namespace  = aws_appautoscaling_target.api[0].service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageMemoryUtilization"
+    }
+    # Keep memory headroom to reduce OOM/restarts under bursty workloads.
+    target_value       = 75
     scale_in_cooldown  = 60
     scale_out_cooldown = 60
   }

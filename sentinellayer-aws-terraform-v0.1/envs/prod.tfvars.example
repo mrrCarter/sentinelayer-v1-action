@@ -8,7 +8,10 @@ api_runtime_secret_arn  = "arn:aws:secretsmanager:us-east-1:123456789012:secret:
 # Optional sizing overrides
 api_container_port      = 8000
 desired_count           = 2
-max_count               = 20
+# NOTE: desired_count is treated as an initial value only. Steady-state capacity is controlled
+# by Application Auto Scaling via min_count/max_count.
+min_count               = 2
+max_count               = 6
 api_cpu                 = 512
 api_memory              = 1024
 api_image_tag           = "api-REPLACE_ME"
@@ -17,3 +20,7 @@ api_image_tag           = "api-REPLACE_ME"
 # Override only for non-prod ephemeral environments.
 rds_deletion_protection = true
 rds_skip_final_snapshot = false
+
+# Cost/perf overrides (optional)
+# rds_instance_class = "db.t4g.micro"
+# rds_multi_az       = false
