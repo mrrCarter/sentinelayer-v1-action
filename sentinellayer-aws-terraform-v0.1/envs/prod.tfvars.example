@@ -11,7 +11,7 @@ desired_count           = 2
 max_count               = 20
 api_cpu                 = 512
 api_memory              = 1024
-api_image_tag           = "v0.1.0"
+api_image_tag           = "api-REPLACE_ME"
 
 # Data protection defaults are set for prod-safe behavior.
 # Override only for non-prod ephemeral environments.

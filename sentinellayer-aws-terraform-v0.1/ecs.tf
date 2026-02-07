@@ -36,9 +36,9 @@ resource "aws_iam_role_policy" "ecs_task_execution_secrets" {
           "secretsmanager:GetSecretValue",
           "secretsmanager:DescribeSecret"
         ]
-        Resource = [
-          var.api_runtime_secret_arn
-        ]
+        # Allow ECS agent to inject secrets at container start.
+        # Keep scope tight: only the runtime secret + the AWS-managed RDS master secret.
+        Resource = compact([var.api_runtime_secret_arn, local.rds_master_secret_arn])
       }
     ]
   })
@@ -109,12 +109,19 @@ resource "aws_ecs_task_definition" "api" {
         { name = "S3_REGION", value = var.aws_region },
         { name = "S3_PREFIX", value = local.artifacts_prefix },
         { name = "REDIS_URL", value = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" },
-        { name = "GITHUB_OIDC_ISSUER", value = "https://token.actions.githubusercontent.com" }
+        { name = "GITHUB_OIDC_ISSUER", value = "https://token.actions.githubusercontent.com" },
+
+        # DB connection is derived at container start from rotating RDS credentials (DB_USERNAME/DB_PASSWORD).
+        # This avoids baking a password-bearing DATABASE_URL into a long-lived secret string that drifts on rotation.
+        { name = "DB_HOST", value = var.enable_rds_proxy ? aws_db_proxy.postgres[0].endpoint : aws_db_instance.postgres.address },
+        { name = "DB_PORT", value = "5432" },
+        { name = "DB_NAME", value = var.db_name },
+        { name = "DB_SCHEME", value = "postgresql+asyncpg" }
       ]
 
       secrets = [
-        { name = "DATABASE_URL", valueFrom = "${var.api_runtime_secret_arn}:database_url::" },
-        { name = "TIMESCALE_URL", valueFrom = "${var.api_runtime_secret_arn}:timescale_url::" },
+        { name = "DB_USERNAME", valueFrom = "${local.rds_master_secret_arn}:username::" },
+        { name = "DB_PASSWORD", valueFrom = "${local.rds_master_secret_arn}:password::" },
         { name = "GITHUB_CLIENT_ID", valueFrom = "${var.api_runtime_secret_arn}:github_client_id::" },
         { name = "GITHUB_CLIENT_SECRET", valueFrom = "${var.api_runtime_secret_arn}:github_client_secret::" },
         { name = "JWT_SECRET", valueFrom = "${var.api_runtime_secret_arn}:jwt_secret::" }
