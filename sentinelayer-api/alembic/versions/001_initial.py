@@ -1,4 +1,8 @@
-"""Initial schema with TimescaleDB hypertable"""
+"""Initial schema (PostgreSQL)
+
+This migration intentionally avoids TimescaleDB-specific functions so the stack can run on
+vanilla RDS PostgreSQL without extra extension enablement.
+"""
 
 from alembic import op
 import sqlalchemy as sa
@@ -35,17 +39,10 @@ def upgrade():
         sa.Column("created_at", sa.DateTime()),
     )
 
-    op.execute(
-        """
-        SELECT create_hypertable('telemetry', 'timestamp_utc',
-            chunk_time_interval => INTERVAL '1 day',
-            if_not_exists => TRUE
-        );
-        """
-    )
-
-    op.create_index("idx_telemetry_run_id", "telemetry", ["run_id"])
+    # Indices to match the ORM model.
+    op.create_index("idx_telemetry_timestamp", "telemetry", ["timestamp_utc"])
     op.create_index("idx_telemetry_repo_hash", "telemetry", ["repo_hash"])
+    op.create_index("idx_telemetry_gate_status", "telemetry", ["gate_status"])
 
 
 def downgrade():
