@@ -14,6 +14,7 @@ min_count               = 2
 max_count               = 6
 api_cpu                 = 512
 api_memory              = 1024
+telemetry_rate_limit    = 100
 api_image_tag           = "api-REPLACE_ME"
 
 # Data protection defaults are set for prod-safe behavior.

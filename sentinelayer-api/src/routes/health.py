@@ -2,10 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 import redis.asyncio as redis
+import logging
 
 from ..db.connection import get_db, get_redis
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get("/health")
@@ -23,27 +25,34 @@ async def ready(
     """
     Readiness check - verifies all dependencies.
 
-    Returns 503 if any dependency is down.
+    Returns 503 if the database dependency is down.
+
+    Redis is treated as a best-effort dependency (rate limiting cache). If Redis is down, the
+    service reports degraded readiness but stays in rotation.
     """
     checks = {}
+    db_ok = False
+    redis_ok = False
 
     # Database
     try:
         await db.execute(text("SELECT 1"))
         checks["database"] = "ok"
-    except Exception as exc:
-        checks["database"] = f"error: {exc}"
+        db_ok = True
+    except Exception:
+        logger.warning("Readiness DB check failed", exc_info=True)
+        checks["database"] = "error"
 
     # Redis
     try:
         await cache.ping()
         checks["redis"] = "ok"
-    except Exception as exc:
-        checks["redis"] = f"error: {exc}"
+        redis_ok = True
+    except Exception:
+        logger.warning("Readiness Redis check failed", exc_info=True)
+        checks["redis"] = "error"
 
-    all_ok = all(value == "ok" for value in checks.values())
-
-    if not all_ok:
+    if not db_ok:
         raise HTTPException(
             status_code=503,
             detail={
@@ -51,9 +60,10 @@ async def ready(
                     "code": "DEPENDENCY_UNAVAILABLE",
                     "message": "One or more dependencies are unavailable",
                     "details": checks,
-                    "request_id": request.state.request_id,
+                    "request_id": getattr(request.state, "request_id", "unknown"),
                 }
             },
         )
 
-    return {"status": "ready", "checks": checks}
+    status = "ready" if redis_ok else "degraded"
+    return {"status": status, "checks": checks}
