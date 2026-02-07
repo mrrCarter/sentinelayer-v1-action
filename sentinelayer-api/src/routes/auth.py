@@ -135,17 +135,30 @@ async def github_callback(request: Request, body: OAuthCallbackRequest):
     )
 
     # Generate JWT token
+    now = datetime.now(timezone.utc)
     jwt_payload = {
         "sub": user.id,
         "username": user.github_username,
         "email": user.email,
-        "iat": datetime.now(timezone.utc),
-        "exp": datetime.now(timezone.utc) + timedelta(days=7),
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(days=7)).timestamp()),
     }
+
+    if not settings.jwt_secret:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": {
+                    "code": "CONFIG_ERROR",
+                    "message": "JWT secret not configured",
+                    "request_id": request_id,
+                }
+            },
+        )
 
     token = jwt.encode(
         jwt_payload,
-        settings.jwt_secret or "dev-secret",
+        settings.jwt_secret,
         algorithm=settings.jwt_algorithm,
     )
 
@@ -157,6 +170,18 @@ async def get_current_user(request: Request):
     """Get current user from JWT token."""
     request_id = getattr(request.state, "request_id", "unknown")
     settings = get_settings()
+
+    if not settings.jwt_secret:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": {
+                    "code": "CONFIG_ERROR",
+                    "message": "JWT secret not configured",
+                    "request_id": request_id,
+                }
+            },
+        )
 
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
@@ -176,7 +201,7 @@ async def get_current_user(request: Request):
     try:
         payload = jwt.decode(
             token,
-            settings.jwt_secret or "dev-secret",
+            settings.jwt_secret,
             algorithms=[settings.jwt_algorithm],
         )
     except JWTError as e:

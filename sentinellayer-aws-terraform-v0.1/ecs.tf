@@ -110,6 +110,7 @@ resource "aws_ecs_task_definition" "api" {
         { name = "S3_PREFIX", value = local.artifacts_prefix },
         { name = "REDIS_URL", value = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" },
         { name = "GITHUB_OIDC_ISSUER", value = "https://token.actions.githubusercontent.com" },
+        { name = "TELEMETRY_RATE_LIMIT", value = tostring(var.telemetry_rate_limit) },
 
         # DB connection is derived at container start from rotating RDS credentials (DB_USERNAME/DB_PASSWORD).
         # This avoids baking a password-bearing DATABASE_URL into a long-lived secret string that drifts on rotation.
@@ -137,7 +138,8 @@ resource "aws_ecs_task_definition" "api" {
       }
 
       healthCheck = {
-        command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:${var.api_container_port}/ready', timeout=2).read()\" || exit 1"]
+        # Liveness probe: should not depend on external systems like DB/Redis to avoid restart loops.
+        command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:${var.api_container_port}/health', timeout=2).read()\" || exit 1"]
         interval    = 30
         timeout     = 5
         retries     = 3

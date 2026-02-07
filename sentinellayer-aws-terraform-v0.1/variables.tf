@@ -72,6 +72,17 @@ variable "api_memory" {
   default     = 512
 }
 
+variable "telemetry_rate_limit" {
+  type        = number
+  description = "Telemetry rate limit per IP per hour (Tier 1)."
+  default     = 100
+
+  validation {
+    condition     = var.telemetry_rate_limit >= 0
+    error_message = "telemetry_rate_limit must be >= 0."
+  }
+}
+
 variable "api_image_tag" {
   type        = string
   description = "API image tag to deploy initially."

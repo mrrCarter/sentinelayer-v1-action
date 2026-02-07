@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from ..schemas.telemetry import TelemetryPayload
 from ..models.telemetry import TelemetryRecord
@@ -65,7 +66,14 @@ class TelemetryService:
         )
 
         self.db.add(record)
-        await self.db.commit()
+        try:
+            await self.db.commit()
+        except IntegrityError:
+            # Concurrency-safe idempotency: if two requests race on the same run_id,
+            # the UNIQUE constraint will win. Treat that as a duplicate, not a 500.
+            await self.db.rollback()
+            return IngestResult(success=True, duplicate=True)
+
         await self.db.refresh(record)
 
         return IngestResult(success=True, duplicate=False, record_id=record.id)

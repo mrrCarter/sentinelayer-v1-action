@@ -1,13 +1,13 @@
 from sqlalchemy import Column, Integer, String, Float, DateTime, Index
 from sqlalchemy.dialects.postgresql import JSONB
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..db.connection import Base
 
 
 class TelemetryRecord(Base):
     """
-    Telemetry record (TimescaleDB hypertable).
+    Telemetry record (PostgreSQL table; can be converted to a TimescaleDB hypertable if enabled).
 
     Tier 1 fields are always populated.
     Tier 2+ fields are nullable and only populated with consent.
@@ -20,7 +20,9 @@ class TelemetryRecord(Base):
     run_id = Column(String(64), unique=True, nullable=False, index=True)
     tier = Column(Integer, nullable=False)
 
-    timestamp_utc = Column(DateTime, nullable=False, default=datetime.utcnow)
+    timestamp_utc = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
 
     duration_ms = Column(Integer)
     gate_status = Column(String(32))
@@ -46,7 +48,7 @@ class TelemetryRecord(Base):
     oidc_actor = Column(String(256))
 
     request_id = Column(String(64))
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         Index("idx_telemetry_timestamp", "timestamp_utc"),

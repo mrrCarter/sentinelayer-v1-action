@@ -20,13 +20,25 @@ async def init_db() -> None:
     settings = get_settings()
 
     if _engine is None:
-        _engine = create_async_engine(settings.database_url, pool_pre_ping=True)
+        _engine = create_async_engine(
+            settings.database_url,
+            pool_pre_ping=True,
+            pool_size=settings.db_pool_size,
+            max_overflow=settings.db_max_overflow,
+            pool_timeout=settings.db_pool_timeout_seconds,
+        )
         _session_local = async_sessionmaker(
             _engine, expire_on_commit=False, class_=AsyncSession
         )
 
     if _timescale_engine is None:
-        _timescale_engine = create_async_engine(settings.timescale_url, pool_pre_ping=True)
+        _timescale_engine = create_async_engine(
+            settings.timescale_url,
+            pool_pre_ping=True,
+            pool_size=settings.db_pool_size,
+            max_overflow=settings.db_max_overflow,
+            pool_timeout=settings.db_pool_timeout_seconds,
+        )
         _timescale_session_local = async_sessionmaker(
             _timescale_engine, expire_on_commit=False, class_=AsyncSession
         )
