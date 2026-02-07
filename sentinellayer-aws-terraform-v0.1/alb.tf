@@ -20,8 +20,9 @@ resource "aws_lb_target_group" "api" {
     unhealthy_threshold = 3
     timeout             = 5
     interval            = 15
-    path                = "/health"
-    matcher             = "200-399"
+    # Readiness should reflect dependency health so ALB stops routing when DB is unavailable.
+    path    = "/ready"
+    matcher = "200-399"
   }
 }
 

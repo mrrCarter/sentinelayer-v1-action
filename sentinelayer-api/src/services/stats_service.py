@@ -1,4 +1,5 @@
 import json
+import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select
 import redis.asyncio as redis
@@ -7,6 +8,7 @@ from ..models.telemetry import TelemetryRecord
 from ..schemas.stats import PublicStats
 
 CACHE_TTL = 300  # 5 minutes
+logger = logging.getLogger(__name__)
 
 
 class StatsService:
@@ -16,17 +18,24 @@ class StatsService:
 
     async def get_public_stats(self) -> PublicStats:
         """Get cached public stats or compute fresh."""
-        cached = await self.cache.get("public_stats")
-        if cached:
-            return PublicStats(**json.loads(cached))
+        try:
+            cached = await self.cache.get("public_stats")
+            if cached:
+                return PublicStats(**json.loads(cached))
+        except Exception:
+            # Redis is a best-effort cache. If unavailable, compute fresh.
+            logger.warning("Stats cache unavailable; computing fresh", exc_info=True)
 
         stats = await self._compute_stats()
 
-        await self.cache.setex(
-            "public_stats",
-            CACHE_TTL,
-            json.dumps(stats.model_dump()),
-        )
+        try:
+            await self.cache.setex(
+                "public_stats",
+                CACHE_TTL,
+                json.dumps(stats.model_dump()),
+            )
+        except Exception:
+            logger.warning("Unable to write stats cache", exc_info=True)
 
         return stats
 
