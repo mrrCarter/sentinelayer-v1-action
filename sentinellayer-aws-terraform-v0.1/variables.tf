@@ -107,3 +107,63 @@ variable "rds_final_snapshot_identifier" {
   description = "Final snapshot identifier for RDS destroy when rds_skip_final_snapshot is false."
   default     = ""
 }
+
+# Cost control knobs (prod defaults are "full" mode; override in tfvars for cost-saver).
+variable "enable_nat_gateway" {
+  type        = bool
+  description = "Enable NAT gateway for private subnets (required for private-subnet ECS egress)."
+  default     = true
+}
+
+variable "enable_autoscaling" {
+  type        = bool
+  description = "Enable ECS Service autoscaling."
+  default     = true
+}
+
+variable "min_count" {
+  type        = number
+  description = "Minimum autoscaling task count."
+  default     = 1
+
+  validation {
+    condition     = var.min_count >= 0
+    error_message = "min_count must be >= 0."
+  }
+}
+
+variable "rds_instance_class" {
+  type        = string
+  description = "RDS instance class."
+  default     = "db.t4g.medium"
+}
+
+variable "rds_multi_az" {
+  type        = bool
+  description = "Enable Multi-AZ for the primary RDS instance."
+  default     = true
+}
+
+variable "rds_allocated_storage" {
+  type        = number
+  description = "Allocated RDS storage (GB). Note: RDS storage cannot be decreased in-place."
+  default     = 50
+}
+
+variable "rds_apply_immediately" {
+  type        = bool
+  description = "Apply RDS modifications immediately (may cause downtime)."
+  default     = false
+}
+
+variable "redis_node_type" {
+  type        = string
+  description = "ElastiCache Redis node type."
+  default     = "cache.t4g.micro"
+}
+
+variable "enable_rds_proxy" {
+  type        = bool
+  description = "Enable RDS Proxy (adds cost; useful for connection pooling)."
+  default     = true
+}

@@ -10,8 +10,9 @@ resource "aws_db_parameter_group" "postgres15" {
   tags   = local.tags
 
   parameter {
-    name  = "shared_preload_libraries"
-    value = "pg_stat_statements"
+    apply_method = "pending-reboot"
+    name         = "shared_preload_libraries"
+    value        = "pg_stat_statements"
   }
 }
 
@@ -19,17 +20,18 @@ resource "aws_db_instance" "postgres" {
   identifier            = "${local.name_prefix}-db"
   engine                = "postgres"
   engine_version        = "15"
-  instance_class        = "db.t4g.medium"
-  allocated_storage     = 50
+  instance_class        = var.rds_instance_class
+  allocated_storage     = var.rds_allocated_storage
   max_allocated_storage = 200
 
   db_name                     = var.db_name
   username                    = var.db_master_username
   manage_master_user_password = true
 
-  multi_az            = true
+  multi_az            = var.rds_multi_az
   publicly_accessible = false
   storage_encrypted   = true
+  apply_immediately   = var.rds_apply_immediately
 
   db_subnet_group_name   = aws_db_subnet_group.db.name
   vpc_security_group_ids = [aws_security_group.db.id]
