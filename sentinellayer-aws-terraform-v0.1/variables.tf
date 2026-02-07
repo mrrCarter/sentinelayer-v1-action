@@ -33,7 +33,7 @@ variable "route53_zone_id" {
 
 variable "api_runtime_secret_arn" {
   type        = string
-  description = "ARN of Secrets Manager secret containing JSON keys: database_url, timescale_url, github_client_id, github_client_secret, jwt_secret."
+  description = "ARN of Secrets Manager secret containing JSON keys: github_client_id, github_client_secret, jwt_secret."
 }
 
 variable "vpc_cidr" {
