@@ -12,7 +12,7 @@ output "rds_endpoint" {
 }
 
 output "rds_proxy_endpoint" {
-  value = aws_db_proxy.postgres.endpoint
+  value = try(aws_db_proxy.postgres[0].endpoint, null)
 }
 
 output "redis_endpoint" {

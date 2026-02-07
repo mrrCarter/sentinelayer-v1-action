@@ -7,7 +7,7 @@ resource "aws_elasticache_subnet_group" "redis" {
 resource "aws_elasticache_replication_group" "redis" {
   replication_group_id = "${local.name_prefix}-redis"
   description          = "SentinelLayer Redis (rate limiting + caching)"
-  node_type            = "cache.t4g.micro"
+  node_type            = var.redis_node_type
   port                 = 6379
   engine               = "redis"
   engine_version       = "7.0"
