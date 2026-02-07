@@ -66,6 +66,37 @@ resource "aws_security_group" "db" {
     security_groups = [aws_security_group.api.id]
   }
 
+  ingress {
+    description     = "Postgres from RDS proxy"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.rds_proxy.id]
+  }
+
+  egress {
+    description = "All egress"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "rds_proxy" {
+  name        = "${local.name_prefix}-rds-proxy-sg"
+  description = "RDS Proxy security group"
+  vpc_id      = module.vpc.vpc_id
+  tags        = local.tags
+
+  ingress {
+    description     = "Postgres from API tasks"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.api.id]
+  }
+
   egress {
     description = "All egress"
     from_port   = 0

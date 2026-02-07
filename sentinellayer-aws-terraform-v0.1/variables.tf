@@ -8,6 +8,11 @@ variable "environment" {
   type        = string
   description = "Environment name (e.g., dev, staging, prod)."
   default     = "prod"
+
+  validation {
+    condition     = contains(["dev", "staging", "prod"], var.environment)
+    error_message = "environment must be one of: dev, staging, prod."
+  }
 }
 
 variable "aws_region" {
@@ -24,6 +29,11 @@ variable "domain_name" {
 variable "route53_zone_id" {
   type        = string
   description = "Route53 hosted zone ID for domain_name."
+}
+
+variable "api_runtime_secret_arn" {
+  type        = string
+  description = "ARN of Secrets Manager secret containing JSON keys: database_url, timescale_url, github_client_id, github_client_secret, jwt_secret."
 }
 
 variable "vpc_cidr" {
@@ -68,24 +78,32 @@ variable "api_image_tag" {
   default     = "v0.1.0"
 }
 
-# Optional app secrets (WARNING: will be stored in TF state)
-variable "github_client_id" {
+variable "db_name" {
   type        = string
-  description = "GitHub OAuth client id."
-  default     = ""
-  sensitive   = true
+  description = "Primary DB name for Sentinelayer API."
+  default     = "sentinelayer"
 }
 
-variable "github_client_secret" {
+variable "db_master_username" {
   type        = string
-  description = "GitHub OAuth client secret."
-  default     = ""
-  sensitive   = true
+  description = "Master username for RDS PostgreSQL."
+  default     = "sentinelayer"
 }
 
-variable "jwt_secret" {
+variable "rds_deletion_protection" {
+  type        = bool
+  description = "Enable deletion protection for RDS instance."
+  default     = true
+}
+
+variable "rds_skip_final_snapshot" {
+  type        = bool
+  description = "Whether to skip final snapshot on RDS destroy."
+  default     = false
+}
+
+variable "rds_final_snapshot_identifier" {
   type        = string
-  description = "JWT secret (HS256). If empty, Terraform generates one."
+  description = "Final snapshot identifier for RDS destroy when rds_skip_final_snapshot is false."
   default     = ""
-  sensitive   = true
 }
