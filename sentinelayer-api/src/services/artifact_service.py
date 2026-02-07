@@ -1,0 +1,2 @@
+class ArtifactService:
+    pass

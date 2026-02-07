@@ -1,0 +1,2 @@
+class DeletionService:
+    pass
