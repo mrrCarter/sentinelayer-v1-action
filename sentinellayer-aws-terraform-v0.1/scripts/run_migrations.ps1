@@ -21,7 +21,15 @@ $sgs = ($awsvpc.securityGroups -join ",")
 Write-Host "Running Alembic migrations with task definition: $taskDef"
 
 $net = "awsvpcConfiguration={subnets=[$subnets],securityGroups=[$sgs],assignPublicIp=DISABLED}"
-$overrides = "{\"containerOverrides\":[{\"name\":\"$ContainerName\",\"command\":[\"alembic\",\"upgrade\",\"head\"]}]}"
+$overridesObj = @{
+  containerOverrides = @(
+    @{
+      name = $ContainerName
+      command = @("alembic", "upgrade", "head")
+    }
+  )
+}
+$overridesJson = $overridesObj | ConvertTo-Json -Depth 10 -Compress
 
 $run = aws ecs run-task `
   --cluster $Cluster `
@@ -29,7 +37,7 @@ $run = aws ecs run-task `
   --task-definition $taskDef `
   --count 1 `
   --network-configuration $net `
-  --overrides $overrides `
+  --overrides $overridesJson `
   --region $Region `
   --output json | ConvertFrom-Json
 
