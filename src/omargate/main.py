@@ -390,6 +390,10 @@ async def async_main() -> int:
                         if github_run_id
                         else None
                     )
+                    llm_model_used = "none"
+                    if analysis.llm_success and analysis.llm_usage:
+                        llm_model_used = analysis.llm_usage.get("model", config.model)
+
                     comment_body = render_pr_comment(
                         result=gate_result,
                         run_id=run_id,
@@ -409,6 +413,7 @@ async def async_main() -> int:
                         deterministic_count=analysis.deterministic_count,
                         llm_count=analysis.llm_count,
                         dedupe_key=gate_result.dedupe_key or idem_key,
+                        llm_model=llm_model_used,
                     )
                     gh.create_or_update_pr_comment(
                         ctx.pr_number,

@@ -99,6 +99,7 @@ def render_pr_comment(
     deterministic_count: int = 0,
     llm_count: int = 0,
     dedupe_key: Optional[str] = None,
+    llm_model: str = "none",
 ) -> str:
     """Render PR comment with full analysis details."""
 
@@ -162,7 +163,7 @@ def render_pr_comment(
             "",
             "---",
             "",
-            f"<sub>Omar Gate v{version} • run_id={run_id_short} • dedupe={dedupe_short} • det={deterministic_count} llm={llm_count}</sub>",
+            f"<sub>Omar Gate v{version} • run_id={run_id_short} • dedupe={dedupe_short} • det={deterministic_count} llm={llm_count} • model={llm_model}</sub>",
             "",
             marker(repo_full_name, pr_number),
         ]
