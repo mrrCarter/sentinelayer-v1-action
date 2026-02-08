@@ -9,7 +9,28 @@ inputs:
   # Required
   openai_api_key:
     description: 'OpenAI API key for LLM calls (BYO)'
-    required: true
+    required: false
+    default: ''
+
+  llm_provider:
+    description: 'LLM provider: openai, anthropic, google, xai'
+    required: false
+    default: 'openai'
+
+  anthropic_api_key:
+    description: 'Anthropic API key (required if llm_provider=anthropic)'
+    required: false
+    default: ''
+
+  google_api_key:
+    description: 'Google AI API key (required if llm_provider=google)'
+    required: false
+    default: ''
+
+  xai_api_key:
+    description: 'xAI API key (required if llm_provider=xai)'
+    required: false
+    default: ''
 
   # GitHub integration (recommended)
   github_token:

@@ -1,0 +1,77 @@
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
+
+from .base import LLMProvider, ProviderResponse
+
+
+@dataclass
+class _OpenAIUsage:
+    input_tokens: int
+    output_tokens: int
+
+
+class OpenAIProvider(LLMProvider):
+    """OpenAI Responses API provider."""
+
+    def __init__(self, api_key: str, *, client_getter: Optional[Callable[[], Any]] = None) -> None:
+        self.api_key = api_key
+        self._client_getter = client_getter
+        self._client = None
+
+    @property
+    def client(self):
+        if self._client_getter is not None:
+            return self._client_getter()
+        if self._client is None:
+            from openai import AsyncOpenAI
+
+            self._client = AsyncOpenAI(api_key=self.api_key)
+        return self._client
+
+    async def call(
+        self,
+        *,
+        model: str,
+        system: str,
+        user: str,
+        max_tokens: int,
+        temperature: float,
+        timeout: int,
+    ) -> ProviderResponse:
+        response = await asyncio.wait_for(
+            self.client.responses.create(
+                model=model,
+                instructions=system,
+                input=user,
+                max_output_tokens=max_tokens,
+                temperature=temperature,
+            ),
+            timeout=timeout,
+        )
+        usage = getattr(response, "usage", None)
+        input_tokens = int(getattr(usage, "input_tokens", 0) or 0) if usage else 0
+        output_tokens = int(getattr(usage, "output_tokens", 0) or 0) if usage else 0
+        content = getattr(response, "output_text", "") or ""
+        return ProviderResponse(
+            content=content,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            model=model,
+        )
+
+    def estimate_cost(self, model: str, tokens_in: int, tokens_out: int) -> float:
+        pricing = {
+            "gpt-5.3-codex": {"input": 0.00175, "output": 0.014},
+            "gpt-5.2-codex": {"input": 0.00175, "output": 0.014},
+            "gpt-4.1": {"input": 0.002, "output": 0.008},
+            "gpt-4.1-mini": {"input": 0.0004, "output": 0.0016},
+            "gpt-4.1-nano": {"input": 0.0001, "output": 0.0004},
+            "gpt-4o": {"input": 0.005, "output": 0.015},
+            "gpt-4o-mini": {"input": 0.00015, "output": 0.0006},
+        }
+        rates = pricing.get(model, {"input": 0.002, "output": 0.008})
+        return (tokens_in / 1000 * rates["input"]) + (tokens_out / 1000 * rates["output"])
+

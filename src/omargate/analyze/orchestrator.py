@@ -12,6 +12,7 @@ from ..logging import OmarLogger
 from ..package.fingerprint import add_fingerprints_to_findings
 from .deterministic import ConfigScanner, EngQualityScanner, PatternScanner, scan_for_secrets
 from .llm import ContextBuilder, LLMClient, PromptLoader, ResponseParser, handle_llm_failure
+from .llm.providers import detect_provider_from_model
 from .llm.response_parser import ParsedFinding
 
 
@@ -207,10 +208,22 @@ class AnalysisOrchestrator:
         """Check if LLM analysis should run."""
         if not self.allow_llm:
             return False
-        api_key = self.config.openai_api_key.get_secret_value()
-        if not api_key:
-            return False
-        return True
+        primary_provider = detect_provider_from_model(
+            self.config.model, default_provider=self.config.llm_provider
+        )
+        api_key = self._get_provider_api_key(primary_provider)
+        return bool(api_key)
+
+    def _get_provider_api_key(self, provider: str) -> str:
+        if provider == "openai":
+            return self.config.openai_api_key.get_secret_value()
+        if provider == "anthropic":
+            return self.config.anthropic_api_key.get_secret_value()
+        if provider == "google":
+            return self.config.google_api_key.get_secret_value()
+        if provider == "xai":
+            return self.config.xai_api_key.get_secret_value()
+        return ""
 
     def _run_deterministic_scans(self, ingest: dict) -> List[dict]:
         """Run all deterministic scanners."""
@@ -312,6 +325,10 @@ class AnalysisOrchestrator:
             api_key=self.config.openai_api_key.get_secret_value(),
             primary_model=self.config.model,
             fallback_model=self.config.model_fallback,
+            llm_provider=self.config.llm_provider,
+            anthropic_api_key=self.config.anthropic_api_key.get_secret_value(),
+            google_api_key=self.config.google_api_key.get_secret_value(),
+            xai_api_key=self.config.xai_api_key.get_secret_value(),
         )
 
         response = await client.analyze(
@@ -351,6 +368,7 @@ class AnalysisOrchestrator:
             success=True,
             usage={
                 "model": response.usage.model,
+                "provider": getattr(response.usage, "provider", None),
                 "tokens_in": response.usage.tokens_in,
                 "tokens_out": response.usage.tokens_out,
                 "cost_usd": response.usage.cost_usd,
