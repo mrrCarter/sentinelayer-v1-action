@@ -24,13 +24,13 @@ class LLMResponse:
 
 
 class LLMClient:
-    """OpenAI SDK wrapper with retry and fallback."""
+    """OpenAI SDK wrapper with retry and fallback (Responses API)."""
 
     def __init__(
         self,
         api_key: str,
-        primary_model: str = "gpt-4.1",
-        fallback_model: str = "gpt-4.1-mini",
+        primary_model: str = "gpt-5.2-codex",
+        fallback_model: str = "gpt-4.1",
         timeout_seconds: int = 120,
         max_retries: int = 2,
     ) -> None:
@@ -99,38 +99,33 @@ class LLMClient:
         user: str,
         max_tokens: int,
     ) -> LLMResponse:
-        """Call OpenAI with retry on transient failures."""
+        """Call OpenAI Responses API with retry on transient failures."""
         last_error: Optional[str] = None
 
         for attempt in range(self.max_retries):
             try:
                 start = time.time()
                 response = await asyncio.wait_for(
-                    self.client.chat.completions.create(
+                    self.client.responses.create(
                         model=model,
-                        messages=[
-                            {"role": "system", "content": system},
-                            {"role": "user", "content": user},
-                        ],
-                        max_tokens=max_tokens,
+                        instructions=system,
+                        input=user,
+                        max_output_tokens=max_tokens,
                         temperature=0.1,
                     ),
                     timeout=self.timeout,
                 )
                 latency_ms = int((time.time() - start) * 1000)
-                prompt_tokens = int(getattr(response.usage, "prompt_tokens", 0) or 0)
-                completion_tokens = int(getattr(response.usage, "completion_tokens", 0) or 0)
+                input_tokens = int(getattr(response.usage, "input_tokens", 0) or 0)
+                output_tokens = int(getattr(response.usage, "output_tokens", 0) or 0)
                 usage = LLMUsage(
                     model=model,
-                    tokens_in=prompt_tokens,
-                    tokens_out=completion_tokens,
-                    cost_usd=self.estimate_cost(model, prompt_tokens, completion_tokens),
+                    tokens_in=input_tokens,
+                    tokens_out=output_tokens,
+                    cost_usd=self.estimate_cost(model, input_tokens, output_tokens),
                     latency_ms=latency_ms,
                 )
-                content = ""
-                if response.choices:
-                    message = response.choices[0].message
-                    content = message.content if message else ""
+                content = getattr(response, "output_text", "") or ""
                 return LLMResponse(
                     content=content,
                     usage=usage,

@@ -67,8 +67,8 @@ Scan Settings
 | Input | Default | Description | Example |
 |---|---|---|---|
 | `scan_mode` | `pr-diff` | `pr-diff` (fast), `deep` (full repo), `nightly` (scheduled). | `deep` |
-| `model` | `gpt-4.1` | Primary OpenAI model. | `gpt-4.1` |
-| `model_fallback` | `gpt-4.1-mini` | Fallback OpenAI model. | `gpt-4.1-mini` |
+| `model` | `gpt-5.2-codex` | Primary OpenAI model (Responses API). | `gpt-5.2-codex` |
+| `model_fallback` | `gpt-4.1` | Fallback OpenAI model. | `gpt-4.1` |
 | `max_input_tokens` | `100000` | Max context budget per run (cost control). | `80000` |
 | `llm_failure_policy` | `block` | On LLM failure: `block`, `deterministic_only`, `allow_with_warning`. | `deterministic_only` |
 | `policy_pack` | `omar` | Policy pack identifier. | `omar` |
@@ -185,7 +185,7 @@ SentinelLayer dashboard: https://sentinelayer.com
 Your repository is analyzed in your GitHub runner. SentinelLayer dashboard telemetry is opt-in by tier; Tier 1 is aggregate-only, Tier 2 includes metadata, and Tier 3 can include uploaded artifacts. LLM analysis sends a bounded context to OpenAI using your `openai_api_key`.
 
 **What LLM models are used?**
-Default primary model is `gpt-4.1`, with `gpt-4.1-mini` as fallback (configurable). When Codex models (e.g. `gpt-5.2-codex`) become available via the Chat Completions API, you can override via the `model` input.
+Default primary model is `gpt-5.2-codex` (via Responses API), with `gpt-4.1` as fallback (configurable).
 
 **What about false positives?**
 SentinelLayer combines deterministic rules with LLM review and includes a `confidence` field per finding. Tune enforcement via `severity_gate`, and consider `llm_failure_policy=deterministic_only` for stricter determinism.
