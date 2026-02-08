@@ -29,7 +29,7 @@ class CodexResult:
 def _strip_code_fence(text: str) -> str:
     if not text:
         return ""
-    match = re.search(r"```(?:json|jsonl)?\\s*\\n(.*?)```", text, re.DOTALL)
+    match = re.search(r"```(?:json|jsonl)?\s*\r?\n(.*?)```", text, re.DOTALL)
     if match:
         return match.group(1).strip()
     return text.strip()
@@ -133,7 +133,7 @@ def parse_codex_findings(text: str) -> tuple[list[dict], list[str], bool]:
             continue
         findings.append(_normalize_obj(obj))
 
-    if re.search(r'"no_findings"\\s*:\\s*true', raw, re.IGNORECASE):
+    if re.search(r'"no_findings"\s*:\s*true', raw, re.IGNORECASE):
         no_findings = True
 
     return findings, errors, no_findings
@@ -303,4 +303,3 @@ class CodexRunner:
             error="Codex output was not parseable as findings JSONL",
             parse_errors=parse_errors or [],
         )
-
