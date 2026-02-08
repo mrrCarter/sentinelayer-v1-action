@@ -24,12 +24,6 @@ for name in $required_envs; do
   fi
 done
 
-# Validate required inputs
-if [ -z "${OPENAI_API_KEY:-}" ]; then
-  echo "Missing required input: openai_api_key" >&2
-  exit 2
-fi
-
 export PYTHONPATH="/app/src:${PYTHONPATH:-}"
 
 exec python -m omargate.main
