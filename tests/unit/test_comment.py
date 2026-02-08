@@ -80,3 +80,39 @@ def test_comment_contains_all_sections() -> None:
     assert "### Next Steps" in body
     assert "Top Findings" in body
     assert "run_id=run-abcd" in body
+
+
+def test_comment_footer_shows_llm_model() -> None:
+    body = render_pr_comment(
+        result=_gate_result(),
+        run_id="run-abcdef123456",
+        repo_full_name="acme/demo",
+        pr_number=42,
+        dashboard_url=None,
+        artifacts_url=None,
+        cost_usd=0.05,
+        version="1.2.0",
+        deterministic_count=10,
+        llm_count=3,
+        dedupe_key="dedupe-123456",
+        llm_model="gpt-4o",
+    )
+
+    assert "model=gpt-4o" in body
+    assert "det=10" in body
+    assert "llm=3" in body
+
+
+def test_comment_footer_default_model_none() -> None:
+    body = render_pr_comment(
+        result=_gate_result(),
+        run_id="run-abcdef123456",
+        repo_full_name="acme/demo",
+        pr_number=42,
+        dashboard_url=None,
+        artifacts_url=None,
+        cost_usd=None,
+        version="1.2.0",
+    )
+
+    assert "model=none" in body
