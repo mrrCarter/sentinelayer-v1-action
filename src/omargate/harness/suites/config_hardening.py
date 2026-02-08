@@ -50,7 +50,7 @@ class ConfigHardeningSuite(SecuritySuite):
         dockerfile = root / "Dockerfile"
         if dockerfile.is_file():
             content = read_text_best_effort(dockerfile)
-            from_count = len(re.findall(r"(?im)^\\s*from\\s+", content))
+            from_count = len(re.findall(r"(?im)^\s*from\s+", content))
             if from_count < 2:
                 findings.append(
                     Finding(
@@ -69,7 +69,7 @@ class ConfigHardeningSuite(SecuritySuite):
                     )
                 )
 
-            if re.search(r"(?im)^\\s*copy\\s+.*\\.env\\b", content):
+            if re.search(r"(?im)^\s*copy\s+.*\.env\b", content):
                 findings.append(
                     Finding(
                         id="HARNESS-DOCKER-COPY-ENV",
@@ -108,7 +108,7 @@ class ConfigHardeningSuite(SecuritySuite):
                         source="harness",
                     )
                 )
-            if re.search(r'(?is)backend\\s+\"s3\"\\s*\\{[^}]*\\}', joined) and "encrypt" not in joined:
+            if re.search(r'(?is)backend\s+"s3"\s*\{[^}]*\}', joined) and "encrypt" not in joined:
                 findings.append(
                     Finding(
                         id="HARNESS-TF-STATE-ENCRYPT",
@@ -131,7 +131,7 @@ class ConfigHardeningSuite(SecuritySuite):
         if workflows_dir.is_dir():
             for wf in list(workflows_dir.glob("*.yml")) + list(workflows_dir.glob("*.yaml")):
                 text = read_text_best_effort(wf)
-                if re.search(r"(?im)^\\s*permissions\\s*:\\s*write-all\\s*$", text):
+                if re.search(r"(?im)^\s*permissions\s*:\s*write-all\s*$", text):
                     findings.append(
                         Finding(
                             id=f"HARNESS-CICD-PERMS-{wf.name}",
@@ -150,4 +150,3 @@ class ConfigHardeningSuite(SecuritySuite):
                     )
 
         return findings
-
