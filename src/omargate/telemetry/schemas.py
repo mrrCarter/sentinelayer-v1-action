@@ -33,6 +33,7 @@ def build_tier1_payload(collector: "TelemetryCollector") -> dict:
         "scan": {
             "mode": collector.scan_mode,
             "llm_provider": collector.llm_provider,
+            # Canonical fields (v1 schema).
             "model_used": collector.model_used,
             "model_fallback_used": collector.model_fallback_used,
             "fallback_provider": collector.fallback_provider,
@@ -41,6 +42,14 @@ def build_tier1_payload(collector: "TelemetryCollector") -> dict:
             "tokens_out": collector.tokens_out,
             "cost_estimate_usd": round(collector.estimated_cost_usd, 4),
             "llm_latency_ms": collector.llm_latency_ms,
+            # Aliases to match build spec field naming (keep both for compatibility).
+            "llm_model": collector.model_used,
+            "llm_tokens_in": collector.tokens_in,
+            "llm_tokens_out": collector.tokens_out,
+            "llm_cost_usd": round(collector.estimated_cost_usd, 4),
+            "llm_fallback_used": collector.model_fallback_used,
+            "llm_fallback_provider": collector.fallback_provider,
+            "llm_fallback_model": collector.fallback_model,
             "files_scanned": collector.files_scanned,
         },
         "findings": collector.counts,
@@ -105,13 +114,23 @@ def build_tier2_payload(
             "policy_pack": policy_pack,
             "policy_pack_version": policy_pack_version,
             "llm_provider": collector.llm_provider,
+            # Canonical fields (v1 schema).
             "model_used": collector.model_used,
+            "model_fallback_used": collector.model_fallback_used,
             "tokens_in": collector.tokens_in,
             "tokens_out": collector.tokens_out,
             "cost_estimate_usd": round(collector.estimated_cost_usd, 4),
             "llm_latency_ms": collector.llm_latency_ms,
             "fallback_provider": collector.fallback_provider,
             "fallback_model": collector.fallback_model,
+            # Aliases to match build spec field naming (keep both for compatibility).
+            "llm_model": collector.model_used,
+            "llm_tokens_in": collector.tokens_in,
+            "llm_tokens_out": collector.tokens_out,
+            "llm_cost_usd": round(collector.estimated_cost_usd, 4),
+            "llm_fallback_used": collector.model_fallback_used,
+            "llm_fallback_provider": collector.fallback_provider,
+            "llm_fallback_model": collector.fallback_model,
         },
         "findings": {
             "summary": [
