@@ -62,7 +62,7 @@ inputs:
   model:
     description: 'Primary OpenAI model'
     required: false
-    default: 'gpt-5.2-codex'
+    default: 'gpt-5.2-codex'  # TODO: bump to gpt-5.3-codex when available via API
 
   model_fallback:
     description: 'Fallback OpenAI model'

@@ -5,13 +5,13 @@ from omargate.main import (
     _exit_code_from_gate_result,
     _gate_result_from_check_run,
     _latest_completed_check_run,
-    _parse_iso8601,
 )
 from omargate.models import GateStatus
+from omargate.utils import parse_iso8601
 
 
 def test_parse_iso8601_handles_z_suffix() -> None:
-    ts = _parse_iso8601("2026-02-08T05:31:22.137538Z")
+    ts = parse_iso8601("2026-02-08T05:31:22.137538Z")
     assert ts is not None
     assert ts.tzinfo is not None
 

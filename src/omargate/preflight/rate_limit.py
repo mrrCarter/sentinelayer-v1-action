@@ -6,17 +6,7 @@ from typing import Optional, Tuple
 from ..config import OmarGateConfig
 from ..github import GitHubClient
 from ..logging import OmarLogger
-
-
-def _parse_iso8601(value: Optional[str]) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        if value.endswith("Z"):
-            value = value[:-1] + "+00:00"
-        return datetime.fromisoformat(value)
-    except ValueError:
-        return None
+from ..utils import parse_iso8601
 
 
 async def check_rate_limits(
@@ -64,7 +54,7 @@ async def check_rate_limits(
 
     now = datetime.now(timezone.utc)
     completed_times = [
-        ts for ts in (_parse_iso8601(r.get("completed_at")) for r in runs) if ts
+        ts for ts in (parse_iso8601(r.get("completed_at")) for r in runs) if ts
     ]
 
     if completed_times:
