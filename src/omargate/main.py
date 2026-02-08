@@ -7,7 +7,7 @@ import re
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -42,22 +42,11 @@ from .telemetry import (
 )
 from .telemetry.schemas import build_tier1_payload, build_tier2_payload, findings_to_summary
 from .telemetry.uploader import upload_artifacts, upload_telemetry
-from .utils import ensure_writable_dir, json_dumps
+from .utils import ensure_writable_dir, json_dumps, parse_iso8601
 
 ACTION_VERSION = "1.2.0"
 ACTION_MAJOR_VERSION = "1"
 CHECK_NAME = "Omar Gate"
-
-
-def _parse_iso8601(value: Optional[str]) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        if value.endswith("Z"):
-            value = value[:-1] + "+00:00"
-        return datetime.fromisoformat(value)
-    except ValueError:
-        return None
 
 
 def _latest_completed_check_run(runs: list[dict]) -> Optional[dict]:
@@ -66,7 +55,7 @@ def _latest_completed_check_run(runs: list[dict]) -> Optional[dict]:
     for run in runs:
         if run.get("status") != "completed":
             continue
-        ts = _parse_iso8601(run.get("completed_at"))
+        ts = parse_iso8601(run.get("completed_at"))
         if not ts:
             continue
         if best_ts is None or ts > best_ts:
