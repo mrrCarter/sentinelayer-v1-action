@@ -31,7 +31,8 @@ async def check_rate_limits(
     Returns:
         (should_proceed, reason_if_blocked)
 
-    FAIL-SAFE: If GitHub API fails, return (False, "api_error_require_approval")
+    FAIL-OPEN: Rate limits are cost control. If GitHub API is unavailable (or token is missing),
+    skip enforcement and allow the scan to proceed.
     """
     if config.max_daily_scans == 0 and config.min_scan_interval_minutes == 0:
         return True, "limits_disabled"
@@ -39,15 +40,20 @@ async def check_rate_limits(
     if not pr_number:
         return True, "not_pr"
 
+    if not getattr(gh, "token", ""):
+        logger.warning("rate_limit_skip", reason="missing_github_token")
+        return True, "missing_github_token_skip_limits"
+
     try:
         pr = gh.get_pull_request(pr_number)
         head_sha = (pr.get("head") or {}).get("sha")
         if not head_sha:
-            return False, "api_error_require_approval"
+            logger.warning("rate_limit_skip", reason="missing_head_sha")
+            return True, "missing_head_sha_skip_limits"
         runs = gh.list_check_runs(head_sha, "Omar Gate")
     except Exception as exc:
-        logger.error("rate_limit_api_error", error=str(exc))
-        return False, "api_error_require_approval"
+        logger.warning("rate_limit_api_error_skip", error=str(exc))
+        return True, "api_error_skip_limits"
 
     now = datetime.now(timezone.utc)
     completed_times = [

@@ -15,7 +15,7 @@ The action is structured as a staged pipeline. Some stages are fail-closed (they
 | Stage | Purpose | Typical Output | Failure Behavior |
 |---|---|---|---|
 | Config + Context | Parse inputs and GitHub event context | (in memory) | Exit `2` on invalid config/context |
-| Preflight | Dedupe, fork policy, rate limits, cost approval | (in memory) | Exit `10/11/12/13` depending on outcome |
+| Preflight | Dedupe, fork policy, rate limits, cost approval | (in memory) | Dedupe/cooldown may short-circuit by mirroring the latest `Omar Gate` check result; fork/cost blocks exit `12/13` |
 | Ingest | Build a repo map, apply `.sentinelayerignore` | Ingest stats (in memory) | Error if ingest mapping fails |
 | Deterministic Scan | Run pattern/config/secret scanners | Finding list (in memory) | Non-fatal findings; scanner errors are handled best-effort |
 | LLM Analysis | Build context and call OpenAI | Finding list + usage | Controlled by `llm_failure_policy` |
@@ -44,14 +44,14 @@ If any of these checks fail, the gate returns `error` and blocks (fail-closed).
 ## Idempotency and Dedupe
 
 The action computes an idempotency key using stable inputs (repo, PR number, head SHA, scan mode, policy pack/version, action major version). That key is used to:
-- Skip re-analysis for identical inputs (exit `10`)
+- Skip re-analysis for identical inputs (short-circuit; mirrors prior `Omar Gate` check outcome)
 - Mark Check Runs for lookup (`external_id` on the Check Run)
 - Embed a short marker in PR comments to update the same comment on re-runs
 
 ## Rate Limiting and Cost Approval
 
 Preflight checks can prevent analysis before any scanning begins:
-- Rate limiting/cooldown returns exit `11`.
+- Rate limiting/cooldown short-circuits and mirrors the prior `Omar Gate` check outcome for that PR head SHA.
 - Cost approval requirements return exit `13` until approved.
 
 Implementation detail: rate limits are currently enforced using Check Run history for the PR head SHA. Pushing a new commit changes the head SHA and effectively resets the counters.
@@ -72,4 +72,3 @@ Practical implications:
 - The action requires `openai_api_key`, so it cannot run on fork PRs in a plain `pull_request` workflow.
 - For open source projects, prefer skipping forks and requiring maintainer-triggered review.
 - If you use `pull_request_target` to scan forks, harden your workflow to avoid executing untrusted code with secret-bearing permissions.
-
