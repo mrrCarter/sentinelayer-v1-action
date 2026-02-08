@@ -60,6 +60,11 @@ class TelemetryCollector:
     fork_blocked: bool = False
     approval_state: Optional[str] = None
 
+    # Run exit (populated even on early returns)
+    exit_code: int = 0
+    exit_reason: str = ""
+    preflight_exits: list = field(default_factory=list)
+
     # Errors
     errors: list = field(default_factory=list)
 
@@ -133,6 +138,12 @@ class TelemetryCollector:
     def record_error(self, stage: str, error: str) -> None:
         """Record an error."""
         self.errors.append({"stage": stage, "error": error})
+
+    def record_preflight_exit(self, reason: str, exit_code: int) -> None:
+        """Record an early return/short-circuit reason and exit code."""
+        self.exit_reason = reason
+        self.exit_code = int(exit_code)
+        self.preflight_exits.append({"reason": reason, "exit_code": int(exit_code)})
 
     def total_duration_ms(self) -> int:
         """Total run duration."""
