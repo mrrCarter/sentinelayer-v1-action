@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -17,7 +19,7 @@ from .gate import evaluate_gate
 from .github import GitHubClient, findings_to_annotations
 from .idempotency import compute_idempotency_key
 from .logging import OmarLogger
-from .models import GateConfig
+from .models import Counts, GateConfig, GateResult, GateStatus
 from .artifacts import write_audit_report
 from .packaging import get_run_dir, write_findings_jsonl, write_pack_summary
 from .publish import prepare_artifacts_for_upload, write_step_summary
@@ -45,6 +47,146 @@ from .utils import ensure_writable_dir, json_dumps
 ACTION_VERSION = "1.2.0"
 ACTION_MAJOR_VERSION = "1"
 CHECK_NAME = "Omar Gate"
+
+
+def _parse_iso8601(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _latest_completed_check_run(runs: list[dict]) -> Optional[dict]:
+    best: Optional[dict] = None
+    best_ts: Optional[datetime] = None
+    for run in runs:
+        if run.get("status") != "completed":
+            continue
+        ts = _parse_iso8601(run.get("completed_at"))
+        if not ts:
+            continue
+        if best_ts is None or ts > best_ts:
+            best = run
+            best_ts = ts
+    return best
+
+
+def _counts_from_summary(summary: str) -> Counts:
+    def _extract(sev: str) -> int:
+        m = re.search(rf"\b{re.escape(sev)}=(\d+)\b", summary)
+        return int(m.group(1)) if m else 0
+
+    return Counts(
+        p0=_extract("P0"),
+        p1=_extract("P1"),
+        p2=_extract("P2"),
+        p3=_extract("P3"),
+    )
+
+
+def _gate_result_from_check_run(run: dict, fallback_reason: str, extra_note: str) -> GateResult:
+    conclusion = str(run.get("conclusion") or "").lower()
+    output = run.get("output") or {}
+    summary = str(output.get("summary") or "")
+    text = str(output.get("text") or "")
+
+    counts = _counts_from_summary(summary)
+    reason = (text.strip() or summary.strip() or fallback_reason).strip()
+    if extra_note:
+        reason = f"{reason} | {extra_note}"
+
+    if conclusion == "success":
+        status = GateStatus.PASSED
+    elif conclusion == "neutral":
+        status = GateStatus.BYPASSED
+    elif conclusion == "action_required":
+        status = GateStatus.NEEDS_APPROVAL
+    elif conclusion == "failure":
+        # Could be a real gate block or an internal error; either way we must block merge.
+        status = GateStatus.BLOCKED
+    else:
+        status = GateStatus.ERROR
+        if not reason:
+            reason = f"Unable to resolve prior Omar Gate conclusion ({conclusion or 'unknown'})."
+
+    block_merge = status in {GateStatus.BLOCKED, GateStatus.ERROR, GateStatus.NEEDS_APPROVAL}
+    return GateResult(
+        status=status,
+        reason=reason,
+        block_merge=block_merge,
+        counts=counts,
+        dedupe_key=str(run.get("external_id") or ""),
+    )
+
+
+def _exit_code_from_gate_result(result: GateResult) -> int:
+    if result.status == GateStatus.NEEDS_APPROVAL:
+        return 13
+    return 1 if result.block_merge else 0
+
+
+class _PreflightAnalysis:
+    """Minimal analysis-like object for writing GitHub outputs on preflight short-circuits."""
+
+    def __init__(self, counts: Counts) -> None:
+        self.counts = {"P0": counts.p0, "P1": counts.p1, "P2": counts.p2, "P3": counts.p3}
+        self.llm_usage = None
+
+
+def _write_preflight_artifacts(
+    run_dir: Path,
+    run_id: str,
+    gate_result: GateResult,
+    config: OmarGateConfig,
+    idem_key: str,
+    skip_label: str,
+    link_url: Optional[str],
+) -> tuple[Path, Path]:
+    # Ensure the output run directory exists so upload-artifact steps don't break on skips.
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    findings_path = run_dir / "FINDINGS.jsonl"
+    if not findings_path.exists():
+        findings_path.write_text("", encoding="utf-8")
+
+    counts = {
+        "P0": int(gate_result.counts.p0),
+        "P1": int(gate_result.counts.p1),
+        "P2": int(gate_result.counts.p2),
+        "P3": int(gate_result.counts.p3),
+    }
+    pack_summary_path = write_pack_summary(
+        run_dir=run_dir,
+        run_id=run_id,
+        writer_complete=True,
+        findings_path=findings_path,
+        counts=counts,
+        tool_versions={
+            "action": ACTION_VERSION,
+            "policy_pack": config.policy_pack_version,
+        },
+        stages_completed=["preflight"],
+        review_brief_path=None,
+        error=f"preflight_short_circuit:{skip_label}",
+        fingerprint_count=None,
+        dedupe_key=idem_key,
+        policy_pack=config.policy_pack,
+        policy_pack_version=config.policy_pack_version,
+        duration_ms=0,
+    )
+
+    skip_md = run_dir / "SKIP.md"
+    url_line = f"\n\nLink: {link_url}\n" if link_url else "\n"
+    skip_md.write_text(
+        f"# Omar Gate Short-Circuit\n\nReason: {skip_label}\n{url_line}",
+        encoding="utf-8",
+    )
+
+    return findings_path, pack_summary_path
 
 
 def main() -> int:
@@ -119,7 +261,54 @@ async def async_main() -> int:
                 collector.dedupe_skipped = True
                 preflight_success = False
                 logger.info("Skipping - already analyzed", existing_url=existing_url)
-                return 10
+
+                try:
+                    runs = gh.list_check_runs(ctx.head_sha, CHECK_NAME) if gh.token else []
+                    run = gh.find_check_run_by_external_id(ctx.head_sha, idem_key, CHECK_NAME) if gh.token else None
+                    if not run:
+                        # Fallback to marker parsing in output fields if external_id was not set.
+                        for candidate in runs:
+                            output = candidate.get("output") or {}
+                            summary = output.get("summary") or ""
+                            text = output.get("text") or ""
+                            if idem_key in summary or idem_key in text:
+                                run = candidate
+                                break
+                    if not run:
+                        raise RuntimeError("Unable to resolve prior Omar Gate check run for dedupe short-circuit")
+
+                    note = f"Deduped (already analyzed). See: {existing_url or run.get('html_url') or ''}".strip()
+                    gate_result = _gate_result_from_check_run(run, fallback_reason="Deduped", extra_note=note)
+
+                    findings_path, pack_summary_path = _write_preflight_artifacts(
+                        run_dir=run_dir,
+                        run_id=run_id,
+                        gate_result=gate_result,
+                        config=config,
+                        idem_key=idem_key,
+                        skip_label="dedupe",
+                        link_url=existing_url or run.get("html_url") or run.get("details_url"),
+                    )
+
+                    write_step_summary(
+                        gate_result=gate_result,
+                        summary={},
+                        findings=[],
+                        run_id=run_id,
+                        version=ACTION_VERSION,
+                    )
+                    _write_github_outputs(
+                        run_id=run_id,
+                        gate_result=gate_result,
+                        analysis=_PreflightAnalysis(gate_result.counts),
+                        idem_key=idem_key,
+                        findings_path=findings_path,
+                        pack_summary_path=pack_summary_path,
+                    )
+                    return _exit_code_from_gate_result(gate_result)
+                except Exception as exc:
+                    print(f"::error::Dedupe short-circuit failed: {exc}")
+                    return 2
 
             proceed, scan_mode_override, fork_reason = check_fork_policy(ctx, config)
             if not proceed:
@@ -147,7 +336,48 @@ async def async_main() -> int:
                 collector.rate_limit_skipped = True
                 preflight_success = False
                 logger.info("Rate limited", reason=rate_reason)
-                return 11
+                try:
+                    if not gh.token:
+                        raise RuntimeError("GitHub token missing; cannot resolve previous check run outcome")
+
+                    runs = gh.list_check_runs(ctx.head_sha, CHECK_NAME)
+                    run = _latest_completed_check_run(runs) or (runs[0] if runs else None)
+                    if not run:
+                        raise RuntimeError("No prior Omar Gate check runs found to mirror during rate-limit short-circuit")
+
+                    link = run.get("html_url") or run.get("details_url")
+                    note = f"Rate limited ({rate_reason}). Mirroring latest Omar Gate result. See: {link or ''}".strip()
+                    gate_result = _gate_result_from_check_run(run, fallback_reason="Rate limited", extra_note=note)
+
+                    findings_path, pack_summary_path = _write_preflight_artifacts(
+                        run_dir=run_dir,
+                        run_id=run_id,
+                        gate_result=gate_result,
+                        config=config,
+                        idem_key=idem_key,
+                        skip_label=f"rate_limit:{rate_reason}",
+                        link_url=link,
+                    )
+
+                    write_step_summary(
+                        gate_result=gate_result,
+                        summary={},
+                        findings=[],
+                        run_id=run_id,
+                        version=ACTION_VERSION,
+                    )
+                    _write_github_outputs(
+                        run_id=run_id,
+                        gate_result=gate_result,
+                        analysis=_PreflightAnalysis(gate_result.counts),
+                        idem_key=idem_key,
+                        findings_path=findings_path,
+                        pack_summary_path=pack_summary_path,
+                    )
+                    return _exit_code_from_gate_result(gate_result)
+                except Exception as exc:
+                    print(f"::error::Rate-limit short-circuit failed: {exc}")
+                    return 2
 
             approved, cost_status = await check_cost_approval(
                 estimated_cost, config, ctx, gh

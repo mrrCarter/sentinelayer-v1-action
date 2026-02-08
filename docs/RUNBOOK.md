@@ -17,10 +17,11 @@ This runbook is for responders and maintainers who need to debug SentinelLayer r
 | `0` | Passed | No action required. |
 | `1` | Blocked by severity gate | Fix blocking findings or adjust `severity_gate` per policy. |
 | `2` | Configuration/context error | Fix missing/invalid inputs or missing GitHub context. |
-| `10` | Dedupe skip | Confirm whether a re-scan is expected; if yes, change inputs that affect idempotency (or push a new commit). |
-| `11` | Rate limited / cooldown | Wait, or adjust `min_scan_interval_minutes` / `max_daily_scans`. |
 | `12` | Fork blocked | Use fork-safe workflow patterns or skip fork PRs. |
 | `13` | Cost approval required | Add approval label, re-run via approved trigger, or raise the threshold. |
+
+Notes:
+- On dedupe or cooldown, the action short-circuits and mirrors the most recent `Omar Gate` check run result for the same PR head SHA. It does **not** fail the workflow just because it skipped; it exits `0`/`1`/`13` based on that prior result.
 
 ## Where Artifacts Live
 
@@ -51,17 +52,17 @@ If you want artifacts preserved outside the runner, add an upload step:
 1. Read the PR comment summary (severity counts, top findings).
 2. Open `REVIEW_BRIEF.md` and `AUDIT_REPORT.md` for full context.
 3. Fix the findings and push a commit.
-4. Re-run the workflow. If the run is deduped unexpectedly (exit `10`), confirm the head SHA changed.
+4. Re-run the workflow. If the run is deduped unexpectedly, confirm the head SHA changed.
 
-### Dedupe skip (exit `10`)
+### Dedupe short-circuit (already analyzed)
 
-Dedupe means the same PR head SHA and the same idempotency inputs were already analyzed successfully.
+Dedupe means the same PR head SHA and the same idempotency inputs were already analyzed. The action mirrors the prior `Omar Gate` check run result.
 
 Actions:
 - If you expected a different result, verify that the workflow is running on the latest commit SHA.
 - If you intentionally want to force re-analysis without code changes, change an idempotency input (for example `scan_mode`, `policy_pack_version`). Do this only if you understand the operational impact.
 
-### Rate limited / cooldown (exit `11`)
+### Rate limited / cooldown
 
 1. Check whether reruns were triggered repeatedly (manual reruns, bot retriggers).
 2. Adjust rate limit settings if needed:
@@ -129,4 +130,3 @@ Actions:
 - LLM analysis sends a bounded code context to OpenAI using your `openai_api_key`.
 - SentinelLayer dashboard uploads are opt-in; Tier 3 artifact uploads may include redacted snippets.
 - Treat PRs from forks as untrusted. Prefer skip-forks by default unless you have a hardened `pull_request_target` workflow.
-
