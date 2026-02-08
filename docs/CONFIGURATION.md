@@ -44,6 +44,7 @@ Cost Control
 |---|---|---|---|
 | `max_daily_scans` | int | `20` | Rate limit: cap check-run executions per PR head SHA per 24 hours. |
 | `min_scan_interval_minutes` | int | `5` | Rate limit: cooldown between scans per PR head SHA. |
+| `rate_limit_fail_mode` | string | `closed` | On GitHub API errors during rate limit enforcement: `closed` (require approval) or `open` (skip enforcement and proceed). |
 | `require_cost_confirmation` | float | `5.00` | If estimated cost exceeds this USD threshold, require approval. |
 | `approval_mode` | string | `pr_label` | `pr_label`, `workflow_dispatch`, `none`. |
 | `approval_label` | string | `sentinelayer:approved` | PR label that approves high-cost scans (when `approval_mode=pr_label`). |
@@ -241,6 +242,19 @@ Disable limits:
 with:
   max_daily_scans: 0
   min_scan_interval_minutes: 0
+```
+
+### `rate_limit_fail_mode`
+
+If the action cannot enforce rate limits due to GitHub API errors, it can either:
+- `closed` (default): require approval (fail-closed)
+- `open`: skip enforcement and proceed (cost-risky)
+
+Example:
+
+```yaml
+with:
+  rate_limit_fail_mode: open
 ```
 
 ### `require_cost_confirmation`, `approval_mode`, `approval_label`

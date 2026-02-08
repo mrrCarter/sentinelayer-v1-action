@@ -3,7 +3,14 @@ from __future__ import annotations
 from pydantic import Field, SecretStr, conint, confloat, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .models import ApprovalMode, ForkPolicy, LLMFailurePolicy, ScanMode, SeverityGate
+from .models import (
+    ApprovalMode,
+    ForkPolicy,
+    LLMFailurePolicy,
+    RateLimitFailMode,
+    ScanMode,
+    SeverityGate,
+)
 
 
 class OmarGateConfig(BaseSettings):
@@ -54,6 +61,10 @@ class OmarGateConfig(BaseSettings):
     # Rate limiting / cost control
     max_daily_scans: conint(ge=0) = Field(default=20)
     min_scan_interval_minutes: conint(ge=0) = Field(default=5)
+    rate_limit_fail_mode: RateLimitFailMode = Field(
+        default="closed",
+        description="On GitHub API errors during rate limit enforcement: open or closed",
+    )
     max_input_tokens: conint(ge=0) = Field(default=100000)
     require_cost_confirmation: confloat(ge=0) = Field(default=5.00)
     approval_mode: ApprovalMode = Field(default="pr_label")
@@ -86,6 +97,7 @@ class OmarGateConfig(BaseSettings):
         "llm_failure_policy",
         "approval_mode",
         "fork_policy",
+        "rate_limit_fail_mode",
         mode="before",
     )
     @classmethod

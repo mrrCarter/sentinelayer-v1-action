@@ -18,7 +18,7 @@ This runbook is for responders and maintainers who need to debug SentinelLayer r
 | `1` | Blocked by severity gate | Fix blocking findings or adjust `severity_gate` per policy. |
 | `2` | Configuration/context error | Fix missing/invalid inputs or missing GitHub context. |
 | `12` | Fork blocked | Use fork-safe workflow patterns or skip fork PRs. |
-| `13` | Cost approval required | Add approval label, re-run via approved trigger, or raise the threshold. |
+| `13` | Approval required | Add approval label, re-run via approved trigger, or raise the threshold. |
 
 Notes:
 - On dedupe or cooldown, the action short-circuits and mirrors the most recent `Omar Gate` check run result for the same PR head SHA. It does **not** fail the workflow just because it skipped; it exits `0`/`1`/`13` based on that prior result.
@@ -73,6 +73,8 @@ with:
   max_daily_scans: 0
 ```
 
+If you see an approval-required message due to GitHub API errors during rate-limit enforcement, either re-run when GitHub recovers or set `rate_limit_fail_mode: open` to skip enforcement.
+
 Implementation note: rate limits are enforced via Check Run history for the PR head SHA. A new commit SHA resets the counters.
 
 ### Fork blocked (exit `12`) and open source repos
@@ -84,11 +86,12 @@ Recommended responses:
 - Skip forks using `if: github.event.pull_request.head.repo.fork == false`.
 - If you must scan forks, use `pull_request_target` with strict workflow hardening (see `docs/EXAMPLES.md`).
 
-### Cost approval required (exit `13`)
+### Approval required (exit `13`)
 
 Typical triggers:
 - Large diffs or large repositories increase context and estimated tokens.
 - Lowering `require_cost_confirmation` can make approvals more frequent.
+- Rate limit enforcement could not be performed (GitHub API error) when `rate_limit_fail_mode=closed`.
 
 Actions:
 - Add the approval label to the PR (default: `sentinelayer:approved`), or
