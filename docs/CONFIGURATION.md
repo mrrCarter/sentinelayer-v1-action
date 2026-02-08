@@ -23,7 +23,7 @@ Scan Settings
 | `scan_mode` | string | `pr-diff` | `pr-diff`, `deep`, or `nightly`. |
 | `policy_pack` | string | `omar` | Policy pack identifier. |
 | `policy_pack_version` | string | `v1` | Policy pack version identifier. |
-| `model` | string | `gpt-5.3-codex` | Primary OpenAI model. |
+| `model` | string | `gpt-5.2-codex` | Primary OpenAI model. |
 | `model_fallback` | string | `gpt-4.1` | Fallback OpenAI model. |
 | `max_input_tokens` | int | `100000` | Maximum LLM context budget (cost control). |
 | `llm_failure_policy` | string | `block` | `block`, `deterministic_only`, or `allow_with_warning`. |
@@ -153,7 +153,7 @@ Example:
 
 ```yaml
 with:
-  model: gpt-5.3-codex
+  model: gpt-5.2-codex
   model_fallback: gpt-4.1
 ```
 
