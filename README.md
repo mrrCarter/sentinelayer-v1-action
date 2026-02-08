@@ -157,10 +157,12 @@ Exit codes:
 |---:|---|
 | `0` | Passed |
 | `1` | Blocked |
-| `10` | Dedupe (already analyzed) |
-| `11` | Rate limited |
+| `2` | Configuration/context error |
 | `12` | Fork blocked |
 | `13` | Cost approval needed |
+
+Notes:
+- On dedupe or cooldown, the action short-circuits and mirrors the most recent `Omar Gate` check run result for the same PR head SHA (so it still exits `0`/`1`/`13` instead of failing the workflow just because it skipped).
 
 ## PR Comment Screenshot Placeholder
 
