@@ -53,7 +53,7 @@ class HttpSecurityHeadersSuite(SecuritySuite):
             for marker in _HEADER_MARKERS:
                 if marker in text:
                     found_markers.add(marker)
-            if re.search(r"\\bhelmet\\s*\\(", text):
+            if re.search(r"\bhelmet\s*\(", text):
                 found_helmet = True
 
         # Heuristic: if we see explicit header markers or helmet, assume header hardening exists.
@@ -76,4 +76,3 @@ class HttpSecurityHeadersSuite(SecuritySuite):
                 source="harness",
             )
         ]
-
