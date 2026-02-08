@@ -29,8 +29,8 @@ class LLMClient:
     def __init__(
         self,
         api_key: str,
-        primary_model: str = "gpt-5.2-codex",
-        fallback_model: str = "gpt-4.1",
+        primary_model: str = "gpt-4.1",
+        fallback_model: str = "gpt-4.1-mini",
         timeout_seconds: int = 120,
         max_retries: int = 2,
     ) -> None:
