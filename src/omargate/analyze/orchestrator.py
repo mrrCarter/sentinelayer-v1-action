@@ -11,6 +11,7 @@ from ..ingest import QuickLearnSummary, extract_quick_learn_summary, run_ingest
 from ..harness import HarnessRunner
 from ..logging import OmarLogger
 from ..package.fingerprint import add_fingerprints_to_findings
+from .codex import CodexPromptBuilder, CodexRunner
 from .deterministic import ConfigScanner, EngQualityScanner, PatternScanner, scan_for_secrets
 from .llm import ContextBuilder, LLMClient, PromptLoader, ResponseParser, handle_llm_failure
 from .llm.providers import detect_provider_from_model
@@ -150,12 +151,33 @@ class AnalysisOrchestrator:
                 findings_count=len(det_findings),
             )
 
-        # Step 4-5: LLM analysis (skip if no API key or limited mode)
+        # Step 4-5: Codex audit (optional) and/or LLM analysis
         llm_findings: List[dict] = []
         llm_success = False
         llm_usage: Optional[dict] = None
 
-        if self._should_run_llm():
+        ran_codex = False
+        if self.allow_llm and self.config.use_codex:
+            ran_codex = True
+            with self.logger.stage("codex_audit"):
+                codex_findings, codex_success, codex_warning = await self._run_codex_audit(
+                    ingest=ingest,
+                    deterministic_findings=det_findings,
+                    quick_learn=quick_learn,
+                    scan_mode=scan_mode,
+                    diff_content=diff_content,
+                )
+                llm_findings = codex_findings
+                llm_success = codex_success
+                if codex_warning:
+                    warnings.append(codex_warning)
+                self.logger.info(
+                    "Codex audit complete",
+                    success=llm_success,
+                    findings_count=len(llm_findings),
+                )
+
+        if (not ran_codex or not llm_success) and self._should_run_llm():
             with self.logger.stage("llm_analysis"):
                 llm_result = await self._run_llm_analysis(
                     ingest=ingest,
@@ -177,7 +199,7 @@ class AnalysisOrchestrator:
                     success=llm_success,
                     findings_count=len(llm_findings),
                 )
-        else:
+        elif not ran_codex:
             warnings.append("LLM analysis skipped (no API key or limited mode)")
 
         # Step 6: Merge findings
@@ -402,6 +424,63 @@ class AnalysisOrchestrator:
             else None,
             warning=None,
         )
+
+    async def _run_codex_audit(
+        self,
+        *,
+        ingest: dict,
+        deterministic_findings: List[dict],
+        quick_learn: Optional[QuickLearnSummary],
+        scan_mode: str,
+        diff_content: Optional[str],
+    ) -> tuple[List[dict], bool, Optional[str]]:
+        """
+        Run Codex CLI agentic audit and parse JSONL findings.
+
+        Returns: (findings, success, warning_message)
+        """
+        api_key = self.config.openai_api_key.get_secret_value()
+        if not api_key:
+            return [], False, "Codex skipped (missing openai_api_key)"
+
+        tech_stack = quick_learn.tech_stack if quick_learn else []
+        hotspots = self._flatten_hotspots(ingest.get("hotspots", {}) or {})
+
+        builder = CodexPromptBuilder(max_tokens=self.config.max_input_tokens)
+        built = builder.build_prompt(
+            repo_root=self.repo_root,
+            quick_learn=quick_learn,
+            deterministic_findings=deterministic_findings,
+            tech_stack=tech_stack,
+            scan_mode=scan_mode,
+            diff_content=diff_content,
+            hotspot_files=hotspots,
+        )
+
+        runner = CodexRunner(api_key=api_key, model=self.config.codex_model)
+        result = await runner.run_audit(
+            prompt=built.prompt,
+            working_dir=str(self.repo_root),
+            sandbox="read-only",
+            timeout=int(self.config.codex_timeout),
+        )
+        if not result.success:
+            warn = result.error or "Codex audit failed"
+            return [], False, f"Codex audit failed ({warn}). Falling back to LLM analysis."
+        return result.findings, True, None
+
+    def _flatten_hotspots(self, hotspots: dict) -> List[str]:
+        files: List[str] = []
+        seen = set()
+        for group in hotspots.values():
+            if not isinstance(group, list):
+                continue
+            for rel_path in group:
+                if not rel_path or rel_path in seen:
+                    continue
+                seen.add(rel_path)
+                files.append(rel_path)
+        return files
 
     def _merge_findings(self, deterministic: List[dict], llm: List[dict]) -> List[dict]:
         """Merge findings, dedupe by file+line+category."""
