@@ -31,8 +31,11 @@ async def check_rate_limits(
     Returns:
         (should_proceed, reason_if_blocked)
 
-    FAIL-OPEN: Rate limits are cost control. If GitHub API is unavailable (or token is missing),
-    skip enforcement and allow the scan to proceed.
+    FAIL MODE (GitHub API errors):
+    - rate_limit_fail_mode=open: skip enforcement and allow the scan to proceed (cost-risky, but avoids blocking).
+    - rate_limit_fail_mode=closed: require approval (fail-closed) when enforcement cannot be performed.
+
+    Missing token is treated as unenforceable: enforcement is skipped (with a warning).
     """
     if config.max_daily_scans == 0 and config.min_scan_interval_minutes == 0:
         return True, "limits_disabled"
@@ -44,16 +47,20 @@ async def check_rate_limits(
         logger.warning("rate_limit_skip", reason="missing_github_token")
         return True, "missing_github_token_skip_limits"
 
+    def _on_api_error(reason: str, error: Optional[str] = None) -> Tuple[bool, str]:
+        logger.warning("rate_limit_api_error", reason=reason, error=error or "")
+        if config.rate_limit_fail_mode == "open":
+            return True, "api_error_skip_limits"
+        return False, "api_error_require_approval"
+
     try:
         pr = gh.get_pull_request(pr_number)
         head_sha = (pr.get("head") or {}).get("sha")
         if not head_sha:
-            logger.warning("rate_limit_skip", reason="missing_head_sha")
-            return True, "missing_head_sha_skip_limits"
+            return _on_api_error("missing_head_sha")
         runs = gh.list_check_runs(head_sha, "Omar Gate")
     except Exception as exc:
-        logger.warning("rate_limit_api_error_skip", error=str(exc))
-        return True, "api_error_skip_limits"
+        return _on_api_error("exception", error=str(exc))
 
     now = datetime.now(timezone.utc)
     completed_times = [
