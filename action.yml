@@ -85,6 +85,11 @@ inputs:
     required: false
     default: '5'
 
+  rate_limit_fail_mode:
+    description: "On GitHub API errors during rate limit enforcement: 'closed' (require approval) or 'open' (skip enforcement and proceed)"
+    required: false
+    default: 'closed'
+
   max_input_tokens:
     description: 'Maximum input tokens per scan (cost control)'
     required: false

@@ -88,14 +88,47 @@ def _counts_from_summary(summary: str) -> Counts:
     )
 
 
+def _counts_from_check_run_output(summary: str, text: str) -> Counts:
+    """
+    Prefer a machine-readable marker embedded in Check Run output.text, then fall back to parsing output.summary.
+
+    Marker format:
+      <!-- sentinelayer:counts:{"P0":0,"P1":0,"P2":0,"P3":0} -->
+    """
+    try:
+        m = re.search(
+            r"<!--\s*sentinelayer:counts:(\{.*?\})\s*-->",
+            text or "",
+            flags=re.DOTALL,
+        )
+        if m:
+            payload = json.loads(m.group(1))
+            return Counts(
+                p0=int(payload.get("P0", 0) or 0),
+                p1=int(payload.get("P1", 0) or 0),
+                p2=int(payload.get("P2", 0) or 0),
+                p3=int(payload.get("P3", 0) or 0),
+            )
+    except Exception:
+        pass
+
+    return _counts_from_summary(summary or "")
+
+
 def _gate_result_from_check_run(run: dict, fallback_reason: str, extra_note: str) -> GateResult:
     conclusion = str(run.get("conclusion") or "").lower()
     output = run.get("output") or {}
     summary = str(output.get("summary") or "")
     text = str(output.get("text") or "")
 
-    counts = _counts_from_summary(summary)
-    reason = (text.strip() or summary.strip() or fallback_reason).strip()
+    counts = _counts_from_check_run_output(summary=summary, text=text)
+    cleaned_text = re.sub(
+        r"<!--\s*sentinelayer:counts:(\{.*?\})\s*-->",
+        "",
+        text,
+        flags=re.DOTALL,
+    ).strip()
+    reason = (cleaned_text or summary.strip() or fallback_reason).strip()
     if extra_note:
         reason = f"{reason} | {extra_note}"
 
@@ -129,12 +162,117 @@ def _exit_code_from_gate_result(result: GateResult) -> int:
     return 1 if result.block_merge else 0
 
 
-class _PreflightAnalysis:
-    """Minimal analysis-like object for writing GitHub outputs on preflight short-circuits."""
+def _short_circuit_with_gate_result(
+    *,
+    run_dir: Path,
+    run_id: str,
+    gate_result: GateResult,
+    config: OmarGateConfig,
+    idem_key: str,
+    skip_label: str,
+    link_url: Optional[str],
+    estimated_cost_usd: float = 0.0,
+) -> int:
+    findings_path, pack_summary_path = _write_preflight_artifacts(
+        run_dir=run_dir,
+        run_id=run_id,
+        gate_result=gate_result,
+        config=config,
+        idem_key=idem_key,
+        skip_label=skip_label,
+        link_url=link_url,
+    )
 
-    def __init__(self, counts: Counts) -> None:
-        self.counts = {"P0": counts.p0, "P1": counts.p1, "P2": counts.p2, "P3": counts.p3}
-        self.llm_usage = None
+    write_step_summary(
+        gate_result=gate_result,
+        summary={},
+        findings=[],
+        run_id=run_id,
+        version=ACTION_VERSION,
+    )
+    _write_github_outputs(
+        run_id=run_id,
+        gate_result=gate_result,
+        idem_key=idem_key,
+        findings_path=findings_path,
+        pack_summary_path=pack_summary_path,
+        estimated_cost_usd=estimated_cost_usd,
+    )
+
+    return _exit_code_from_gate_result(gate_result)
+
+
+def _find_check_run_by_external_id(runs: list[dict], external_id: str) -> Optional[dict]:
+    for run in runs:
+        if run.get("external_id") == external_id:
+            return run
+    return None
+
+
+def _find_check_run_by_marker(runs: list[dict], marker: str) -> Optional[dict]:
+    for candidate in runs:
+        output = candidate.get("output") or {}
+        summary = output.get("summary") or ""
+        text = output.get("text") or ""
+        if marker in summary or marker in text:
+            return candidate
+    return None
+
+
+def _select_check_run_for_dedupe(runs: list[dict], idem_key: str) -> Optional[dict]:
+    return _find_check_run_by_external_id(runs, idem_key) or _find_check_run_by_marker(
+        runs, idem_key
+    )
+
+
+def _select_check_run_for_mirror(runs: list[dict]) -> Optional[dict]:
+    return _latest_completed_check_run(runs) or (runs[0] if runs else None)
+
+
+def _short_circuit_mirror_prior_check_run(
+    *,
+    gh: GitHubClient,
+    head_sha: str,
+    idem_key: str,
+    check_name: str,
+    select: str,  # "dedupe" or "latest"
+    fallback_reason: str,
+    note_prefix: str,
+    run_dir: Path,
+    run_id: str,
+    config: OmarGateConfig,
+    skip_label: str,
+    explicit_url: Optional[str] = None,
+) -> int:
+    if not gh.token:
+        raise RuntimeError("GitHub token missing; cannot resolve prior check run outcome")
+
+    runs = gh.list_check_runs(head_sha, check_name)
+    if select == "dedupe":
+        run = _select_check_run_for_dedupe(runs, idem_key)
+    else:
+        run = _select_check_run_for_mirror(runs)
+
+    if not run:
+        raise RuntimeError("Unable to resolve a prior Omar Gate check run to mirror")
+
+    link_url = explicit_url or run.get("html_url") or run.get("details_url")
+    note = note_prefix + (f" See: {link_url}" if link_url else "")
+    gate_result = _gate_result_from_check_run(
+        run,
+        fallback_reason=fallback_reason,
+        extra_note=note,
+    )
+
+    return _short_circuit_with_gate_result(
+        run_dir=run_dir,
+        run_id=run_id,
+        gate_result=gate_result,
+        config=config,
+        idem_key=idem_key,
+        skip_label=skip_label,
+        link_url=link_url,
+    )
 
 
 def _write_preflight_artifacts(
@@ -263,49 +401,20 @@ async def async_main() -> int:
                 logger.info("Skipping - already analyzed", existing_url=existing_url)
 
                 try:
-                    runs = gh.list_check_runs(ctx.head_sha, CHECK_NAME) if gh.token else []
-                    run = gh.find_check_run_by_external_id(ctx.head_sha, idem_key, CHECK_NAME) if gh.token else None
-                    if not run:
-                        # Fallback to marker parsing in output fields if external_id was not set.
-                        for candidate in runs:
-                            output = candidate.get("output") or {}
-                            summary = output.get("summary") or ""
-                            text = output.get("text") or ""
-                            if idem_key in summary or idem_key in text:
-                                run = candidate
-                                break
-                    if not run:
-                        raise RuntimeError("Unable to resolve prior Omar Gate check run for dedupe short-circuit")
-
-                    note = f"Deduped (already analyzed). See: {existing_url or run.get('html_url') or ''}".strip()
-                    gate_result = _gate_result_from_check_run(run, fallback_reason="Deduped", extra_note=note)
-
-                    findings_path, pack_summary_path = _write_preflight_artifacts(
+                    return _short_circuit_mirror_prior_check_run(
+                        gh=gh,
+                        head_sha=ctx.head_sha,
+                        idem_key=idem_key,
+                        check_name=CHECK_NAME,
+                        select="dedupe",
+                        fallback_reason="Deduped",
+                        note_prefix="Deduped (already analyzed). Mirroring prior Omar Gate result.",
                         run_dir=run_dir,
                         run_id=run_id,
-                        gate_result=gate_result,
                         config=config,
-                        idem_key=idem_key,
                         skip_label="dedupe",
-                        link_url=existing_url or run.get("html_url") or run.get("details_url"),
+                        explicit_url=existing_url,
                     )
-
-                    write_step_summary(
-                        gate_result=gate_result,
-                        summary={},
-                        findings=[],
-                        run_id=run_id,
-                        version=ACTION_VERSION,
-                    )
-                    _write_github_outputs(
-                        run_id=run_id,
-                        gate_result=gate_result,
-                        analysis=_PreflightAnalysis(gate_result.counts),
-                        idem_key=idem_key,
-                        findings_path=findings_path,
-                        pack_summary_path=pack_summary_path,
-                    )
-                    return _exit_code_from_gate_result(gate_result)
                 except Exception as exc:
                     print(f"::error::Dedupe short-circuit failed: {exc}")
                     return 2
@@ -336,45 +445,42 @@ async def async_main() -> int:
                 collector.rate_limit_skipped = True
                 preflight_success = False
                 logger.info("Rate limited", reason=rate_reason)
-                try:
-                    if not gh.token:
-                        raise RuntimeError("GitHub token missing; cannot resolve previous check run outcome")
-
-                    runs = gh.list_check_runs(ctx.head_sha, CHECK_NAME)
-                    run = _latest_completed_check_run(runs) or (runs[0] if runs else None)
-                    if not run:
-                        raise RuntimeError("No prior Omar Gate check runs found to mirror during rate-limit short-circuit")
-
-                    link = run.get("html_url") or run.get("details_url")
-                    note = f"Rate limited ({rate_reason}). Mirroring latest Omar Gate result. See: {link or ''}".strip()
-                    gate_result = _gate_result_from_check_run(run, fallback_reason="Rate limited", extra_note=note)
-
-                    findings_path, pack_summary_path = _write_preflight_artifacts(
+                if rate_reason == "api_error_require_approval":
+                    gate_result = GateResult(
+                        status=GateStatus.NEEDS_APPROVAL,
+                        reason=(
+                            "Rate limit enforcement unavailable due to GitHub API error; "
+                            "approval required to proceed. "
+                            "Set rate_limit_fail_mode=open to skip enforcement."
+                        ),
+                        block_merge=True,
+                        counts=Counts(),
+                        dedupe_key=idem_key,
+                    )
+                    return _short_circuit_with_gate_result(
                         run_dir=run_dir,
                         run_id=run_id,
                         gate_result=gate_result,
                         config=config,
                         idem_key=idem_key,
                         skip_label=f"rate_limit:{rate_reason}",
-                        link_url=link,
+                        link_url=None,
                     )
 
-                    write_step_summary(
-                        gate_result=gate_result,
-                        summary={},
-                        findings=[],
-                        run_id=run_id,
-                        version=ACTION_VERSION,
-                    )
-                    _write_github_outputs(
-                        run_id=run_id,
-                        gate_result=gate_result,
-                        analysis=_PreflightAnalysis(gate_result.counts),
+                try:
+                    return _short_circuit_mirror_prior_check_run(
+                        gh=gh,
+                        head_sha=ctx.head_sha,
                         idem_key=idem_key,
-                        findings_path=findings_path,
-                        pack_summary_path=pack_summary_path,
+                        check_name=CHECK_NAME,
+                        select="latest",
+                        fallback_reason="Rate limited",
+                        note_prefix=f"Rate limited ({rate_reason}). Mirroring latest Omar Gate result.",
+                        run_dir=run_dir,
+                        run_id=run_id,
+                        config=config,
+                        skip_label=f"rate_limit:{rate_reason}",
                     )
-                    return _exit_code_from_gate_result(gate_result)
                 except Exception as exc:
                     print(f"::error::Rate-limit short-circuit failed: {exc}")
                     return 2
@@ -661,6 +767,21 @@ async def async_main() -> int:
                 f"🔴 P0={counts.get('P0', 0)} • 🟠 P1={counts.get('P1', 0)} • "
                 f"🟡 P2={counts.get('P2', 0)} • ⚪ P3={counts.get('P3', 0)}"
             )
+            check_text = gate_result.reason
+            try:
+                counts_marker = json.dumps(
+                    {
+                        "P0": int(counts.get("P0", 0) or 0),
+                        "P1": int(counts.get("P1", 0) or 0),
+                        "P2": int(counts.get("P2", 0) or 0),
+                        "P3": int(counts.get("P3", 0) or 0),
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                check_text = f"{check_text}\n\n<!-- sentinelayer:counts:{counts_marker} -->"
+            except Exception:
+                pass
             status_key = (
                 gate_result.status.value
                 if hasattr(gate_result.status, "value")
@@ -688,7 +809,7 @@ async def async_main() -> int:
                         conclusion=conclusion_map.get(status_key, "failure"),
                         summary=summary_text,
                         title=f"Omar Gate: {status_key.upper()}",
-                        text=gate_result.reason,
+                        text=check_text,
                         details_url=dashboard_url,
                         external_id=idem_key,
                         annotations=annotations,
@@ -741,13 +862,14 @@ async def async_main() -> int:
             collector.stage_end("telemetry", success=telemetry_success)
 
     # === OUTPUTS ===
+    estimated_cost_usd = analysis.llm_usage.get("cost_usd", 0.0) if analysis.llm_usage else 0.0
     _write_github_outputs(
         run_id=run_id,
-        gate_result=gate_result,
-        analysis=analysis,
         idem_key=idem_key,
         findings_path=findings_path,
         pack_summary_path=pack_summary_path,
+        gate_result=gate_result,
+        estimated_cost_usd=estimated_cost_usd,
     )
 
     return 1 if gate_result.block_merge else 0
@@ -844,11 +966,11 @@ def _resolve_consent(config: OmarGateConfig) -> ConsentConfig:
 
 def _write_github_outputs(
     run_id: str,
-    gate_result,
-    analysis,
     idem_key: str,
     findings_path: Path,
     pack_summary_path: Path,
+    gate_result: GateResult,
+    estimated_cost_usd: float = 0.0,
 ) -> None:
     """Write GitHub Actions outputs."""
     output_path = os.environ.get("GITHUB_OUTPUT")
@@ -863,15 +985,14 @@ def _write_github_outputs(
         )
         f.write(f"gate_status={status_value}\n")
         f.write(f"run_id={run_id}\n")
-        f.write(f"p0_count={analysis.counts['P0']}\n")
-        f.write(f"p1_count={analysis.counts['P1']}\n")
-        f.write(f"p2_count={analysis.counts['P2']}\n")
-        f.write(f"p3_count={analysis.counts['P3']}\n")
+        f.write(f"p0_count={gate_result.counts.p0}\n")
+        f.write(f"p1_count={gate_result.counts.p1}\n")
+        f.write(f"p2_count={gate_result.counts.p2}\n")
+        f.write(f"p3_count={gate_result.counts.p3}\n")
         f.write(f"findings_artifact={findings_path}\n")
         f.write(f"pack_summary_artifact={pack_summary_path}\n")
         f.write(f"idempotency_key={idem_key}\n")
-        cost = analysis.llm_usage.get("cost_usd", 0.0) if analysis.llm_usage else 0.0
-        f.write(f"estimated_cost_usd={cost:.4f}\n")
+        f.write(f"estimated_cost_usd={estimated_cost_usd:.4f}\n")
 
 
 def _load_event() -> dict:
