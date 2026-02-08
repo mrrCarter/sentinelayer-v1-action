@@ -95,6 +95,21 @@ inputs:
     required: false
     default: 'block'
 
+  use_codex:
+    description: 'Use Codex CLI for deep agentic audit'
+    required: false
+    default: 'false'
+
+  codex_model:
+    description: 'Model for Codex CLI'
+    required: false
+    default: 'gpt-5.2-codex'
+
+  codex_timeout:
+    description: 'Timeout in seconds for Codex execution'
+    required: false
+    default: '300'
+
   run_harness:
     description: 'Run SentinelLayer portable security test harness'
     required: false

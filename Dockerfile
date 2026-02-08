@@ -25,6 +25,10 @@ RUN apk add --no-cache \
         npm \
         git
 
+# Install Codex CLI (pinned). Latest as of 2026-02-08: 0.98.0
+RUN npm install -g @openai/codex@0.98.0 \
+    && npm cache clean --force
+
 RUN addgroup -S app && adduser -S -G app -u 10001 app
 
 WORKDIR /app
