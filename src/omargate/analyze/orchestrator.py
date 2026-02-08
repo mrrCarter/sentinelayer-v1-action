@@ -10,7 +10,7 @@ from ..config import OmarGateConfig
 from ..ingest import QuickLearnSummary, extract_quick_learn_summary, run_ingest
 from ..logging import OmarLogger
 from ..package.fingerprint import add_fingerprints_to_findings
-from .deterministic import ConfigScanner, PatternScanner, scan_for_secrets
+from .deterministic import ConfigScanner, EngQualityScanner, PatternScanner, scan_for_secrets
 from .llm import ContextBuilder, LLMClient, PromptLoader, ResponseParser, handle_llm_failure
 from .llm.response_parser import ParsedFinding
 
@@ -56,6 +56,7 @@ class AnalysisOrchestrator:
         self.logger = logger
         self.repo_root = repo_root
         self.allow_llm = allow_llm
+        self._quick_learn: Optional[QuickLearnSummary] = None
 
         patterns_dir = Path(__file__).parent / "deterministic" / "patterns"
         self.pattern_scanner = PatternScanner(patterns_dir=patterns_dir)
@@ -100,6 +101,7 @@ class AnalysisOrchestrator:
                 tech_stack=quick_learn.tech_stack,
                 architecture=quick_learn.architecture,
             )
+        self._quick_learn = quick_learn
 
         # Step 1: Ingest
         with self.logger.stage("ingest"):
@@ -242,7 +244,47 @@ class AnalysisOrchestrator:
         )
         findings.extend(self._finding_to_dict(f) for f in config_findings)
 
+        # Stack-aware engineering quality checks (inline rules).
+        tech_stack = self._quick_learn.tech_stack if self._quick_learn else []
+        eng_files = self._load_files_for_quality_scans(ingest)
+        eng_scanner = EngQualityScanner(tech_stack=tech_stack)
+        eng_findings = eng_scanner.scan(eng_files)
+        findings.extend(self._finding_to_dict(f) for f in eng_findings)
+
         return findings
+
+    def _load_files_for_quality_scans(self, ingest: dict) -> dict[str, str]:
+        """
+        Load a bounded set of file contents for stack-aware quality scanning.
+
+        Uses ingest's in-scope file list; avoids reading huge files.
+        """
+        files: dict[str, str] = {}
+        for file_info in ingest.get("files", []) or []:
+            rel_path = file_info.get("path")
+            if not rel_path:
+                continue
+            size_bytes = file_info.get("size_bytes")
+            if isinstance(size_bytes, int) and size_bytes > 1_000_000:
+                continue
+            try:
+                content = (self.repo_root / rel_path).read_text(
+                    encoding="utf-8", errors="ignore"
+                )
+            except OSError:
+                continue
+            files[rel_path] = content
+        # Ensure key infra files are included if present.
+        for rel_path in ("Dockerfile", ".env"):
+            if rel_path in files:
+                continue
+            try:
+                p = self.repo_root / rel_path
+                if p.is_file():
+                    files[rel_path] = p.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                pass
+        return files
 
     async def _run_llm_analysis(
         self,
