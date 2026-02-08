@@ -62,12 +62,12 @@ inputs:
   model:
     description: 'Primary OpenAI model'
     required: false
-    default: 'gpt-5.2-codex'
+    default: 'gpt-4.1'
 
   model_fallback:
     description: 'Fallback OpenAI model'
     required: false
-    default: 'gpt-4.1'
+    default: 'gpt-4.1-mini'
 
   llm_failure_policy:
     description: 'If LLM call fails: block (fail-closed), deterministic_only, allow_with_warning'
