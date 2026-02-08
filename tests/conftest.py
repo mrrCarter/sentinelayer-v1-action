@@ -9,6 +9,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 import pytest
 
 
+@pytest.fixture(params=["asyncio"])
+def anyio_backend(request):
+    """Restrict anyio tests to asyncio only (trio is not installed)."""
+    return request.param
+
+
 @pytest.fixture
 def fixtures_dir() -> Path:
     return Path(__file__).parent / "fixtures"
