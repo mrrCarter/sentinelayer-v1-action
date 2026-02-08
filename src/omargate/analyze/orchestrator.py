@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
 from ..artifacts import generate_review_brief
 from ..config import OmarGateConfig
-from ..ingest import run_ingest
+from ..ingest import QuickLearnSummary, extract_quick_learn_summary, run_ingest
 from ..logging import OmarLogger
 from ..package.fingerprint import add_fingerprints_to_findings
 from .deterministic import ConfigScanner, PatternScanner, scan_for_secrets
@@ -89,6 +90,17 @@ class AnalysisOrchestrator:
         """
         warnings: List[str] = []
 
+        # Step 0: Quick Learn
+        quick_learn: Optional[QuickLearnSummary] = None
+        with self.logger.stage("quick_learn"):
+            quick_learn = await asyncio.to_thread(extract_quick_learn_summary, self.repo_root)
+            self.logger.info(
+                "Quick learn complete",
+                source_doc=quick_learn.source_doc,
+                tech_stack=quick_learn.tech_stack,
+                architecture=quick_learn.architecture,
+            )
+
         # Step 1: Ingest
         with self.logger.stage("ingest"):
             ingest = run_ingest(
@@ -122,6 +134,7 @@ class AnalysisOrchestrator:
                 llm_result = await self._run_llm_analysis(
                     ingest=ingest,
                     deterministic_findings=det_findings,
+                    quick_learn=quick_learn,
                     scan_mode=scan_mode,
                     diff_content=diff_content,
                     changed_files=changed_files,
@@ -235,6 +248,7 @@ class AnalysisOrchestrator:
         self,
         ingest: dict,
         deterministic_findings: List[dict],
+        quick_learn: Optional[QuickLearnSummary],
         scan_mode: str,
         diff_content: Optional[str],
         changed_files: Optional[List[str]],
@@ -244,6 +258,7 @@ class AnalysisOrchestrator:
             ingest=ingest,
             deterministic_findings=deterministic_findings,
             repo_root=self.repo_root,
+            quick_learn=quick_learn,
             scan_mode=scan_mode,
             diff_content=diff_content,
             changed_files=changed_files,
