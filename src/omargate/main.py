@@ -542,13 +542,18 @@ async def async_main() -> int:
 
     if analysis.llm_usage:
         model_used = analysis.llm_usage.get("model") or ""
+        provider_used = analysis.llm_usage.get("provider") or None
+        fallback_used = bool(model_used and model_used == config.model_fallback)
         collector.record_llm_usage(
             model=model_used,
             tokens_in=analysis.llm_usage.get("tokens_in", 0),
             tokens_out=analysis.llm_usage.get("tokens_out", 0),
             cost_usd=analysis.llm_usage.get("cost_usd", 0),
             latency_ms=analysis.llm_usage.get("latency_ms", 0),
-            fallback_used=bool(model_used and model_used == config.model_fallback),
+            fallback_used=fallback_used,
+            provider=provider_used,
+            fallback_provider=provider_used if fallback_used else None,
+            fallback_model=model_used if fallback_used else None,
         )
 
     ingest_stats = analysis.ingest_stats or {}

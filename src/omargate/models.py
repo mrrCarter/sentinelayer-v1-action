@@ -11,6 +11,7 @@ LLMFailurePolicy = Literal["block", "deterministic_only", "allow_with_warning"]
 ApprovalMode = Literal["pr_label", "workflow_dispatch", "none"]
 ForkPolicy = Literal["block", "limited", "allow"]
 RateLimitFailMode = Literal["open", "closed"]
+LLMProviderType = Literal["openai", "anthropic", "google", "xai"]
 
 @dataclass
 class Counts:
