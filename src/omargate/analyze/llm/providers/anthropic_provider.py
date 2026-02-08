@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 from .base import LLMProvider, ProviderResponse
 
@@ -72,4 +71,3 @@ class AnthropicProvider(LLMProvider):
         }
         rates = pricing_per_million.get(model, {"input": 3.0, "output": 15.0})
         return (tokens_in / 1_000_000 * rates["input"]) + (tokens_out / 1_000_000 * rates["output"])
-
