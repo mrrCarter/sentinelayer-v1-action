@@ -37,3 +37,28 @@ def test_tsconfig_strict_disabled(config_scanner: ConfigScanner) -> None:
     content = '{\"compilerOptions\": {\"strict\": false}}'
     findings = config_scanner.scan_file(Path("tsconfig.json"), content)
     assert any(finding.pattern_id == "CONF-TS-001" for finding in findings)
+
+
+def test_docker_compose_privileged_detected(config_scanner: ConfigScanner) -> None:
+    content = "\n".join(
+        [
+            "services:",
+            "  web:",
+            "    privileged: true",
+        ]
+    )
+    findings = config_scanner.scan_file(Path("docker-compose.yml"), content)
+    assert any(finding.pattern_id == "CONF-DC-001" for finding in findings)
+
+
+def test_docker_compose_ports_detected(config_scanner: ConfigScanner) -> None:
+    content = "\n".join(
+        [
+            "services:",
+            "  web:",
+            "    ports:",
+            "      - \"8080:8080\"",
+        ]
+    )
+    findings = config_scanner.scan_file(Path("docker-compose.yml"), content)
+    assert any(finding.pattern_id == "CONF-DC-002" for finding in findings)

@@ -43,6 +43,21 @@ def test_jsonl_parsing_empty() -> None:
     assert errors
 
 
+def test_code_fenced_jsonl_is_stripped_cleanly() -> None:
+    text = "\n".join(
+        [
+            "```jsonl",
+            '{"severity":"P1","category":"auth","file_path":"src/a.py","line_start":3,"message":"x"}',
+            '{"no_findings": true}',
+            "```",
+        ]
+    )
+    findings, errors, no_findings = parse_codex_findings(text)
+    assert len(findings) == 1
+    assert errors == []
+    assert no_findings is True
+
+
 @pytest.mark.anyio
 async def test_timeout_handling(tmp_path: Path, monkeypatch) -> None:
     class FakeProc:
@@ -75,4 +90,3 @@ async def test_missing_codex_cli_is_graceful(tmp_path: Path, monkeypatch) -> Non
     res = await runner.run_audit(prompt="x", working_dir=str(tmp_path))
     assert res.success is False
     assert res.error and "not found" in res.error.lower()
-
