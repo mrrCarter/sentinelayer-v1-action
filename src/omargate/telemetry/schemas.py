@@ -24,6 +24,8 @@ def build_tier1_payload(collector: "TelemetryCollector") -> dict:
             "timestamp_utc": collector.start_time.isoformat(),
             "duration_ms": collector.total_duration_ms(),
             "state": collector.gate_status,
+            "exit_code": collector.exit_code,
+            "exit_reason": collector.exit_reason,
         },
         "repo": {
             "repo_hash": collector.repo_hash,
@@ -44,12 +46,17 @@ def build_tier1_payload(collector: "TelemetryCollector") -> dict:
         "findings": collector.counts,
         "gate": {
             "result": collector.gate_status,
+            "exit_code": collector.exit_code,
+            "exit_reason": collector.exit_reason,
+            "preflight_exits": collector.preflight_exits,
             "dedupe_skipped": collector.dedupe_skipped,
             "rate_limit_skipped": collector.rate_limit_skipped,
             "fork_blocked": collector.fork_blocked,
         },
         "stages": collector.stage_durations(),
         "errors_count": len(collector.errors),
+        # Keep Tier 1 errors anonymous: stages only (no raw messages).
+        "errors": [e.get("stage") for e in collector.errors],
     }
 
 
@@ -82,6 +89,8 @@ def build_tier2_payload(
             "timestamp_utc": collector.start_time.isoformat(),
             "duration_ms": collector.total_duration_ms(),
             "state": collector.gate_status,
+            "exit_code": collector.exit_code,
+            "exit_reason": collector.exit_reason,
         },
         "repo": {
             "owner": repo_owner,
@@ -125,12 +134,16 @@ def build_tier2_payload(
             "severity_threshold": severity_threshold,
             "result": collector.gate_status,
             "bypass_reason": None,
+            "exit_code": collector.exit_code,
+            "exit_reason": collector.exit_reason,
+            "preflight_exits": collector.preflight_exits,
         },
         "meta": {
             "action_version": action_version,
             "telemetry_tier": 2,
             "idempotency_key": idempotency_key,
         },
+        "errors": collector.errors,
     }
 
 
