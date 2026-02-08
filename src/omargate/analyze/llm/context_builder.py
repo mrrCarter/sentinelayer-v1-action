@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from ...ingest.quick_learn import QuickLearnSummary
+
 
 TRUNCATION_MARKER = "... (truncated)"
 
@@ -43,6 +45,7 @@ class ContextBuilder:
         ingest: dict,
         deterministic_findings: List[dict],
         repo_root: Path,
+        quick_learn: Optional[QuickLearnSummary] = None,
         scan_mode: str = "pr-diff",
         diff_content: Optional[str] = None,
         changed_files: Optional[List[str]] = None,
@@ -87,6 +90,9 @@ class ContextBuilder:
             context_parts.append(truncated_text)
             used_tokens += truncated_tokens
             return True, True, truncated_tokens
+
+        quick_learn_context = self._build_quick_learn_context(quick_learn)
+        add_with_budget(quick_learn_context, allow_truncate=True)
 
         system_context = self._build_system_context(ingest)
         add_with_budget(system_context)
@@ -147,6 +153,28 @@ class ContextBuilder:
             files_truncated=files_truncated,
             files_skipped=files_skipped,
             hotspots_included=hotspots_included,
+        )
+
+    def _build_quick_learn_context(self, quick_learn: Optional[QuickLearnSummary]) -> str:
+        """Build lightweight project summary header."""
+        if not quick_learn:
+            return ""
+        stack = ", ".join(quick_learn.tech_stack) if quick_learn.tech_stack else "unknown"
+        entry_points = (
+            ", ".join(quick_learn.entry_points) if quick_learn.entry_points else "unknown"
+        )
+        description = quick_learn.description or ""
+        excerpt = quick_learn.raw_excerpt.strip()
+        if excerpt:
+            excerpt = f"\n### Excerpt ({quick_learn.source_doc})\n{excerpt}\n"
+        return (
+            "## Project Context (Quick Learn)\n"
+            f"- Project: {quick_learn.project_name or 'unknown'}\n"
+            f"- Description: {description}\n"
+            f"- Tech stack: {stack}\n"
+            f"- Architecture: {quick_learn.architecture or 'unknown'}\n"
+            f"- Entry points: {entry_points}\n"
+            f"{excerpt}"
         )
 
     def _build_system_context(self, ingest: dict) -> str:
