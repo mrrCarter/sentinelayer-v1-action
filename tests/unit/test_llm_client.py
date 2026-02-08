@@ -9,11 +9,9 @@ import pytest
 from omargate.analyze.llm.llm_client import LLMClient, LLMResponse, LLMUsage
 
 
-def _make_response(content: str = "ok", prompt_tokens: int = 10, completion_tokens: int = 5):
-    usage = SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
-    message = SimpleNamespace(content=content)
-    choice = SimpleNamespace(message=message)
-    return SimpleNamespace(usage=usage, choices=[choice])
+def _make_response(content: str = "ok", input_tokens: int = 10, output_tokens: int = 5):
+    usage = SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens)
+    return SimpleNamespace(usage=usage, output_text=content)
 
 
 @pytest.mark.anyio
@@ -23,9 +21,7 @@ async def test_llm_client_success() -> None:
     response = _make_response("hello", 12, 3)
 
     fake_client = SimpleNamespace(
-        chat=SimpleNamespace(
-            completions=SimpleNamespace(create=AsyncMock(return_value=response))
-        )
+        responses=SimpleNamespace(create=AsyncMock(return_value=response))
     )
     client._client = fake_client
 
@@ -46,7 +42,7 @@ async def test_llm_client_retry_on_timeout() -> None:
 
     create_mock = AsyncMock(side_effect=[asyncio.TimeoutError(), response])
     fake_client = SimpleNamespace(
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create_mock))
+        responses=SimpleNamespace(create=create_mock)
     )
     client._client = fake_client
 
