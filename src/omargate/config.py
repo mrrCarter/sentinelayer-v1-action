@@ -50,6 +50,7 @@ class OmarGateConfig(BaseSettings):
 
     # Codex CLI path (OpenAI-only); wiring added later.
     use_codex: bool = Field(default=False, description="Use Codex CLI for deep audit")
+    run_harness: bool = Field(default=True, description="Run security test harness")
 
     # GitHub integration (recommended)
     github_token: SecretStr = Field(default="", description="GitHub token used for API calls")

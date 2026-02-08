@@ -95,6 +95,11 @@ inputs:
     required: false
     default: 'block'
 
+  run_harness:
+    description: 'Run SentinelLayer portable security test harness'
+    required: false
+    default: 'true'
+
   # Rate limiting / cost control
   max_daily_scans:
     description: 'Maximum scans per repo per day (0 = unlimited)'

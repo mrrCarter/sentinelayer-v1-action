@@ -8,6 +8,7 @@ from typing import List, Optional
 from ..artifacts import generate_review_brief
 from ..config import OmarGateConfig
 from ..ingest import QuickLearnSummary, extract_quick_learn_summary, run_ingest
+from ..harness import HarnessRunner
 from ..logging import OmarLogger
 from ..package.fingerprint import add_fingerprints_to_findings
 from .deterministic import ConfigScanner, EngQualityScanner, PatternScanner, scan_for_secrets
@@ -84,11 +85,12 @@ class AnalysisOrchestrator:
 
         Steps:
         1. Ingest codebase
-        2. Run deterministic scans
-        3. Build LLM context
-        4. Run LLM analysis (with fallback)
-        5. Merge and dedupe findings
-        6. Return results
+        2. Run harness suites (optional)
+        3. Run deterministic scans
+        4. Build LLM context
+        5. Run LLM analysis (with fallback)
+        6. Merge and dedupe findings
+        7. Return results
         """
         warnings: List[str] = []
 
@@ -119,7 +121,28 @@ class AnalysisOrchestrator:
                 in_scope=stats.get("in_scope_files"),
             )
 
-        # Step 2: Deterministic scans
+        # Step 2: Harness (portable suites)
+        harness_findings: List[dict] = []
+        if self.config.run_harness:
+            with self.logger.stage("harness"):
+                try:
+                    runner = HarnessRunner(
+                        project_root=str(self.repo_root),
+                        tech_stack=quick_learn.tech_stack if quick_learn else [],
+                    )
+                    harness_results = await runner.run()
+                    harness_findings = [self._finding_to_dict(f) for f in harness_results]
+                    self.logger.info(
+                        "Harness complete",
+                        findings_count=len(harness_findings),
+                    )
+                except Exception as exc:
+                    self.logger.warning("Harness failed", error=str(exc))
+                    warnings.append("Harness failed")
+        else:
+            warnings.append("Harness skipped (run_harness=false)")
+
+        # Step 3: Deterministic scans
         with self.logger.stage("deterministic_scan"):
             det_findings = self._run_deterministic_scans(ingest)
             self.logger.info(
@@ -127,7 +150,7 @@ class AnalysisOrchestrator:
                 findings_count=len(det_findings),
             )
 
-        # Step 3-4: LLM analysis (skip if no API key or limited mode)
+        # Step 4-5: LLM analysis (skip if no API key or limited mode)
         llm_findings: List[dict] = []
         llm_success = False
         llm_usage: Optional[dict] = None
@@ -157,8 +180,9 @@ class AnalysisOrchestrator:
         else:
             warnings.append("LLM analysis skipped (no API key or limited mode)")
 
-        # Step 5: Merge findings
-        all_findings = self._merge_findings(det_findings, llm_findings)
+        # Step 6: Merge findings
+        base_findings = harness_findings + det_findings
+        all_findings = self._merge_findings(base_findings, llm_findings)
         add_fingerprints_to_findings(
             all_findings,
             policy_version=self.config.policy_pack_version,

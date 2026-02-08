@@ -21,7 +21,9 @@ FROM python:3.11-alpine AS runtime
 RUN apk add --no-cache \
         ca-certificates \
         libstdc++ \
-        nodejs
+        nodejs \
+        npm \
+        git
 
 RUN addgroup -S app && adduser -S -G app -u 10001 app
 
