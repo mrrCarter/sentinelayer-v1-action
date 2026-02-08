@@ -50,6 +50,10 @@ class OmarGateConfig(BaseSettings):
 
     # Codex CLI path (OpenAI-only); wiring added later.
     use_codex: bool = Field(default=False, description="Use Codex CLI for deep audit")
+    codex_model: str = Field(default="gpt-5.2-codex", description="Model for Codex CLI")
+    codex_timeout: conint(ge=60) = Field(
+        default=300, description="Codex timeout in seconds for Codex execution"
+    )
     run_harness: bool = Field(default=True, description="Run security test harness")
 
     # GitHub integration (recommended)
