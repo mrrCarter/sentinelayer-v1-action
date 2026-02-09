@@ -81,14 +81,14 @@ inputs:
     default: 'P1'
 
   model:
-    description: 'Primary OpenAI model'
-    required: false
-    default: 'gpt-5.2-codex'  # TODO: bump to gpt-5.3-codex when available via API
-
-  model_fallback:
-    description: 'Fallback OpenAI model'
+    description: 'LLM API model (used when Codex CLI is unavailable). Recommended: gpt-4.1 for best results, gpt-4.1-mini for cost control.'
     required: false
     default: 'gpt-4.1'
+
+  model_fallback:
+    description: 'Fallback LLM API model (if primary model fails or quota exceeded)'
+    required: false
+    default: 'gpt-4.1-mini'
 
   llm_failure_policy:
     description: 'If LLM call fails: block (fail-closed), deterministic_only, allow_with_warning'
