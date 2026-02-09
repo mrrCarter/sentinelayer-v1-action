@@ -33,12 +33,16 @@ async def upload_telemetry(
     """
     headers = {"Content-Type": "application/json"}
 
-    if oidc_token:
-        headers["Authorization"] = f"Bearer {oidc_token}"
-    elif sentinelayer_token:
-        headers["Authorization"] = f"Bearer {sentinelayer_token}"
-
     tier = payload.get("tier", 1)
+
+    # Tier 1 is anonymous — no auth header needed.
+    # Only send credentials for Tier 2+ to avoid spurious 401s when
+    # OIDC verification fails on the server side.
+    if tier >= 2:
+        if oidc_token:
+            headers["Authorization"] = f"Bearer {oidc_token}"
+        elif sentinelayer_token:
+            headers["Authorization"] = f"Bearer {sentinelayer_token}"
     endpoint = f"{SENTINELAYER_API_URL}/api/v1/telemetry"
 
     for attempt in range(MAX_RETRIES):
