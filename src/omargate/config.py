@@ -92,7 +92,7 @@ class OmarGateConfig(BaseSettings):
 
     # Rate limiting / cost control
     max_daily_scans: conint(ge=0) = Field(default=20)
-    min_scan_interval_minutes: conint(ge=0) = Field(default=5)
+    min_scan_interval_minutes: conint(ge=0) = Field(default=2)
     rate_limit_fail_mode: RateLimitFailMode = Field(
         default="closed",
         description="On GitHub API errors during rate limit enforcement: open or closed",
