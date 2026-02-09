@@ -24,12 +24,15 @@ for name in $required_envs; do
   fi
 done
 
-# Validate required inputs
-if [ -z "${OPENAI_API_KEY:-}" ]; then
-  echo "Missing required input: openai_api_key" >&2
-  exit 2
-fi
-
 export PYTHONPATH="/app/src:${PYTHONPATH:-}"
+
+
+# Docker actions run in an ephemeral container. Running as root avoids all
+# permission issues with GitHub-mounted volumes (workspace, file_commands,
+# runner_temp). Dropping to non-root caused cascading issues: the host runner
+# process lost write access to its own file_commands after our step.
+if [ -n "${GITHUB_WORKSPACE:-}" ] && [ -d "$GITHUB_WORKSPACE" ]; then
+  mkdir -p "$GITHUB_WORKSPACE/.sentinelayer/runs" "$GITHUB_WORKSPACE/.sentinelayer/artifacts" 2>/dev/null || true
+fi
 
 exec python -m omargate.main

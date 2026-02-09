@@ -15,15 +15,19 @@ COPY requirements.txt /tmp/requirements.txt
 
 RUN python -m pip install --no-cache-dir --prefix=/install -r /tmp/requirements.txt
 
-# Stage 2: Runtime (minimal, non-root)
+# Stage 2: Runtime (runs as root in ephemeral container)
 FROM python:3.11-alpine AS runtime
 
 RUN apk add --no-cache \
         ca-certificates \
         libstdc++ \
-        nodejs
+        nodejs \
+        npm \
+        git
 
-RUN addgroup -S app && adduser -S -G app -u 10001 app
+# Install Codex CLI (pinned). Latest as of 2026-02-08: 0.98.0
+RUN npm install -g @openai/codex@0.98.0 \
+    && npm cache clean --force
 
 WORKDIR /app
 
@@ -33,11 +37,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     NODE_ENV=production
 
 COPY --from=builder /install /usr/local
-COPY --chown=app:app src /app/src
-COPY --chown=app:app entrypoint.sh /app/entrypoint.sh
+COPY src /app/src
+COPY entrypoint.sh /app/entrypoint.sh
 
 RUN chmod +x /app/entrypoint.sh
-
-USER app
 
 ENTRYPOINT ["/app/entrypoint.sh"]

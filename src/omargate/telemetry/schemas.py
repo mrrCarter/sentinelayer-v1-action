@@ -24,28 +24,48 @@ def build_tier1_payload(collector: "TelemetryCollector") -> dict:
             "timestamp_utc": collector.start_time.isoformat(),
             "duration_ms": collector.total_duration_ms(),
             "state": collector.gate_status,
+            "exit_code": collector.exit_code,
+            "exit_reason": collector.exit_reason,
         },
         "repo": {
             "repo_hash": collector.repo_hash,
         },
         "scan": {
             "mode": collector.scan_mode,
+            "llm_provider": collector.llm_provider,
+            # Canonical fields (v1 schema).
             "model_used": collector.model_used,
             "model_fallback_used": collector.model_fallback_used,
+            "fallback_provider": collector.fallback_provider,
+            "fallback_model": collector.fallback_model,
             "tokens_in": collector.tokens_in,
             "tokens_out": collector.tokens_out,
             "cost_estimate_usd": round(collector.estimated_cost_usd, 4),
+            "llm_latency_ms": collector.llm_latency_ms,
+            # Aliases to match build spec field naming (keep both for compatibility).
+            "llm_model": collector.model_used,
+            "llm_tokens_in": collector.tokens_in,
+            "llm_tokens_out": collector.tokens_out,
+            "llm_cost_usd": round(collector.estimated_cost_usd, 4),
+            "llm_fallback_used": collector.model_fallback_used,
+            "llm_fallback_provider": collector.fallback_provider,
+            "llm_fallback_model": collector.fallback_model,
             "files_scanned": collector.files_scanned,
         },
         "findings": collector.counts,
         "gate": {
             "result": collector.gate_status,
+            "exit_code": collector.exit_code,
+            "exit_reason": collector.exit_reason,
+            "preflight_exits": collector.preflight_exits,
             "dedupe_skipped": collector.dedupe_skipped,
             "rate_limit_skipped": collector.rate_limit_skipped,
             "fork_blocked": collector.fork_blocked,
         },
         "stages": collector.stage_durations(),
         "errors_count": len(collector.errors),
+        # Keep Tier 1 errors anonymous: stages only (no raw messages).
+        "errors": [e.get("stage") for e in collector.errors],
     }
 
 
@@ -78,6 +98,8 @@ def build_tier2_payload(
             "timestamp_utc": collector.start_time.isoformat(),
             "duration_ms": collector.total_duration_ms(),
             "state": collector.gate_status,
+            "exit_code": collector.exit_code,
+            "exit_reason": collector.exit_reason,
         },
         "repo": {
             "owner": repo_owner,
@@ -91,10 +113,24 @@ def build_tier2_payload(
             "mode": collector.scan_mode,
             "policy_pack": policy_pack,
             "policy_pack_version": policy_pack_version,
+            "llm_provider": collector.llm_provider,
+            # Canonical fields (v1 schema).
             "model_used": collector.model_used,
+            "model_fallback_used": collector.model_fallback_used,
             "tokens_in": collector.tokens_in,
             "tokens_out": collector.tokens_out,
             "cost_estimate_usd": round(collector.estimated_cost_usd, 4),
+            "llm_latency_ms": collector.llm_latency_ms,
+            "fallback_provider": collector.fallback_provider,
+            "fallback_model": collector.fallback_model,
+            # Aliases to match build spec field naming (keep both for compatibility).
+            "llm_model": collector.model_used,
+            "llm_tokens_in": collector.tokens_in,
+            "llm_tokens_out": collector.tokens_out,
+            "llm_cost_usd": round(collector.estimated_cost_usd, 4),
+            "llm_fallback_used": collector.model_fallback_used,
+            "llm_fallback_provider": collector.fallback_provider,
+            "llm_fallback_model": collector.fallback_model,
         },
         "findings": {
             "summary": [
@@ -117,12 +153,16 @@ def build_tier2_payload(
             "severity_threshold": severity_threshold,
             "result": collector.gate_status,
             "bypass_reason": None,
+            "exit_code": collector.exit_code,
+            "exit_reason": collector.exit_reason,
+            "preflight_exits": collector.preflight_exits,
         },
         "meta": {
             "action_version": action_version,
             "telemetry_tier": 2,
             "idempotency_key": idempotency_key,
         },
+        "errors": collector.errors,
     }
 
 
