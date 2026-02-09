@@ -48,6 +48,75 @@ ACTION_VERSION = "1.2.1"
 ACTION_MAJOR_VERSION = "1"
 CHECK_NAME = "Omar Gate"
 
+def _to_workspace_relative(path: Path) -> str:
+    """
+    Prefer workspace-relative artifact paths.
+
+    Docker actions execute in a container where $GITHUB_WORKSPACE is typically mounted at
+    /github/workspace. Downstream workflow steps run on the host, so absolute container paths
+    are not useful.
+    """
+    workspace = os.environ.get("GITHUB_WORKSPACE")
+    if workspace:
+        try:
+            rel = path.relative_to(Path(workspace))
+            return str(rel).replace("\\", "/")
+        except ValueError:
+            pass
+    return str(path).replace("\\", "/")
+
+
+def _escape_workflow_command(value: str) -> str:
+    """
+    Escape a string for GitHub workflow commands (annotation messages).
+
+    See: https://docs.github.com/actions/using-workflows/workflow-commands-for-github-actions
+    """
+    if value is None:
+        return ""
+    return str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def _emit_gate_annotation(
+    *,
+    gate_result: GateResult,
+    severity_gate: str,
+    run_id: str,
+    run_dir: Path,
+    workflow_run_url: Optional[str],
+    dashboard_url: Optional[str],
+) -> None:
+    status = (
+        gate_result.status.value
+        if hasattr(gate_result.status, "value")
+        else str(gate_result.status)
+    )
+
+    level = "notice"
+    if status in {"blocked", "error"}:
+        level = "error"
+    elif status in {"needs_approval"}:
+        level = "error"
+    elif status in {"bypassed"}:
+        level = "warning"
+
+    title = f"Omar Gate {status.upper()}"
+    counts = gate_result.counts
+    counts_str = f"P0={counts.p0}, P1={counts.p1}, P2={counts.p2}, P3={counts.p3}"
+    link = workflow_run_url or dashboard_url or ""
+    link_str = f" Details: {link}" if link else ""
+
+    run_dir_display = _to_workspace_relative(run_dir)
+    message = (
+        f"{gate_result.reason} | gate={severity_gate} | {counts_str} | "
+        f"run_id={run_id}{link_str} | artifacts={run_dir_display}"
+    )
+
+    sys.stderr.write(
+        f"::{level} title={_escape_workflow_command(title)}::{_escape_workflow_command(message)}\n"
+    )
+    sys.stderr.flush()
+
 
 def _latest_completed_check_run(runs: list[dict]) -> Optional[dict]:
     best: Optional[dict] = None
@@ -174,7 +243,15 @@ def _short_circuit_with_gate_result(
 
     write_step_summary(
         gate_result=gate_result,
-        summary={},
+        summary={
+            "severity_gate": config.severity_gate,
+            "counts": {
+                "P0": gate_result.counts.p0,
+                "P1": gate_result.counts.p1,
+                "P2": gate_result.counts.p2,
+                "P3": gate_result.counts.p3,
+            },
+        },
         findings=[],
         run_id=run_id,
         version=ACTION_VERSION,
@@ -187,6 +264,18 @@ def _short_circuit_with_gate_result(
         pack_summary_path=pack_summary_path,
         estimated_cost_usd=estimated_cost_usd,
     )
+
+    try:
+        _emit_gate_annotation(
+            gate_result=gate_result,
+            severity_gate=config.severity_gate,
+            run_id=run_id,
+            run_dir=run_dir,
+            workflow_run_url=link_url,
+            dashboard_url=None,
+        )
+    except Exception:
+        pass
 
     return _exit_code_from_gate_result(gate_result)
 
@@ -362,6 +451,8 @@ async def async_main() -> int:
     gate_result: Optional[GateResult] = None
     findings_path: Optional[Path] = None
     pack_summary_path: Optional[Path] = None
+    server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+    workflow_run_url: Optional[str] = None
 
     try:
         try:
@@ -392,6 +483,13 @@ async def async_main() -> int:
             pr_number=ctx.pr_number,
             head_sha=ctx.head_sha,
             scan_mode=config.scan_mode,
+        )
+
+        github_run_id = os.environ.get("GITHUB_RUN_ID")
+        workflow_run_url = (
+            f"{server_url}/{ctx.repo_full_name}/actions/runs/{github_run_id}"
+            if github_run_id
+            else None
         )
 
         if config.sentinelayer_token.get_secret_value():
@@ -461,11 +559,12 @@ async def async_main() -> int:
                             "Please ask a maintainer to run the scan via workflow_dispatch.\n\n"
                             f"{marker(ctx.repo_full_name, ctx.pr_number)}"
                         )
-                        gh.create_or_update_pr_comment(
+                        comment_url = gh.create_or_update_pr_comment(
                             ctx.pr_number,
                             comment_body,
                             marker_prefix(),
                         )
+                        logger.info("PR comment upserted", url=comment_url)
                     exit_code = 12
                     collector.record_preflight_exit(reason="fork_blocked", exit_code=exit_code)
                     return exit_code
@@ -802,13 +901,6 @@ async def async_main() -> int:
                     cost_usd = float(cost_raw) if cost_raw is not None else None
                 else:
                     cost_usd = None
-                github_run_id = os.environ.get("GITHUB_RUN_ID")
-                server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
-                workflow_run_url = (
-                    f"{server_url}/{ctx.repo_full_name}/actions/runs/{github_run_id}"
-                    if github_run_id and getattr(ctx, "repo_full_name", None)
-                    else None
-                )
 
                 if not gh.token:
                     message = "GitHub token missing; publish calls unavailable"
@@ -871,11 +963,12 @@ async def async_main() -> int:
                             head_sha=ctx.head_sha,
                             server_url=server_url,
                         )
-                        gh.create_or_update_pr_comment(
+                        comment_url = gh.create_or_update_pr_comment(
                             ctx.pr_number,
                             comment_body,
                             marker_prefix(),
                         )
+                        logger.info("PR comment upserted", url=comment_url)
                     except Exception as exc:
                         if _publish_strict():
                             raise
@@ -923,7 +1016,7 @@ async def async_main() -> int:
                     analysis.warnings.append(message)
                 else:
                     try:
-                        gh.create_check_run(
+                        check_url = gh.create_check_run(
                             name=CHECK_NAME,
                             head_sha=ctx.head_sha,
                             conclusion=conclusion_map.get(status_key, "failure"),
@@ -934,6 +1027,7 @@ async def async_main() -> int:
                             external_id=idem_key,
                             annotations=annotations,
                         )
+                        logger.info("Check run created", url=check_url)
                     except Exception as exc:
                         if _publish_strict():
                             raise
@@ -973,6 +1067,18 @@ async def async_main() -> int:
             )
         except OSError as exc:
             logger.warning("GitHub outputs write failed", error=str(exc))
+
+        try:
+            _emit_gate_annotation(
+                gate_result=gate_result,
+                severity_gate=config.severity_gate,
+                run_id=run_id,
+                run_dir=run_dir,
+                workflow_run_url=workflow_run_url,
+                dashboard_url=dashboard_url,
+            )
+        except Exception:
+            pass
 
         exit_code = 1 if gate_result.block_merge else 0
         collector.exit_reason = "completed"
@@ -1251,23 +1357,6 @@ def _write_github_outputs(
     output_path = os.environ.get("GITHUB_OUTPUT")
     if not output_path:
         return
-
-    def _to_workspace_relative(path: Path) -> str:
-        """
-        Prefer workspace-relative artifact paths.
-
-        Docker actions execute in a container where $GITHUB_WORKSPACE is typically
-        mounted at /github/workspace. Downstream workflow steps run on the host,
-        so absolute container paths are not useful.
-        """
-        workspace = os.environ.get("GITHUB_WORKSPACE")
-        if workspace:
-            try:
-                rel = path.relative_to(Path(workspace))
-                return str(rel).replace("\\", "/")
-            except ValueError:
-                pass
-        return str(path).replace("\\", "/")
 
     with open(output_path, "a", encoding="utf-8") as f:
         status_value = (
