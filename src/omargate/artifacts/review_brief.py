@@ -80,8 +80,6 @@ def render_review_brief(
     lines.append("")
     lines.append(badges)
     lines.append("")
-    lines.append("Example: `🔐 Auth` `💳 Payment` `🔗 Webhooks` `🗄️ Database`")
-    lines.append("")
     lines.append("---")
     lines.append("")
     lines.append("## Risk Hotspots")
@@ -305,7 +303,7 @@ def _category_order(categories: List[str]) -> List[str]:
 
 def _category_label(category: Optional[str]) -> str:
     if not category:
-        return "Other"
+        return "Uncategorized"
     config = CATEGORIES.get(category)
     if not config:
         return category

@@ -160,17 +160,18 @@ class AnalysisOrchestrator:
         if self.allow_llm and self.config.use_codex:
             ran_codex = True
             with self.logger.stage("codex_audit"):
-                codex_findings, codex_success, codex_warning = await self._run_codex_audit(
+                codex_result = await self._run_codex_audit(
                     ingest=ingest,
                     deterministic_findings=det_findings,
                     quick_learn=quick_learn,
                     scan_mode=scan_mode,
                     diff_content=diff_content,
                 )
-                llm_findings = codex_findings
-                llm_success = codex_success
-                if codex_warning:
-                    warnings.append(codex_warning)
+                llm_findings = codex_result.findings
+                llm_success = codex_result.success
+                llm_usage = codex_result.usage
+                if codex_result.warning:
+                    warnings.append(codex_result.warning)
                 self.logger.info(
                     "Codex audit complete",
                     success=llm_success,
@@ -433,15 +434,20 @@ class AnalysisOrchestrator:
         quick_learn: Optional[QuickLearnSummary],
         scan_mode: str,
         diff_content: Optional[str],
-    ) -> tuple[List[dict], bool, Optional[str]]:
+    ) -> LLMAnalysisResult:
         """
         Run Codex CLI agentic audit and parse JSONL findings.
 
-        Returns: (findings, success, warning_message)
+        Returns: LLMAnalysisResult (findings, success, usage, warning_message)
         """
         api_key = self.config.openai_api_key.get_secret_value()
         if not api_key:
-            return [], False, "Codex skipped (missing openai_api_key)"
+            return LLMAnalysisResult(
+                findings=[],
+                success=False,
+                usage=None,
+                warning="Codex skipped (missing openai_api_key)",
+            )
 
         tech_stack = quick_learn.tech_stack if quick_learn else []
         hotspots = self._flatten_hotspots(ingest.get("hotspots", {}) or {})
@@ -466,8 +472,28 @@ class AnalysisOrchestrator:
         )
         if not result.success:
             warn = result.error or "Codex audit failed"
-            return [], False, f"Codex audit failed ({warn}). Falling back to LLM analysis."
-        return result.findings, True, None
+            return LLMAnalysisResult(
+                findings=[],
+                success=False,
+                usage=None,
+                warning=f"Codex audit failed ({warn}). Falling back to LLM analysis.",
+            )
+
+        # Codex CLI currently doesn't provide token/cost accounting. Keep cost unknown.
+        return LLMAnalysisResult(
+            findings=result.findings,
+            success=True,
+            usage={
+                "engine": "codex",
+                "provider": "openai",
+                "model": self.config.codex_model,
+                "tokens_in": None,
+                "tokens_out": None,
+                "cost_usd": None,
+                "latency_ms": int(result.duration_ms),
+            },
+            warning=None,
+        )
 
     def _flatten_hotspots(self, hotspots: dict) -> List[str]:
         files: List[str] = []

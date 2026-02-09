@@ -169,10 +169,11 @@ Notes:
 
 The PR comment includes:
 - A status header (PASSED/BLOCKED/NEEDS APPROVAL/ERROR)
-- A severity counts table (P0-P3)
-- A collapsible "Top Findings" section (up to 5)
+- Gate + policy metadata (scan mode, severity gate, duration, engine)
+- A severity counts table (P0-P3) including which severities block merge for the configured gate
+- A "Top Findings" section (up to 5), prioritized by severity
 - "Next Steps" guidance
-- Links to `AUDIT_REPORT.md` and `REVIEW_BRIEF.md` when artifacts are uploaded
+- A collapsible "Artifacts & Full Report" section with links and upload instructions
 
 ## Dashboard
 

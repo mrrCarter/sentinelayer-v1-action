@@ -298,6 +298,8 @@ def _write_preflight_artifacts(
         },
         stages_completed=["preflight"],
         review_brief_path=None,
+        severity_gate=config.severity_gate,
+        llm_usage=None,
         error=f"preflight_short_circuit:{skip_label}",
         fingerprint_count=None,
         dedupe_key=idem_key,
@@ -620,15 +622,27 @@ async def async_main() -> int:
             collector.stage_end("analysis", success=True)
 
         if analysis.llm_usage:
-            model_used = analysis.llm_usage.get("model") or ""
-            provider_used = analysis.llm_usage.get("provider") or None
+            model_used = str(analysis.llm_usage.get("model") or "").strip()
+            provider_used = (
+                str(analysis.llm_usage.get("engine") or analysis.llm_usage.get("provider") or "")
+                .strip()
+                or None
+            )
             fallback_used = bool(model_used and model_used == config.model_fallback)
+
+            # Codex CLI runs may not provide token/cost accounting. Treat missing as 0 for telemetry.
+            tokens_in = int(analysis.llm_usage.get("tokens_in") or 0)
+            tokens_out = int(analysis.llm_usage.get("tokens_out") or 0)
+            latency_ms = int(analysis.llm_usage.get("latency_ms") or 0)
+            cost_raw = analysis.llm_usage.get("cost_usd")
+            cost_usd = float(cost_raw) if cost_raw is not None else 0.0
+
             collector.record_llm_usage(
                 model=model_used,
-                tokens_in=analysis.llm_usage.get("tokens_in", 0),
-                tokens_out=analysis.llm_usage.get("tokens_out", 0),
-                cost_usd=analysis.llm_usage.get("cost_usd", 0),
-                latency_ms=analysis.llm_usage.get("latency_ms", 0),
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                cost_usd=cost_usd,
+                latency_ms=latency_ms,
                 fallback_used=fallback_used,
                 provider=provider_used,
                 fallback_provider=provider_used if fallback_used else None,
@@ -680,6 +694,8 @@ async def async_main() -> int:
                         "packaging",
                     ],
                     review_brief_path=analysis.review_brief_path,
+                    severity_gate=config.severity_gate,
+                    llm_usage=analysis.llm_usage,
                     fingerprint_count=fingerprint_count,
                     dedupe_key=idem_key,
                     policy_pack=config.policy_pack,
@@ -778,9 +794,14 @@ async def async_main() -> int:
         collector.stage_start("publish")
         try:
             with logger.stage("publish"):
-                cost_usd = (
-                    analysis.llm_usage.get("cost_usd", 0.0) if analysis.llm_usage else 0.0
-                )
+                # Avoid misleading "$0.00" when the engine cannot report usage (e.g. Codex CLI).
+                if int(analysis.llm_count or 0) == 0:
+                    cost_usd = 0.0
+                elif analysis.llm_usage:
+                    cost_raw = analysis.llm_usage.get("cost_usd")
+                    cost_usd = float(cost_raw) if cost_raw is not None else None
+                else:
+                    cost_usd = None
                 github_run_id = os.environ.get("GITHUB_RUN_ID")
                 server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
                 workflow_run_url = (
@@ -797,9 +818,21 @@ async def async_main() -> int:
                     analysis.warnings.append(message)
                 elif ctx.pr_number:
                     try:
-                        llm_model_used = "none"
-                        if analysis.llm_success and analysis.llm_usage:
-                            llm_model_used = analysis.llm_usage.get("model", config.model)
+                        llm_engine_used = "disabled"
+                        llm_model_used = "n/a"
+                        if int(analysis.llm_count or 0) > 0:
+                            if analysis.llm_usage:
+                                llm_engine_used = str(
+                                    analysis.llm_usage.get("engine")
+                                    or analysis.llm_usage.get("provider")
+                                    or "llm"
+                                ).strip() or "llm"
+                                llm_model_used = str(
+                                    analysis.llm_usage.get("model") or config.model
+                                ).strip() or config.model
+                            else:
+                                llm_engine_used = "llm"
+                                llm_model_used = str(config.model).strip() or "unknown"
 
                         review_brief_md = None
                         try:
@@ -817,20 +850,26 @@ async def async_main() -> int:
                             pr_number=ctx.pr_number,
                             dashboard_url=dashboard_url,
                             artifacts_url=workflow_run_url,
-                            cost_usd=cost_usd,
+                            estimated_cost_usd=estimated_cost,
                             version=ACTION_VERSION,
-                            findings=analysis.findings[:5],
+                            findings=analysis.findings,
                             warnings=analysis.warnings,
                             review_brief_md=review_brief_md,
                             scan_mode=config.scan_mode,
                             policy_pack=config.policy_pack,
                             policy_pack_version=config.policy_pack_version,
+                            severity_gate=config.severity_gate,
                             duration_ms=summary_payload.get("duration_ms")
                             or scan_duration_ms,
+                            files_scanned=collector.files_scanned,
+                            llm_engine=llm_engine_used,
                             deterministic_count=analysis.deterministic_count,
                             llm_count=analysis.llm_count,
                             dedupe_key=gate_result.dedupe_key or idem_key,
                             llm_model=llm_model_used,
+                            actual_cost_usd=cost_usd,
+                            head_sha=ctx.head_sha,
+                            server_url=server_url,
                         )
                         gh.create_or_update_pr_comment(
                             ctx.pr_number,
@@ -920,7 +959,7 @@ async def async_main() -> int:
 
         # === OUTPUTS ===
         try:
-            estimated_cost_usd = analysis.llm_usage.get("cost_usd", 0.0) if analysis.llm_usage else 0.0
+            estimated_cost_usd = float(estimated_cost or 0.0)
             audit_report_path = run_dir / "AUDIT_REPORT.md"
             _write_github_outputs(
                 run_id=run_id,

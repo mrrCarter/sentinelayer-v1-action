@@ -83,27 +83,52 @@ def evaluate_gate(run_dir: Path, config: GateConfig) -> GateResult:
     )
     dedupe_key = summary.get("dedupe_key")
 
-    gate = config.severity_gate.upper()
+    gate = str(config.severity_gate or "P1").strip().upper()
+    if gate == "NONE":
+        return GateResult(
+            status=GateStatus.PASSED,
+            reason="Gate disabled (severity_gate=none).",
+            block_merge=False,
+            counts=counts,
+            dedupe_key=dedupe_key,
+        )
+
+    blocking: tuple[str, ...]
     if gate == "P0":
+        blocking = ("P0",)
         block = counts.p0 > 0
     elif gate == "P1":
+        blocking = ("P0", "P1")
         block = (counts.p0 + counts.p1) > 0
     elif gate == "P2":
+        blocking = ("P0", "P1", "P2")
         block = (counts.p0 + counts.p1 + counts.p2) > 0
     else:
-        block = False
+        blocking = ("P0", "P1")
+        block = (counts.p0 + counts.p1) > 0
 
     if block:
+        parts = []
+        if "P0" in blocking:
+            parts.append(f"P0={counts.p0}")
+        if "P1" in blocking:
+            parts.append(f"P1={counts.p1}")
+        if "P2" in blocking:
+            parts.append(f"P2={counts.p2}")
         return GateResult(
             status=GateStatus.BLOCKED,
-            reason=f"Found {counts.p0} P0, {counts.p1} P1 findings",
+            reason=f"Blocked (severity_gate={gate}): " + ", ".join(parts),
             block_merge=True,
             counts=counts,
             dedupe_key=dedupe_key,
         )
+
     return GateResult(
         status=GateStatus.PASSED,
-        reason=f"No blocking findings (P0={counts.p0}, P1={counts.p1})",
+        reason=(
+            f"Passed (severity_gate={gate}): no {('/'.join(blocking))} findings. "
+            f"Counts: P0={counts.p0}, P1={counts.p1}, P2={counts.p2}, P3={counts.p3}"
+        ),
         block_merge=False,
         counts=counts,
         dedupe_key=dedupe_key,
