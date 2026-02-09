@@ -34,6 +34,8 @@ def write_pack_summary(
     tool_versions: Dict[str, str],
     stages_completed: List[str],
     review_brief_path: Path | None = None,
+    severity_gate: str | None = None,
+    llm_usage: Dict[str, Any] | None = None,
     error: str | None = None,
     errors: List[str] | None = None,
     fingerprint_count: int | None = None,
@@ -64,6 +66,10 @@ def write_pack_summary(
         "error": error,
         "errors": errors_list,
     }
+    if severity_gate is not None:
+        summary["severity_gate"] = str(severity_gate)
+    if llm_usage is not None:
+        summary["llm_usage"] = llm_usage
     if fingerprint_count is not None:
         summary["fingerprint_count"] = int(fingerprint_count)
     if dedupe_key is not None:

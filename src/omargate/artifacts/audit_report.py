@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+from ..formatting import humanize_duration_ms
+
 SEVERITY_ICONS = {"P0": "🔴", "P1": "🟠", "P2": "🟡", "P3": "⚪"}
 CATEGORY_ICONS = {
     "auth": "🔐",
@@ -36,19 +38,33 @@ def generate_audit_report(
     - Artifact storage (Tier 3)
     - Export/download
     """
-    _ = (config, review_brief_path)
+    _ = (review_brief_path,)
+
+    severity_gate = str(
+        (config or {}).get("severity_gate")
+        or summary.get("severity_gate")
+        or "P1"
+    ).strip().upper()
 
     lines = []
 
     # Header
+    policy_pack = summary.get("policy_pack", "omar")
+    policy_pack_version = str(summary.get("policy_pack_version", "v1"))
+    policy_display = (
+        f"{policy_pack}@{policy_pack_version}"
+        if "@" not in policy_pack_version
+        else f"{policy_pack}{policy_pack_version}"
+    )
     lines.extend(
         [
             "# 🛡️ Omar Gate Audit Report",
             "",
             f"**Run ID:** `{run_id}`",
             f"**Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
-            f"**Policy:** {summary.get('policy_pack', 'omar')} v{summary.get('policy_pack_version', '1.0')}",
-            f"**Duration:** {summary.get('duration_ms', 0)}ms",
+            f"**Policy:** {policy_display}",
+            f"**Gate:** `{severity_gate}`",
+            f"**Duration:** {humanize_duration_ms(summary.get('duration_ms'))}",
             "",
             "---",
             "",
@@ -57,8 +73,23 @@ def generate_audit_report(
 
     # Executive Summary
     counts = summary.get("counts", {})
-    gate_result = "BLOCKED" if counts.get("P0", 0) + counts.get("P1", 0) > 0 else "PASSED"
-    gate_icon = "❌" if gate_result == "BLOCKED" else "✅"
+    p0 = int(counts.get("P0", 0) or 0)
+    p1 = int(counts.get("P1", 0) or 0)
+    p2 = int(counts.get("P2", 0) or 0)
+
+    if severity_gate == "NONE":
+        gate_result = "DISABLED"
+        gate_icon = "⚪"
+    elif severity_gate == "P0":
+        gate_result = "BLOCKED" if p0 > 0 else "PASSED"
+        gate_icon = "❌" if gate_result == "BLOCKED" else "✅"
+    elif severity_gate == "P2":
+        gate_result = "BLOCKED" if (p0 + p1 + p2) > 0 else "PASSED"
+        gate_icon = "❌" if gate_result == "BLOCKED" else "✅"
+    else:
+        # Default P1 semantics.
+        gate_result = "BLOCKED" if (p0 + p1) > 0 else "PASSED"
+        gate_icon = "❌" if gate_result == "BLOCKED" else "✅"
 
     lines.extend(
         [

@@ -22,7 +22,7 @@ def test_comment_contains_marker() -> None:
         pr_number=42,
         dashboard_url=None,
         artifacts_url="https://example.com/artifacts",
-        cost_usd=1.23,
+        estimated_cost_usd=0.0032,
         version="1.2.0",
         findings=[
             {
@@ -37,14 +37,21 @@ def test_comment_contains_marker() -> None:
         scan_mode="pr-diff",
         policy_pack="omar",
         policy_pack_version="v1",
+        severity_gate="P1",
         duration_ms=1234,
         deterministic_count=1,
         llm_count=2,
         dedupe_key="dedupe-123456",
+        llm_engine="openai",
+        llm_model="gpt-4o",
+        actual_cost_usd=0.05,
+        head_sha="deadbeef",
+        server_url="https://github.com",
     )
 
     assert MARKER_PREFIX in body
     assert "<!-- sentinelayer:omar-gate:v1:acme/demo:42 -->" in body
+    assert "Cost (est.):** `$0.0032`" in body
 
 
 def test_comment_contains_all_sections() -> None:
@@ -55,7 +62,7 @@ def test_comment_contains_all_sections() -> None:
         pr_number=42,
         dashboard_url=None,
         artifacts_url="https://example.com/artifacts",
-        cost_usd=1.23,
+        estimated_cost_usd=1.23,
         version="1.2.0",
         findings=[
             {
@@ -70,16 +77,18 @@ def test_comment_contains_all_sections() -> None:
         scan_mode="pr-diff",
         policy_pack="omar",
         policy_pack_version="v1",
+        severity_gate="P1",
         duration_ms=1234,
         deterministic_count=1,
         llm_count=2,
         dedupe_key="dedupe-123456",
     )
 
-    assert "| 🔴 P0 |" in body
+    assert "| Severity | Count | Blocks Merge? |" in body
     assert "### Next Steps" in body
     assert "Top Findings" in body
     assert "run_id=run-abcd" in body
+    assert "Artifacts & Full Report" in body
 
 
 def test_comment_footer_shows_llm_model() -> None:
@@ -90,17 +99,17 @@ def test_comment_footer_shows_llm_model() -> None:
         pr_number=42,
         dashboard_url=None,
         artifacts_url=None,
-        cost_usd=0.05,
+        estimated_cost_usd=0.05,
         version="1.2.0",
         deterministic_count=10,
         llm_count=3,
         dedupe_key="dedupe-123456",
+        llm_engine="openai",
         llm_model="gpt-4o",
     )
 
-    assert "model=gpt-4o" in body
-    assert "det=10" in body
-    assert "llm=3" in body
+    assert "**LLM:** `openai` (`gpt-4o`)" in body
+    assert "raw_findings(det=10, llm=3)" in body
 
 
 def test_comment_footer_default_model_none() -> None:
@@ -111,8 +120,8 @@ def test_comment_footer_default_model_none() -> None:
         pr_number=42,
         dashboard_url=None,
         artifacts_url=None,
-        cost_usd=None,
+        estimated_cost_usd=None,
         version="1.2.0",
     )
 
-    assert "model=none" in body
+    assert "**LLM:** `disabled` (`n/a`)" in body
