@@ -1,0 +1,542 @@
+async def async_main() -> int:
+    """Async main entry point."""
+
+    try:
+        config = OmarGateConfig()
+    except Exception as exc:
+        print(f"::error::Configuration error: {exc}")
+        return 2
+
+    try:
+        ctx = GitHubContext.from_environment()
+    except Exception as exc:
+        print(f"::error::Failed to load GitHub context: {exc}")
+        return 2
+
+    repo_root = Path(os.environ.get("GITHUB_WORKSPACE", "."))
+    run_id = str(uuid.uuid4())
+    run_dir = get_run_dir(run_id)
+    logger = OmarLogger(run_id)
+    collector = TelemetryCollector(run_id=run_id, repo_full_name=ctx.repo_full_name)
+    collector.scan_mode = config.scan_mode
+
+    logger.info(
+        "Omar Gate starting",
+        repo=ctx.repo_full_name,
+        pr_number=ctx.pr_number,
+        head_sha=ctx.head_sha,
+        scan_mode=config.scan_mode,
+    )
+
+    dashboard_url = None
+    if config.sentinelayer_token.get_secret_value():
+        dashboard_url = f"https://sentinelayer.com/runs/{run_id}"
+
+    idem_key = compute_idempotency_key(
+        repo=ctx.repo_full_name,
+        pr_number=ctx.pr_number or 0,
+        head_sha=ctx.head_sha,
+        scan_mode=config.scan_mode,
+        policy_pack=config.policy_pack,
+        policy_pack_version=config.policy_pack_version,
+        action_major_version=ACTION_MAJOR_VERSION,
+    )
+
+    token = config.github_token.get_secret_value() or os.environ.get("GITHUB_TOKEN", "")
+    gh = GitHubClient(token=token, repo=ctx.repo_full_name)
+
+    estimated_cost = _estimate_cost(ctx, gh, config)
+
+    # === PREFLIGHT ===
+    preflight_success = True
+    collector.stage_start("preflight")
+    try:
+        with logger.stage("preflight"):
+            should_skip, existing_url = await check_dedupe(
+                gh, ctx.head_sha, idem_key, CHECK_NAME
+            )
+            if should_skip:
+                collector.dedupe_skipped = True
+                preflight_success = False
+                logger.info("Skipping - already analyzed", existing_url=existing_url)
+
+                try:
+                    return _short_circuit_mirror_prior_check_run(
+                        gh=gh,
+                        head_sha=ctx.head_sha,
+                        idem_key=idem_key,
+                        check_name=CHECK_NAME,
+                        select="dedupe",
+                        fallback_reason="Deduped",
+                        note_prefix="Deduped (already analyzed). Mirroring prior Omar Gate result.",
+                        run_dir=run_dir,
+                        run_id=run_id,
+                        config=config,
+                        skip_label="dedupe",
+                        explicit_url=existing_url,
+                    )
+                except Exception as exc:
+                    print(f"::error::Dedupe short-circuit failed: {exc}")
+                    return 2
+
+            proceed, scan_mode_override, fork_reason = check_fork_policy(ctx, config)
+            if not proceed:
+                collector.fork_blocked = True
+                preflight_success = False
+                logger.info("Blocked by fork policy", reason=fork_reason)
+                if ctx.pr_number:
+                    comment_body = (
+                        "## 🛡️ Omar Gate: Blocked\n\n"
+                        "Fork PRs cannot access secrets required for full analysis. "
+                        "Please ask a maintainer to run the scan via workflow_dispatch.\n\n"
+                        f"{marker(ctx.repo_full_name, ctx.pr_number)}"
+                    )
+                    gh.create_or_update_pr_comment(
+                        ctx.pr_number,
+                        comment_body,
+                        marker_prefix(),
+                    )
+                return 12
+
+            proceed, rate_reason = await check_rate_limits(
+                gh, ctx.pr_number, config, logger
+            )
+            if not proceed:
+                collector.rate_limit_skipped = True
+                preflight_success = False
+                logger.info("Rate limited", reason=rate_reason)
+                if rate_reason == "api_error_require_approval":
+                    gate_result = GateResult(
+                        status=GateStatus.NEEDS_APPROVAL,
+                        reason=(
+                            "Rate limit enforcement unavailable due to GitHub API error; "
+                            "approval required to proceed. "
+                            "Set rate_limit_fail_mode=open to skip enforcement."
+                        ),
+                        block_merge=True,
+                        counts=Counts(),
+                        dedupe_key=idem_key,
+                    )
+                    return _short_circuit_with_gate_result(
+                        run_dir=run_dir,
+                        run_id=run_id,
+                        gate_result=gate_result,
+                        config=config,
+                        idem_key=idem_key,
+                        skip_label=f"rate_limit:{rate_reason}",
+                        link_url=None,
+                    )
+
+                try:
+                    return _short_circuit_mirror_prior_check_run(
+                        gh=gh,
+                        head_sha=ctx.head_sha,
+                        idem_key=idem_key,
+                        check_name=CHECK_NAME,
+                        select="latest",
+                        fallback_reason="Rate limited",
+                        note_prefix=f"Rate limited ({rate_reason}). Mirroring latest Omar Gate result.",
+                        run_dir=run_dir,
+                        run_id=run_id,
+                        config=config,
+                        skip_label=f"rate_limit:{rate_reason}",
+                    )
+                except Exception as exc:
+                    print(f"::error::Rate-limit short-circuit failed: {exc}")
+                    return 2
+
+            approved, cost_status = await check_cost_approval(
+                estimated_cost, config, ctx, gh
+            )
+            collector.approval_state = cost_status
+            if not approved:
+                preflight_success = False
+                logger.info("Cost approval required", status=cost_status)
+                return 13
+
+            bp_ok, bp_message = check_branch_protection(gh, ctx, CHECK_NAME)
+            if not bp_ok:
+                logger.warning("Branch protection issue", message=bp_message)
+    except Exception as exc:
+        preflight_success = False
+        collector.record_error("preflight", str(exc))
+        raise
+    finally:
+        collector.stage_end("preflight", success=preflight_success)
+
+    # === ANALYSIS ===
+    limited_mode = scan_mode_override == "limited"
+
+    orchestrator = AnalysisOrchestrator(
+        config=config,
+        logger=logger,
+        repo_root=repo_root,
+        allow_llm=not limited_mode,
+    )
+
+    diff_content: Optional[str] = None
+    changed_files: Optional[list[str]] = None
+    if config.scan_mode == "pr-diff" and ctx.pr_number:
+        collector.stage_start("fetch_diff")
+        try:
+            with logger.stage("fetch_diff"):
+                diff_content = await gh.get_pr_diff(ctx.pr_number)
+                changed_files = await gh.get_pr_changed_files(ctx.pr_number)
+        except Exception as exc:
+            collector.record_error("fetch_diff", str(exc))
+            collector.stage_end("fetch_diff", success=False)
+            raise
+        else:
+            collector.stage_end("fetch_diff", success=True)
+
+    if limited_mode:
+        logger.info("Running in limited mode (deterministic only)")
+
+    scan_start = time.perf_counter()
+    collector.stage_start("analysis")
+    try:
+        analysis = await orchestrator.run(
+            scan_mode=config.scan_mode,
+            diff_content=diff_content,
+            changed_files=changed_files,
+            run_dir=run_dir,
+            run_id=run_id,
+            version=ACTION_VERSION,
+            dashboard_url=dashboard_url,
+        )
+    except Exception as exc:
+        collector.record_error("analysis", str(exc))
+        collector.stage_end("analysis", success=False)
+        raise
+    else:
+        collector.stage_end("analysis", success=True)
+
+    if analysis.llm_usage:
+        model_used = analysis.llm_usage.get("model") or ""
+        provider_used = analysis.llm_usage.get("provider") or None
+        fallback_used = bool(model_used and model_used == config.model_fallback)
+        collector.record_llm_usage(
+            model=model_used,
+            tokens_in=analysis.llm_usage.get("tokens_in", 0),
+            tokens_out=analysis.llm_usage.get("tokens_out", 0),
+            cost_usd=analysis.llm_usage.get("cost_usd", 0),
+            latency_ms=analysis.llm_usage.get("latency_ms", 0),
+            fallback_used=fallback_used,
+            provider=provider_used,
+            fallback_provider=provider_used if fallback_used else None,
+            fallback_model=model_used if fallback_used else None,
+        )
+
+    ingest_stats = analysis.ingest_stats or {}
+    collector.files_scanned = int(
+        ingest_stats.get("in_scope_files", analysis.total_files_scanned or 0) or 0
+    )
+    total_files = int(ingest_stats.get("total_files", 0) or 0)
+    collector.files_skipped = max(total_files - collector.files_scanned, 0)
+    collector.total_lines = int(ingest_stats.get("total_lines", 0) or 0)
+
+    # === PACKAGING ===
+    summary_payload: dict = {}
+    scan_duration_ms = 0
+    packaging_success = True
+    collector.stage_start("packaging")
+    try:
+        with logger.stage("packaging"):
+            ingest_path = run_dir / "INGEST.json"
+            ingest_path.write_text(json_dumps(analysis.ingest), encoding="utf-8")
+            findings_path = run_dir / "FINDINGS.jsonl"
+            write_findings_jsonl(findings_path, analysis.findings)
+
+            pack_counts = {
+                key: analysis.counts[key] for key in ("P0", "P1", "P2", "P3")
+            }
+            fingerprint_count = sum(
+                1 for finding in analysis.findings if finding.get("fingerprint")
+            )
+            scan_duration_ms = int((time.perf_counter() - scan_start) * 1000)
+            pack_summary_path = write_pack_summary(
+                run_dir=run_dir,
+                run_id=run_id,
+                writer_complete=True,
+                findings_path=findings_path,
+                counts=pack_counts,
+                tool_versions={
+                    "action": ACTION_VERSION,
+                    "policy_pack": config.policy_pack_version,
+                },
+                stages_completed=[
+                    "preflight",
+                    "ingest",
+                    "deterministic",
+                    "llm",
+                    "packaging",
+                ],
+                review_brief_path=analysis.review_brief_path,
+                fingerprint_count=fingerprint_count,
+                dedupe_key=idem_key,
+                policy_pack=config.policy_pack,
+                policy_pack_version=config.policy_pack_version,
+                error=None,
+                duration_ms=scan_duration_ms,
+            )
+            try:
+                summary_payload = json.loads(
+                    pack_summary_path.read_text(encoding="utf-8")
+                )
+                write_audit_report(
+                    run_dir=run_dir,
+                    run_id=run_id,
+                    summary=summary_payload,
+                    findings=analysis.findings,
+                    ingest=analysis.ingest,
+                    config={"severity_gate": config.severity_gate},
+                    version=ACTION_VERSION,
+                )
+            except Exception as exc:
+                logger.warning("Audit report generation failed", error=str(exc))
+                analysis.warnings.append("Audit report generation failed")
+
+            try:
+                write_artifact_manifest(run_dir, run_id)
+            except Exception as exc:
+                logger.warning("Manifest generation failed", error=str(exc))
+                analysis.warnings.append("Manifest generation failed")
+
+            try:
+                artifacts_override = os.environ.get("SENTINELAYER_ARTIFACTS_DIR")
+                if artifacts_override:
+                    artifacts_dir = Path(artifacts_override)
+                else:
+                    workspace = os.environ.get("GITHUB_WORKSPACE")
+                    artifacts_dir = (
+                        Path(workspace) / ".sentinelayer" / "artifacts"
+                        if workspace
+                        else None
+                    )
+
+                if artifacts_dir and ensure_writable_dir(artifacts_dir):
+                    prepare_artifacts_for_upload(run_dir, artifacts_dir)
+                else:
+                    logger.info(
+                        "Artifact preparation skipped",
+                        reason="workspace not writable",
+                    )
+            except Exception as exc:
+                logger.warning("Artifact preparation failed", error=str(exc))
+                analysis.warnings.append("Artifact preparation failed")
+    except Exception as exc:
+        packaging_success = False
+        collector.record_error("packaging", str(exc))
+        raise
+    finally:
+        collector.stage_end("packaging", success=packaging_success)
+
+    # === GATE EVALUATION ===
+    gate_success = True
+    collector.stage_start("gate_eval")
+    try:
+        with logger.stage("gate_eval"):
+            gate_result = evaluate_gate(
+                run_dir,
+                GateConfig(severity_gate=config.severity_gate),
+            )
+    except Exception as exc:
+        gate_success = False
+        collector.record_error("gate_eval", str(exc))
+        raise
+    finally:
+        collector.stage_end("gate_eval", success=gate_success)
+
+    status_value = (
+        gate_result.status.value
+        if hasattr(gate_result.status, "value")
+        else str(gate_result.status)
+    )
+    collector.record_gate_result(status_value, gate_result.reason)
+    collector.record_findings(
+        analysis.counts,
+        analysis.deterministic_count,
+        analysis.llm_count,
+    )
+    logger.info(
+        "Gate evaluation complete",
+        status=status_value,
+        block_merge=gate_result.block_merge,
+        counts=analysis.counts,
+    )
+
+    # === PUBLISHING ===
+    publish_success = True
+    collector.stage_start("publish")
+    try:
+        with logger.stage("publish"):
+            cost_usd = (
+                analysis.llm_usage.get("cost_usd", 0.0) if analysis.llm_usage else 0.0
+            )
+
+            if not gh.token:
+                message = "GitHub token missing; publish calls unavailable"
+                if _publish_strict():
+                    raise RuntimeError(message)
+                logger.warning(message)
+                analysis.warnings.append(message)
+            elif ctx.pr_number:
+                try:
+                    github_run_id = os.environ.get("GITHUB_RUN_ID")
+                    server_url = os.environ.get(
+                        "GITHUB_SERVER_URL", "https://github.com"
+                    )
+                    artifacts_url = (
+                        f"{server_url}/{ctx.repo_full_name}/actions/runs/{github_run_id}"
+                        if github_run_id
+                        else None
+                    )
+                    llm_model_used = "none"
+                    if analysis.llm_success and analysis.llm_usage:
+                        llm_model_used = analysis.llm_usage.get("model", config.model)
+
+                    comment_body = render_pr_comment(
+                        result=gate_result,
+                        run_id=run_id,
+                        repo_full_name=ctx.repo_full_name,
+                        pr_number=ctx.pr_number,
+                        dashboard_url=dashboard_url,
+                        artifacts_url=artifacts_url,
+                        cost_usd=cost_usd,
+                        version=ACTION_VERSION,
+                        findings=analysis.findings[:5],
+                        warnings=analysis.warnings,
+                        scan_mode=config.scan_mode,
+                        policy_pack=config.policy_pack,
+                        policy_pack_version=config.policy_pack_version,
+                        duration_ms=summary_payload.get("duration_ms")
+                        or scan_duration_ms,
+                        deterministic_count=analysis.deterministic_count,
+                        llm_count=analysis.llm_count,
+                        dedupe_key=gate_result.dedupe_key or idem_key,
+                        llm_model=llm_model_used,
+                    )
+                    gh.create_or_update_pr_comment(
+                        ctx.pr_number,
+                        comment_body,
+                        marker_prefix(),
+                    )
+                except Exception as exc:
+                    if _publish_strict():
+                        raise
+                    logger.warning("PR comment failed", error=str(exc))
+                    analysis.warnings.append("PR comment failed")
+
+            counts = summary_payload.get("counts", {}) or analysis.counts
+            summary_text = (
+                f"🔴 P0={counts.get('P0', 0)} • 🟠 P1={counts.get('P1', 0)} • "
+                f"🟡 P2={counts.get('P2', 0)} • ⚪ P3={counts.get('P3', 0)}"
+            )
+            check_text = gate_result.reason
+            try:
+                counts_marker = json.dumps(
+                    {
+                        "P0": int(counts.get("P0", 0) or 0),
+                        "P1": int(counts.get("P1", 0) or 0),
+                        "P2": int(counts.get("P2", 0) or 0),
+                        "P3": int(counts.get("P3", 0) or 0),
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                check_text = f"{check_text}\n\n<!-- sentinelayer:counts:{counts_marker} -->"
+            except Exception:
+                pass
+            status_key = (
+                gate_result.status.value
+                if hasattr(gate_result.status, "value")
+                else str(gate_result.status)
+            )
+            conclusion_map = {
+                "passed": "success",
+                "blocked": "failure",
+                "bypassed": "neutral",
+                "needs_approval": "action_required",
+                "error": "failure",
+            }
+            annotations = findings_to_annotations(analysis.findings)
+            if not gh.token:
+                message = "GitHub token missing; check run unavailable"
+                if _publish_strict():
+                    raise RuntimeError(message)
+                logger.warning(message)
+                analysis.warnings.append(message)
+            else:
+                try:
+                    gh.create_check_run(
+                        name=CHECK_NAME,
+                        head_sha=ctx.head_sha,
+                        conclusion=conclusion_map.get(status_key, "failure"),
+                        summary=summary_text,
+                        title=f"Omar Gate: {status_key.upper()}",
+                        text=check_text,
+                        details_url=dashboard_url,
+                        external_id=idem_key,
+                        annotations=annotations,
+                    )
+                except Exception as exc:
+                    if _publish_strict():
+                        raise
+                    logger.warning("Check run creation failed", error=str(exc))
+                    analysis.warnings.append("Check run creation failed")
+
+            write_step_summary(
+                gate_result=gate_result,
+                summary=summary_payload,
+                findings=analysis.findings,
+                run_id=run_id,
+                version=ACTION_VERSION,
+            )
+    except Exception as exc:
+        publish_success = False
+        collector.record_error("publish", str(exc))
+        raise
+    finally:
+        collector.stage_end("publish", success=publish_success)
+
+    # === TELEMETRY (best effort) ===
+    consent = _resolve_consent(config)
+    if get_max_tier(consent) > 0:
+        telemetry_success = True
+        collector.stage_start("telemetry")
+        try:
+            with logger.stage("telemetry"):
+                try:
+                    await _upload_telemetry(
+                        config=config,
+                        run_id=run_id,
+                        idem_key=idem_key,
+                        analysis=analysis,
+                        gate_result=gate_result,
+                        ctx=ctx,
+                        run_dir=run_dir,
+                        collector=collector,
+                        logger=logger,
+                        consent=consent,
+                    )
+                except Exception as exc:
+                    telemetry_success = False
+                    collector.record_error("telemetry", str(exc))
+                    logger.warning("Telemetry upload failed", error=str(exc))
+        finally:
+            collector.stage_end("telemetry", success=telemetry_success)
+
+    # === OUTPUTS ===
+    estimated_cost_usd = analysis.llm_usage.get("cost_usd", 0.0) if analysis.llm_usage else 0.0
+    _write_github_outputs(
+        run_id=run_id,
+        idem_key=idem_key,
+        findings_path=findings_path,
+        pack_summary_path=pack_summary_path,
+        gate_result=gate_result,
+        estimated_cost_usd=estimated_cost_usd,
+    )
+
+    return 1 if gate_result.block_merge else 0
+
+
