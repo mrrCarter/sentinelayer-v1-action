@@ -36,6 +36,14 @@ if [ "$(id -u)" -eq 0 ]; then
     chown -R app:app "$GITHUB_WORKSPACE/.sentinelayer" 2>/dev/null || true
     chmod -R u+rwX,g+rwX "$GITHUB_WORKSPACE/.sentinelayer" 2>/dev/null || true
   fi
+
+  # GitHub mounts file_commands for GITHUB_OUTPUT, GITHUB_STEP_SUMMARY, etc.
+  # These files are created before the step starts but owned by the runner user.
+  if [ -d "/github/file_commands" ]; then
+    chown -R app:app /github/file_commands 2>/dev/null || true
+    chmod -R u+rwX /github/file_commands 2>/dev/null || true
+  fi
+
   exec su-exec app python -m omargate.main
 fi
 
