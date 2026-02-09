@@ -15,13 +15,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Sentinelayer Security Review
-        id: sentinelayer
+      - name: Omar Gate
+        id: omar
         uses: ./
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           github_token: ${{ github.token }}
           severity_gate: P1
           scan_mode: pr-diff
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Upload Omar Gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omar-gate-artifacts
+          path: .sentinelayer/artifacts
+          if-no-files-found: warn
+
