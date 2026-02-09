@@ -27,8 +27,11 @@ class TelemetryCollector:
     _stages: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     # LLM metrics
+    llm_provider: Optional[str] = None
     model_used: Optional[str] = None
     model_fallback_used: bool = False
+    fallback_provider: Optional[str] = None
+    fallback_model: Optional[str] = None
     tokens_in: int = 0
     tokens_out: int = 0
     estimated_cost_usd: float = 0.0
@@ -56,6 +59,11 @@ class TelemetryCollector:
     rate_limit_skipped: bool = False
     fork_blocked: bool = False
     approval_state: Optional[str] = None
+
+    # Run exit (populated even on early returns)
+    exit_code: int = 0
+    exit_reason: str = ""
+    preflight_exits: list = field(default_factory=list)
 
     # Errors
     errors: list = field(default_factory=list)
@@ -93,14 +101,23 @@ class TelemetryCollector:
         cost_usd: float,
         latency_ms: int,
         fallback_used: bool = False,
+        provider: Optional[str] = None,
+        fallback_provider: Optional[str] = None,
+        fallback_model: Optional[str] = None,
     ) -> None:
         """Record LLM usage metrics."""
+        if provider:
+            self.llm_provider = provider
         self.model_used = model
         self.tokens_in += tokens_in
         self.tokens_out += tokens_out
         self.estimated_cost_usd += cost_usd
         self.llm_latency_ms += latency_ms
         self.model_fallback_used = fallback_used
+        if fallback_provider:
+            self.fallback_provider = fallback_provider
+        if fallback_model:
+            self.fallback_model = fallback_model
 
     def record_findings(
         self,
@@ -121,6 +138,12 @@ class TelemetryCollector:
     def record_error(self, stage: str, error: str) -> None:
         """Record an error."""
         self.errors.append({"stage": stage, "error": error})
+
+    def record_preflight_exit(self, reason: str, exit_code: int) -> None:
+        """Record an early return/short-circuit reason and exit code."""
+        self.exit_reason = reason
+        self.exit_code = int(exit_code)
+        self.preflight_exits.append({"reason": reason, "exit_code": int(exit_code)})
 
     def total_duration_ms(self) -> int:
         """Total run duration."""

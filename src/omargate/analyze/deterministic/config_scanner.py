@@ -160,8 +160,10 @@ class ConfigScanner:
 
     def _scan_docker_compose(self, file_path: str, content: str) -> List[Finding]:
         findings: List[Finding] = []
-        privileged_re = re.compile(r"^\\s*privileged:\\s*true\\b", re.IGNORECASE)
-        ports_re = re.compile(r"^\\s*-\\s*['\\\"]?\\d{1,5}:\\d{1,5}(?:/(tcp|udp))?['\\\"]?\\s*$")
+        privileged_re = re.compile(r"^\s*privileged:\s*true\b", re.IGNORECASE)
+        ports_re = re.compile(
+            r"^\s*-\s*['\"]?\d{1,5}:\d{1,5}(?:/(tcp|udp))?['\"]?\s*$"
+        )
 
         for line_no, line in enumerate(content.splitlines(), start=1):
             if privileged_re.search(line):

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
 from ..artifacts import generate_review_brief
 from ..config import OmarGateConfig
-from ..ingest import run_ingest
+from ..ingest import QuickLearnSummary, extract_quick_learn_summary, run_ingest
+from ..harness import HarnessRunner
 from ..logging import OmarLogger
 from ..package.fingerprint import add_fingerprints_to_findings
-from .deterministic import ConfigScanner, PatternScanner, scan_for_secrets
+from .codex import CodexPromptBuilder, CodexRunner
+from .deterministic import ConfigScanner, EngQualityScanner, PatternScanner, scan_for_secrets
 from .llm import ContextBuilder, LLMClient, PromptLoader, ResponseParser, handle_llm_failure
+from .llm.providers import detect_provider_from_model
 from .llm.response_parser import ParsedFinding
 
 
@@ -55,6 +59,7 @@ class AnalysisOrchestrator:
         self.logger = logger
         self.repo_root = repo_root
         self.allow_llm = allow_llm
+        self._quick_learn: Optional[QuickLearnSummary] = None
 
         patterns_dir = Path(__file__).parent / "deterministic" / "patterns"
         self.pattern_scanner = PatternScanner(patterns_dir=patterns_dir)
@@ -81,13 +86,26 @@ class AnalysisOrchestrator:
 
         Steps:
         1. Ingest codebase
-        2. Run deterministic scans
-        3. Build LLM context
-        4. Run LLM analysis (with fallback)
-        5. Merge and dedupe findings
-        6. Return results
+        2. Run harness suites (optional)
+        3. Run deterministic scans
+        4. Build LLM context
+        5. Run LLM analysis (with fallback)
+        6. Merge and dedupe findings
+        7. Return results
         """
         warnings: List[str] = []
+
+        # Step 0: Quick Learn
+        quick_learn: Optional[QuickLearnSummary] = None
+        with self.logger.stage("quick_learn"):
+            quick_learn = await asyncio.to_thread(extract_quick_learn_summary, self.repo_root)
+            self.logger.info(
+                "Quick learn complete",
+                source_doc=quick_learn.source_doc,
+                tech_stack=quick_learn.tech_stack,
+                architecture=quick_learn.architecture,
+            )
+        self._quick_learn = quick_learn
 
         # Step 1: Ingest
         with self.logger.stage("ingest"):
@@ -104,7 +122,28 @@ class AnalysisOrchestrator:
                 in_scope=stats.get("in_scope_files"),
             )
 
-        # Step 2: Deterministic scans
+        # Step 2: Harness (portable suites)
+        harness_findings: List[dict] = []
+        if self.config.run_harness:
+            with self.logger.stage("harness"):
+                try:
+                    runner = HarnessRunner(
+                        project_root=str(self.repo_root),
+                        tech_stack=quick_learn.tech_stack if quick_learn else [],
+                    )
+                    harness_results = await runner.run()
+                    harness_findings = [self._finding_to_dict(f) for f in harness_results]
+                    self.logger.info(
+                        "Harness complete",
+                        findings_count=len(harness_findings),
+                    )
+                except Exception as exc:
+                    self.logger.warning("Harness failed", error=str(exc))
+                    warnings.append("Harness failed")
+        else:
+            warnings.append("Harness skipped (run_harness=false)")
+
+        # Step 3: Deterministic scans
         with self.logger.stage("deterministic_scan"):
             det_findings = self._run_deterministic_scans(ingest)
             self.logger.info(
@@ -112,16 +151,38 @@ class AnalysisOrchestrator:
                 findings_count=len(det_findings),
             )
 
-        # Step 3-4: LLM analysis (skip if no API key or limited mode)
+        # Step 4-5: Codex audit (optional) and/or LLM analysis
         llm_findings: List[dict] = []
         llm_success = False
         llm_usage: Optional[dict] = None
 
-        if self._should_run_llm():
+        ran_codex = False
+        if self.allow_llm and self.config.use_codex:
+            ran_codex = True
+            with self.logger.stage("codex_audit"):
+                codex_findings, codex_success, codex_warning = await self._run_codex_audit(
+                    ingest=ingest,
+                    deterministic_findings=det_findings,
+                    quick_learn=quick_learn,
+                    scan_mode=scan_mode,
+                    diff_content=diff_content,
+                )
+                llm_findings = codex_findings
+                llm_success = codex_success
+                if codex_warning:
+                    warnings.append(codex_warning)
+                self.logger.info(
+                    "Codex audit complete",
+                    success=llm_success,
+                    findings_count=len(llm_findings),
+                )
+
+        if (not ran_codex or not llm_success) and self._should_run_llm():
             with self.logger.stage("llm_analysis"):
                 llm_result = await self._run_llm_analysis(
                     ingest=ingest,
                     deterministic_findings=det_findings,
+                    quick_learn=quick_learn,
                     scan_mode=scan_mode,
                     diff_content=diff_content,
                     changed_files=changed_files,
@@ -138,11 +199,12 @@ class AnalysisOrchestrator:
                     success=llm_success,
                     findings_count=len(llm_findings),
                 )
-        else:
+        elif not ran_codex:
             warnings.append("LLM analysis skipped (no API key or limited mode)")
 
-        # Step 5: Merge findings
-        all_findings = self._merge_findings(det_findings, llm_findings)
+        # Step 6: Merge findings
+        base_findings = harness_findings + det_findings
+        all_findings = self._merge_findings(base_findings, llm_findings)
         add_fingerprints_to_findings(
             all_findings,
             policy_version=self.config.policy_pack_version,
@@ -192,10 +254,22 @@ class AnalysisOrchestrator:
         """Check if LLM analysis should run."""
         if not self.allow_llm:
             return False
-        api_key = self.config.openai_api_key.get_secret_value()
-        if not api_key:
-            return False
-        return True
+        primary_provider = detect_provider_from_model(
+            self.config.model, default_provider=self.config.llm_provider
+        )
+        api_key = self._get_provider_api_key(primary_provider)
+        return bool(api_key)
+
+    def _get_provider_api_key(self, provider: str) -> str:
+        if provider == "openai":
+            return self.config.openai_api_key.get_secret_value()
+        if provider == "anthropic":
+            return self.config.anthropic_api_key.get_secret_value()
+        if provider == "google":
+            return self.config.google_api_key.get_secret_value()
+        if provider == "xai":
+            return self.config.xai_api_key.get_secret_value()
+        return ""
 
     def _run_deterministic_scans(self, ingest: dict) -> List[dict]:
         """Run all deterministic scanners."""
@@ -229,12 +303,53 @@ class AnalysisOrchestrator:
         )
         findings.extend(self._finding_to_dict(f) for f in config_findings)
 
+        # Stack-aware engineering quality checks (inline rules).
+        tech_stack = self._quick_learn.tech_stack if self._quick_learn else []
+        eng_files = self._load_files_for_quality_scans(ingest)
+        eng_scanner = EngQualityScanner(tech_stack=tech_stack)
+        eng_findings = eng_scanner.scan(eng_files)
+        findings.extend(self._finding_to_dict(f) for f in eng_findings)
+
         return findings
+
+    def _load_files_for_quality_scans(self, ingest: dict) -> dict[str, str]:
+        """
+        Load a bounded set of file contents for stack-aware quality scanning.
+
+        Uses ingest's in-scope file list; avoids reading huge files.
+        """
+        files: dict[str, str] = {}
+        for file_info in ingest.get("files", []) or []:
+            rel_path = file_info.get("path")
+            if not rel_path:
+                continue
+            size_bytes = file_info.get("size_bytes")
+            if isinstance(size_bytes, int) and size_bytes > 1_000_000:
+                continue
+            try:
+                content = (self.repo_root / rel_path).read_text(
+                    encoding="utf-8", errors="ignore"
+                )
+            except OSError:
+                continue
+            files[rel_path] = content
+        # Ensure key infra files are included if present.
+        for rel_path in ("Dockerfile", ".env"):
+            if rel_path in files:
+                continue
+            try:
+                p = self.repo_root / rel_path
+                if p.is_file():
+                    files[rel_path] = p.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                pass
+        return files
 
     async def _run_llm_analysis(
         self,
         ingest: dict,
         deterministic_findings: List[dict],
+        quick_learn: Optional[QuickLearnSummary],
         scan_mode: str,
         diff_content: Optional[str],
         changed_files: Optional[List[str]],
@@ -244,6 +359,7 @@ class AnalysisOrchestrator:
             ingest=ingest,
             deterministic_findings=deterministic_findings,
             repo_root=self.repo_root,
+            quick_learn=quick_learn,
             scan_mode=scan_mode,
             diff_content=diff_content,
             changed_files=changed_files,
@@ -255,6 +371,10 @@ class AnalysisOrchestrator:
             api_key=self.config.openai_api_key.get_secret_value(),
             primary_model=self.config.model,
             fallback_model=self.config.model_fallback,
+            llm_provider=self.config.llm_provider,
+            anthropic_api_key=self.config.anthropic_api_key.get_secret_value(),
+            google_api_key=self.config.google_api_key.get_secret_value(),
+            xai_api_key=self.config.xai_api_key.get_secret_value(),
         )
 
         response = await client.analyze(
@@ -294,6 +414,7 @@ class AnalysisOrchestrator:
             success=True,
             usage={
                 "model": response.usage.model,
+                "provider": getattr(response.usage, "provider", None),
                 "tokens_in": response.usage.tokens_in,
                 "tokens_out": response.usage.tokens_out,
                 "cost_usd": response.usage.cost_usd,
@@ -303,6 +424,63 @@ class AnalysisOrchestrator:
             else None,
             warning=None,
         )
+
+    async def _run_codex_audit(
+        self,
+        *,
+        ingest: dict,
+        deterministic_findings: List[dict],
+        quick_learn: Optional[QuickLearnSummary],
+        scan_mode: str,
+        diff_content: Optional[str],
+    ) -> tuple[List[dict], bool, Optional[str]]:
+        """
+        Run Codex CLI agentic audit and parse JSONL findings.
+
+        Returns: (findings, success, warning_message)
+        """
+        api_key = self.config.openai_api_key.get_secret_value()
+        if not api_key:
+            return [], False, "Codex skipped (missing openai_api_key)"
+
+        tech_stack = quick_learn.tech_stack if quick_learn else []
+        hotspots = self._flatten_hotspots(ingest.get("hotspots", {}) or {})
+
+        builder = CodexPromptBuilder(max_tokens=self.config.max_input_tokens)
+        built = builder.build_prompt(
+            repo_root=self.repo_root,
+            quick_learn=quick_learn,
+            deterministic_findings=deterministic_findings,
+            tech_stack=tech_stack,
+            scan_mode=scan_mode,
+            diff_content=diff_content,
+            hotspot_files=hotspots,
+        )
+
+        runner = CodexRunner(api_key=api_key, model=self.config.codex_model)
+        result = await runner.run_audit(
+            prompt=built.prompt,
+            working_dir=str(self.repo_root),
+            sandbox="read-only",
+            timeout=int(self.config.codex_timeout),
+        )
+        if not result.success:
+            warn = result.error or "Codex audit failed"
+            return [], False, f"Codex audit failed ({warn}). Falling back to LLM analysis."
+        return result.findings, True, None
+
+    def _flatten_hotspots(self, hotspots: dict) -> List[str]:
+        files: List[str] = []
+        seen = set()
+        for group in hotspots.values():
+            if not isinstance(group, list):
+                continue
+            for rel_path in group:
+                if not rel_path or rel_path in seen:
+                    continue
+                seen.add(rel_path)
+                files.append(rel_path)
+        return files
 
     def _merge_findings(self, deterministic: List[dict], llm: List[dict]) -> List[dict]:
         """Merge findings, dedupe by file+line+category."""

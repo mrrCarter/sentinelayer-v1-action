@@ -27,6 +27,8 @@ class DummyGitHub:
         labels: Optional[List[str]] = None,
         protection: Optional[Dict[str, Any]] = None,
     ) -> None:
+        # Mirror GitHubClient: rate-limit logic checks for a truthy token before enforcing.
+        self.token = "gh_test_token"
         self._runs = runs or []
         self._pr_head = pr_head
         self._labels = labels or []

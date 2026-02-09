@@ -6,17 +6,7 @@ from typing import Optional, Tuple
 from ..config import OmarGateConfig
 from ..github import GitHubClient
 from ..logging import OmarLogger
-
-
-def _parse_iso8601(value: Optional[str]) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        if value.endswith("Z"):
-            value = value[:-1] + "+00:00"
-        return datetime.fromisoformat(value)
-    except ValueError:
-        return None
+from ..utils import parse_iso8601
 
 
 async def check_rate_limits(
@@ -31,7 +21,11 @@ async def check_rate_limits(
     Returns:
         (should_proceed, reason_if_blocked)
 
-    FAIL-SAFE: If GitHub API fails, return (False, "api_error_require_approval")
+    FAIL MODE (GitHub API errors):
+    - rate_limit_fail_mode=open: skip enforcement and allow the scan to proceed (cost-risky, but avoids blocking).
+    - rate_limit_fail_mode=closed: require approval (fail-closed) when enforcement cannot be performed.
+
+    Missing token is treated as unenforceable: enforcement is skipped (with a warning).
     """
     if config.max_daily_scans == 0 and config.min_scan_interval_minutes == 0:
         return True, "limits_disabled"
@@ -39,19 +33,28 @@ async def check_rate_limits(
     if not pr_number:
         return True, "not_pr"
 
+    if not getattr(gh, "token", ""):
+        logger.warning("rate_limit_skip", reason="missing_github_token")
+        return True, "missing_github_token_skip_limits"
+
+    def _on_api_error(reason: str, error: Optional[str] = None) -> Tuple[bool, str]:
+        logger.warning("rate_limit_api_error", reason=reason, error=error or "")
+        if config.rate_limit_fail_mode == "open":
+            return True, "api_error_skip_limits"
+        return False, "api_error_require_approval"
+
     try:
         pr = gh.get_pull_request(pr_number)
         head_sha = (pr.get("head") or {}).get("sha")
         if not head_sha:
-            return False, "api_error_require_approval"
+            return _on_api_error("missing_head_sha")
         runs = gh.list_check_runs(head_sha, "Omar Gate")
     except Exception as exc:
-        logger.error("rate_limit_api_error", error=str(exc))
-        return False, "api_error_require_approval"
+        return _on_api_error("exception", error=str(exc))
 
     now = datetime.now(timezone.utc)
     completed_times = [
-        ts for ts in (_parse_iso8601(r.get("completed_at")) for r in runs) if ts
+        ts for ts in (parse_iso8601(r.get("completed_at")) for r in runs) if ts
     ]
 
     if completed_times:

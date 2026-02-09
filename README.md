@@ -90,6 +90,7 @@ Cost Control
 |---|---|---|---|
 | `max_daily_scans` | `20` | Maximum scans per repo per day (0 = unlimited). | `0` |
 | `min_scan_interval_minutes` | `5` | Minimum minutes between scans for same PR head SHA. | `15` |
+| `rate_limit_fail_mode` | `closed` | On GitHub API errors during rate limit enforcement: `closed` (require approval) or `open` (skip enforcement and proceed). | `open` |
 | `require_cost_confirmation` | `5.00` | If estimated cost exceeds this USD threshold, require approval. | `2.50` |
 | `approval_mode` | `pr_label` | High-cost scan approval: `pr_label`, `workflow_dispatch`, `none`. | `workflow_dispatch` |
 | `approval_label` | `sentinelayer:approved` | PR label that approves high-cost scan. | `security:cost-approved` |
@@ -157,10 +158,12 @@ Exit codes:
 |---:|---|
 | `0` | Passed |
 | `1` | Blocked |
-| `10` | Dedupe (already analyzed) |
-| `11` | Rate limited |
+| `2` | Configuration/context error |
 | `12` | Fork blocked |
-| `13` | Cost approval needed |
+| `13` | Approval needed (cost or preflight) |
+
+Notes:
+- On dedupe or cooldown, the action short-circuits and mirrors the most recent `Omar Gate` check run result for the same PR head SHA (so it still exits `0`/`1`/`13` instead of failing the workflow just because it skipped).
 
 ## PR Comment Screenshot Placeholder
 
