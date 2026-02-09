@@ -1,34 +1,33 @@
-name: Security Review
+name: Omar Gate
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
   pull-requests: write
-  id-token: write
+  issues: write
   checks: write
+  id-token: write
 
 jobs:
-  security-review:
+  omar:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Omar Gate
         id: omar
-        uses: ./
+        uses: mrrCarter/sentinelayer-v1-action@v1
         with:
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           github_token: ${{ github.token }}
-          severity_gate: P1
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }} # omit if deterministic-only
+          use_codex: true
           scan_mode: pr-diff
+          severity_gate: P1
 
-      - name: Upload Omar Gate artifacts
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
-          name: omar-gate-artifacts
-          path: .sentinelayer/artifacts
-          if-no-files-found: warn
-
+          name: sentinelayer-${{ steps.omar.outputs.run_id }}
+          path: .sentinelayer/runs/${{ steps.omar.outputs.run_id }}
