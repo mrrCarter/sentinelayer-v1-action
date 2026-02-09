@@ -22,7 +22,7 @@ class GitHubClient:
             "User-Agent": "omar-gate-action",
         })
 
-    def create_or_update_pr_comment(self, pr_number: int, body: str, marker_prefix: str) -> None:
+    def create_or_update_pr_comment(self, pr_number: int, body: str, marker_prefix: str) -> Optional[str]:
         """Idempotent update: search recent comments for marker prefix; update if found else create."""
         url = f"{GITHUB_API}/repos/{self.repo}/issues/{pr_number}/comments"
         r = self.session.get(url, params={"per_page": 100})
@@ -33,9 +33,16 @@ class GitHubClient:
                 patch_url = f"{GITHUB_API}/repos/{self.repo}/issues/comments/{c['id']}"
                 pr = self.session.patch(patch_url, json={"body": body})
                 pr.raise_for_status()
-                return
+                try:
+                    return (pr.json() or {}).get("html_url")
+                except Exception:
+                    return None
         cr = self.session.post(url, json={"body": body})
         cr.raise_for_status()
+        try:
+            return (cr.json() or {}).get("html_url")
+        except Exception:
+            return None
 
     def create_check_run(
         self,
@@ -48,7 +55,7 @@ class GitHubClient:
         details_url: Optional[str] = None,
         external_id: Optional[str] = None,
         annotations: Optional[List[Dict[str, Any]]] = None,
-    ) -> None:
+    ) -> Optional[str]:
         url = f"{GITHUB_API}/repos/{self.repo}/check-runs"
         output: Dict[str, Any] = {"title": title or name, "summary": summary}
         if text:
@@ -68,6 +75,10 @@ class GitHubClient:
             payload["external_id"] = external_id
         r = self.session.post(url, json=payload)
         r.raise_for_status()
+        try:
+            return (r.json() or {}).get("html_url")
+        except Exception:
+            return None
 
     def list_check_runs(self, head_sha: str, check_name: Optional[str] = None) -> List[Dict[str, Any]]:
         url = f"{GITHUB_API}/repos/{self.repo}/commits/{head_sha}/check-runs"
