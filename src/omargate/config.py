@@ -49,7 +49,7 @@ class OmarGateConfig(BaseSettings):
     )
 
     # Codex CLI path (OpenAI-only); wiring added later.
-    use_codex: bool = Field(default=False, description="Use Codex CLI for deep audit")
+    use_codex: bool = Field(default=True, description="Use Codex CLI for deep audit (falls back to API)")
     codex_model: str = Field(default="gpt-5.2-codex", description="Model for Codex CLI")
     codex_timeout: conint(ge=60) = Field(
         default=300, description="Codex timeout in seconds for Codex execution"
@@ -147,8 +147,8 @@ class OmarGateConfig(BaseSettings):
         OpenAI is allowed to be empty so deterministic-only runs and fork handling
         can still execute without failing config parsing.
         """
-        if self.use_codex and not self.openai_api_key.get_secret_value():
-            raise ValueError("openai_api_key is required when use_codex=true")
+        # Note: use_codex=true without openai_api_key is allowed at config time.
+        # CodexRunner fails gracefully and the orchestrator falls back to LLM API.
 
         provider = self.llm_provider
         if provider == "anthropic" and not self.anthropic_api_key.get_secret_value():
