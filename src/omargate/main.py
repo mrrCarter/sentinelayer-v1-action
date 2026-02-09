@@ -44,7 +44,7 @@ from .telemetry.schemas import build_tier1_payload, build_tier2_payload, finding
 from .telemetry.uploader import upload_artifacts, upload_telemetry
 from .utils import ensure_writable_dir, json_dumps, parse_iso8601
 
-ACTION_VERSION = "1.2.0"
+ACTION_VERSION = "1.2.1"
 ACTION_MAJOR_VERSION = "1"
 CHECK_NAME = "Omar Gate"
 
@@ -758,6 +758,13 @@ async def async_main() -> int:
                 cost_usd = (
                     analysis.llm_usage.get("cost_usd", 0.0) if analysis.llm_usage else 0.0
                 )
+                github_run_id = os.environ.get("GITHUB_RUN_ID")
+                server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+                workflow_run_url = (
+                    f"{server_url}/{ctx.repo_full_name}/actions/runs/{github_run_id}"
+                    if github_run_id and getattr(ctx, "repo_full_name", None)
+                    else None
+                )
 
                 if not gh.token:
                     message = "GitHub token missing; publish calls unavailable"
@@ -767,18 +774,18 @@ async def async_main() -> int:
                     analysis.warnings.append(message)
                 elif ctx.pr_number:
                     try:
-                        github_run_id = os.environ.get("GITHUB_RUN_ID")
-                        server_url = os.environ.get(
-                            "GITHUB_SERVER_URL", "https://github.com"
-                        )
-                        artifacts_url = (
-                            f"{server_url}/{ctx.repo_full_name}/actions/runs/{github_run_id}"
-                            if github_run_id
-                            else None
-                        )
                         llm_model_used = "none"
                         if analysis.llm_success and analysis.llm_usage:
                             llm_model_used = analysis.llm_usage.get("model", config.model)
+
+                        review_brief_md = None
+                        try:
+                            if analysis.review_brief_path and analysis.review_brief_path.exists():
+                                review_brief_md = analysis.review_brief_path.read_text(
+                                    encoding="utf-8", errors="replace"
+                                )
+                        except Exception:
+                            review_brief_md = None
 
                         comment_body = render_pr_comment(
                             result=gate_result,
@@ -786,11 +793,12 @@ async def async_main() -> int:
                             repo_full_name=ctx.repo_full_name,
                             pr_number=ctx.pr_number,
                             dashboard_url=dashboard_url,
-                            artifacts_url=artifacts_url,
+                            artifacts_url=workflow_run_url,
                             cost_usd=cost_usd,
                             version=ACTION_VERSION,
                             findings=analysis.findings[:5],
                             warnings=analysis.warnings,
+                            review_brief_md=review_brief_md,
                             scan_mode=config.scan_mode,
                             policy_pack=config.policy_pack,
                             policy_pack_version=config.policy_pack_version,
@@ -860,7 +868,7 @@ async def async_main() -> int:
                             summary=summary_text,
                             title=f"Omar Gate: {status_key.upper()}",
                             text=check_text,
-                            details_url=dashboard_url,
+                            details_url=workflow_run_url or dashboard_url,
                             external_id=idem_key,
                             annotations=annotations,
                         )
@@ -886,6 +894,7 @@ async def async_main() -> int:
 
         # === OUTPUTS ===
         estimated_cost_usd = analysis.llm_usage.get("cost_usd", 0.0) if analysis.llm_usage else 0.0
+        audit_report_path = run_dir / "AUDIT_REPORT.md"
         _write_github_outputs(
             run_id=run_id,
             idem_key=idem_key,
@@ -893,6 +902,8 @@ async def async_main() -> int:
             pack_summary_path=pack_summary_path,
             gate_result=gate_result,
             estimated_cost_usd=estimated_cost_usd,
+            review_brief_path=analysis.review_brief_path,
+            audit_report_path=audit_report_path if audit_report_path.exists() else None,
         )
 
         exit_code = 1 if gate_result.block_merge else 0
@@ -1079,80 +1090,80 @@ async def _upload_telemetry_always(
     collector.stage_start("telemetry")
     try:
         with logger.stage("telemetry"):
-            # Full context path.
-            if (
-                config is not None
-                and ctx is not None
-                and analysis is not None
-                and gate_result is not None
-            ):
-                await _upload_telemetry(
-                    config=config,
-                    run_id=run_id,
-                    idem_key=idem_key,
-                    analysis=analysis,
-                    gate_result=gate_result,
-                    ctx=ctx,
-                    run_dir=run_dir,
-                    collector=collector,
-                    logger=logger,
-                    consent=consent,
-                )
-                return
-
-            # Minimal Tier 1 path for early exits.
-            sentinelayer_token = (
-                config.sentinelayer_token.get_secret_value()
-                if config is not None
-                else (
-                    os.environ.get("INPUT_SENTINELAYER_TOKEN")
-                    or os.environ.get("SENTINELAYER_TOKEN")
-                    or ""
-                )
-            )
-            oidc_token = await fetch_oidc_token(logger=logger)
-
-            if should_upload_tier(1, consent):
-                tier1_payload = build_tier1_payload(collector)
-                if validate_payload_tier(tier1_payload, consent):
-                    await upload_telemetry(
-                        tier1_payload,
-                        sentinelayer_token=sentinelayer_token,
-                        oidc_token=oidc_token,
-                        logger=logger,
-                    )
-
-            # Best-effort Tier 2 path (share_metadata) when we have repo identity.
-            if config is not None and ctx is not None and should_upload_tier(2, consent):
-                if not sentinelayer_token and not oidc_token:
-                    logger.warning("Telemetry tier 2 requires authentication")
-                else:
-                    tier2_payload = build_tier2_payload(
+            try:
+                # Full context path.
+                if (
+                    config is not None
+                    and ctx is not None
+                    and analysis is not None
+                    and gate_result is not None
+                ):
+                    await _upload_telemetry(
+                        config=config,
+                        run_id=run_id,
+                        idem_key=idem_key,
+                        analysis=analysis,
+                        gate_result=gate_result,
+                        ctx=ctx,
+                        run_dir=run_dir,
                         collector=collector,
-                        repo_owner=ctx.repo_owner,
-                        repo_name=ctx.repo_name,
-                        branch=ctx.head_ref or ctx.base_ref or "main",
-                        pr_number=ctx.pr_number,
-                        head_sha=ctx.head_sha,
-                        is_fork_pr=ctx.is_fork,
-                        policy_pack=config.policy_pack,
-                        policy_pack_version=config.policy_pack_version,
-                        action_version=ACTION_VERSION,
-                        findings_summary=[],
-                        idempotency_key=idem_key,
-                        severity_threshold=config.severity_gate,
+                        logger=logger,
+                        consent=consent,
                     )
-                    if validate_payload_tier(tier2_payload, consent):
-                        await upload_telemetry(
-                            tier2_payload,
-                            sentinelayer_token=sentinelayer_token,
-                            oidc_token=oidc_token,
-                            logger=logger,
+                else:
+                    # Minimal Tier 1 path for early exits.
+                    sentinelayer_token = (
+                        config.sentinelayer_token.get_secret_value()
+                        if config is not None
+                        else (
+                            os.environ.get("INPUT_SENTINELAYER_TOKEN")
+                            or os.environ.get("SENTINELAYER_TOKEN")
+                            or ""
                         )
-    except Exception as exc:
-        telemetry_success = False
-        collector.record_error("telemetry", str(exc))
-        logger.warning("Telemetry upload failed", error=str(exc))
+                    )
+                    oidc_token = await fetch_oidc_token(logger=logger)
+
+                    if should_upload_tier(1, consent):
+                        tier1_payload = build_tier1_payload(collector)
+                        if validate_payload_tier(tier1_payload, consent):
+                            await upload_telemetry(
+                                tier1_payload,
+                                sentinelayer_token=sentinelayer_token,
+                                oidc_token=oidc_token,
+                                logger=logger,
+                            )
+
+                    # Best-effort Tier 2 path (share_metadata) when we have repo identity.
+                    if config is not None and ctx is not None and should_upload_tier(2, consent):
+                        if not sentinelayer_token and not oidc_token:
+                            logger.warning("Telemetry tier 2 requires authentication")
+                        else:
+                            tier2_payload = build_tier2_payload(
+                                collector=collector,
+                                repo_owner=ctx.repo_owner,
+                                repo_name=ctx.repo_name,
+                                branch=ctx.head_ref or ctx.base_ref or "main",
+                                pr_number=ctx.pr_number,
+                                head_sha=ctx.head_sha,
+                                is_fork_pr=ctx.is_fork,
+                                policy_pack=config.policy_pack,
+                                policy_pack_version=config.policy_pack_version,
+                                action_version=ACTION_VERSION,
+                                findings_summary=[],
+                                idempotency_key=idem_key,
+                                severity_threshold=config.severity_gate,
+                            )
+                            if validate_payload_tier(tier2_payload, consent):
+                                await upload_telemetry(
+                                    tier2_payload,
+                                    sentinelayer_token=sentinelayer_token,
+                                    oidc_token=oidc_token,
+                                    logger=logger,
+                                )
+            except Exception as exc:
+                telemetry_success = False
+                collector.record_error("telemetry", str(exc))
+                logger.warning("Telemetry upload failed", error=str(exc))
     finally:
         collector.stage_end("telemetry", success=telemetry_success)
 
@@ -1164,11 +1175,31 @@ def _write_github_outputs(
     pack_summary_path: Path,
     gate_result: GateResult,
     estimated_cost_usd: float = 0.0,
+    *,
+    review_brief_path: Optional[Path] = None,
+    audit_report_path: Optional[Path] = None,
 ) -> None:
     """Write GitHub Actions outputs."""
     output_path = os.environ.get("GITHUB_OUTPUT")
     if not output_path:
         return
+
+    def _to_workspace_relative(path: Path) -> str:
+        """
+        Prefer workspace-relative artifact paths.
+
+        Docker actions execute in a container where $GITHUB_WORKSPACE is typically
+        mounted at /github/workspace. Downstream workflow steps run on the host,
+        so absolute container paths are not useful.
+        """
+        workspace = os.environ.get("GITHUB_WORKSPACE")
+        if workspace:
+            try:
+                rel = path.relative_to(Path(workspace))
+                return str(rel).replace("\\", "/")
+            except ValueError:
+                pass
+        return str(path).replace("\\", "/")
 
     with open(output_path, "a", encoding="utf-8") as f:
         status_value = (
@@ -1182,8 +1213,16 @@ def _write_github_outputs(
         f.write(f"p1_count={gate_result.counts.p1}\n")
         f.write(f"p2_count={gate_result.counts.p2}\n")
         f.write(f"p3_count={gate_result.counts.p3}\n")
-        f.write(f"findings_artifact={findings_path}\n")
-        f.write(f"pack_summary_artifact={pack_summary_path}\n")
+        f.write(f"findings_artifact={_to_workspace_relative(findings_path)}\n")
+        f.write(f"pack_summary_artifact={_to_workspace_relative(pack_summary_path)}\n")
+        if review_brief_path and review_brief_path.exists():
+            f.write(
+                f"review_brief_artifact={_to_workspace_relative(review_brief_path)}\n"
+            )
+        if audit_report_path and audit_report_path.exists():
+            f.write(
+                f"audit_report_artifact={_to_workspace_relative(audit_report_path)}\n"
+            )
         f.write(f"idempotency_key={idem_key}\n")
         f.write(f"estimated_cost_usd={estimated_cost_usd:.4f}\n")
 
