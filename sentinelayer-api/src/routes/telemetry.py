@@ -93,7 +93,9 @@ async def ingest_telemetry(
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header.split(" ", 1)[1]
         claims = await verify_oidc_token(token)
-        if claims is None:
+        if claims is None and tier >= 2:
+            # Only reject invalid tokens for Tier 2+.
+            # Tier 1 is anonymous — a bad token shouldn't block it.
             raise HTTPException(
                 status_code=401,
                 detail={
