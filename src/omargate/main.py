@@ -878,13 +878,16 @@ async def async_main() -> int:
                         logger.warning("Check run creation failed", error=str(exc))
                         analysis.warnings.append("Check run creation failed")
 
-                write_step_summary(
-                    gate_result=gate_result,
-                    summary=summary_payload,
-                    findings=analysis.findings,
-                    run_id=run_id,
-                    version=ACTION_VERSION,
-                )
+                try:
+                    write_step_summary(
+                        gate_result=gate_result,
+                        summary=summary_payload,
+                        findings=analysis.findings,
+                        run_id=run_id,
+                        version=ACTION_VERSION,
+                    )
+                except OSError as exc:
+                    logger.warning("Step summary write failed", error=str(exc))
         except Exception as exc:
             publish_success = False
             collector.record_error("publish", str(exc))
@@ -893,18 +896,21 @@ async def async_main() -> int:
             collector.stage_end("publish", success=publish_success)
 
         # === OUTPUTS ===
-        estimated_cost_usd = analysis.llm_usage.get("cost_usd", 0.0) if analysis.llm_usage else 0.0
-        audit_report_path = run_dir / "AUDIT_REPORT.md"
-        _write_github_outputs(
-            run_id=run_id,
-            idem_key=idem_key,
-            findings_path=findings_path,
-            pack_summary_path=pack_summary_path,
-            gate_result=gate_result,
-            estimated_cost_usd=estimated_cost_usd,
-            review_brief_path=analysis.review_brief_path,
-            audit_report_path=audit_report_path if audit_report_path.exists() else None,
-        )
+        try:
+            estimated_cost_usd = analysis.llm_usage.get("cost_usd", 0.0) if analysis.llm_usage else 0.0
+            audit_report_path = run_dir / "AUDIT_REPORT.md"
+            _write_github_outputs(
+                run_id=run_id,
+                idem_key=idem_key,
+                findings_path=findings_path,
+                pack_summary_path=pack_summary_path,
+                gate_result=gate_result,
+                estimated_cost_usd=estimated_cost_usd,
+                review_brief_path=analysis.review_brief_path,
+                audit_report_path=audit_report_path if audit_report_path.exists() else None,
+            )
+        except OSError as exc:
+            logger.warning("GitHub outputs write failed", error=str(exc))
 
         exit_code = 1 if gate_result.block_merge else 0
         collector.exit_reason = "completed"
