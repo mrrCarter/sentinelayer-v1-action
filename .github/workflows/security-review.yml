@@ -22,6 +22,7 @@ jobs:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           github_token: ${{ github.token }}
           severity_gate: P1
+          use_codex: true
           scan_mode: pr-diff
 
       - name: Upload Omar Gate artifacts
