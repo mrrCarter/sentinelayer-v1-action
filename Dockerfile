@@ -21,6 +21,7 @@ FROM python:3.11-alpine AS runtime
 RUN apk add --no-cache \
         ca-certificates \
         libstdc++ \
+        su-exec \
         nodejs \
         npm \
         git
@@ -43,7 +44,5 @@ COPY --chown=app:app src /app/src
 COPY --chown=app:app entrypoint.sh /app/entrypoint.sh
 
 RUN chmod +x /app/entrypoint.sh
-
-USER app
 
 ENTRYPOINT ["/app/entrypoint.sh"]

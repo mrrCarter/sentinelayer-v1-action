@@ -26,4 +26,17 @@ done
 
 export PYTHONPATH="/app/src:${PYTHONPATH:-}"
 
+
+# Docker actions often run as a non-root user, but the mounted GitHub workspace
+# may not be writable. We run the entrypoint as root and then drop privileges
+# after preparing a writable artifacts directory inside the workspace.
+if [ "$(id -u)" -eq 0 ]; then
+  if [ -n "${GITHUB_WORKSPACE:-}" ] && [ -d "$GITHUB_WORKSPACE" ]; then
+    mkdir -p "$GITHUB_WORKSPACE/.sentinelayer/runs" "$GITHUB_WORKSPACE/.sentinelayer/artifacts" 2>/dev/null || true
+    chown -R app:app "$GITHUB_WORKSPACE/.sentinelayer" 2>/dev/null || true
+    chmod -R u+rwX,g+rwX "$GITHUB_WORKSPACE/.sentinelayer" 2>/dev/null || true
+  fi
+  exec su-exec app python -m omargate.main
+fi
+
 exec python -m omargate.main
