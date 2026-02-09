@@ -96,9 +96,9 @@ inputs:
     default: 'block'
 
   use_codex:
-    description: 'Use Codex CLI for deep agentic audit'
+    description: 'Use Codex CLI for deep agentic audit (falls back to API)'
     required: false
-    default: 'false'
+    default: 'true'
 
   codex_model:
     description: 'Model for Codex CLI'
