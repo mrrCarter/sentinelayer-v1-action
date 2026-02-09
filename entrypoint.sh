@@ -27,24 +27,12 @@ done
 export PYTHONPATH="/app/src:${PYTHONPATH:-}"
 
 
-# Docker actions often run as a non-root user, but the mounted GitHub workspace
-# may not be writable. We run the entrypoint as root and then drop privileges
-# after preparing a writable artifacts directory inside the workspace.
-if [ "$(id -u)" -eq 0 ]; then
-  if [ -n "${GITHUB_WORKSPACE:-}" ] && [ -d "$GITHUB_WORKSPACE" ]; then
-    mkdir -p "$GITHUB_WORKSPACE/.sentinelayer/runs" "$GITHUB_WORKSPACE/.sentinelayer/artifacts" 2>/dev/null || true
-    chown -R app:app "$GITHUB_WORKSPACE/.sentinelayer" 2>/dev/null || true
-    chmod -R u+rwX,g+rwX "$GITHUB_WORKSPACE/.sentinelayer" 2>/dev/null || true
-  fi
-
-  # GitHub mounts file_commands for GITHUB_OUTPUT, GITHUB_STEP_SUMMARY, etc.
-  # These files are created before the step starts but owned by the runner user.
-  if [ -d "/github/file_commands" ]; then
-    chown -R app:app /github/file_commands 2>/dev/null || true
-    chmod -R u+rwX /github/file_commands 2>/dev/null || true
-  fi
-
-  exec su-exec app python -m omargate.main
+# Docker actions run in an ephemeral container. Running as root avoids all
+# permission issues with GitHub-mounted volumes (workspace, file_commands,
+# runner_temp). Dropping to non-root caused cascading issues: the host runner
+# process lost write access to its own file_commands after our step.
+if [ -n "${GITHUB_WORKSPACE:-}" ] && [ -d "$GITHUB_WORKSPACE" ]; then
+  mkdir -p "$GITHUB_WORKSPACE/.sentinelayer/runs" "$GITHUB_WORKSPACE/.sentinelayer/artifacts" 2>/dev/null || true
 fi
 
 exec python -m omargate.main
