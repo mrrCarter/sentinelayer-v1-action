@@ -84,9 +84,10 @@ class OmarGateConfig(BaseSettings):
     severity_gate: SeverityGate = Field(default="P1")
 
     # Model settings
-    # TODO: bump to gpt-5.3-codex when available via API
-    model: str = Field(default="gpt-5.2-codex")
-    model_fallback: str = Field(default="gpt-4.1")
+    # Primary model for LLM API fallback path (when Codex CLI is unavailable).
+    # Codex CLI model is configured separately via codex_model.
+    model: str = Field(default="gpt-4.1")
+    model_fallback: str = Field(default="gpt-4.1-mini")
     llm_failure_policy: LLMFailurePolicy = Field(default="block")
 
     # Rate limiting / cost control
