@@ -122,9 +122,9 @@ inputs:
     default: '20'
 
   min_scan_interval_minutes:
-    description: 'Minimum minutes between scans for same PR'
+    description: 'Minimum minutes between scans for same PR (0 to disable)'
     required: false
-    default: '5'
+    default: '2'
 
   rate_limit_fail_mode:
     description: "On GitHub API errors during rate limit enforcement: 'closed' (require approval) or 'open' (skip enforcement and proceed)"

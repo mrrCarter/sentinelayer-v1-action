@@ -520,10 +520,33 @@ async def async_main() -> int:
                             config=config,
                             skip_label=f"rate_limit:{rate_reason}",
                         )
-                    except Exception as exc:
-                        print(f"::error::Rate-limit short-circuit failed: {exc}")
-                        collector.record_error("preflight", str(exc))
-                        exit_code = 2
+                    except Exception:
+                        # No prior check to mirror — create a clear neutral result.
+                        wait_mins = config.min_scan_interval_minutes
+                        reason_msg = (
+                            f"Rate limited ({rate_reason}). "
+                            f"Please wait ~{wait_mins} min before re-running."
+                        )
+                        print(f"::warning::{reason_msg}")
+                        gate_result = GateResult(
+                            status=GateStatus.BYPASSED,
+                            reason=reason_msg,
+                            block_merge=False,
+                            counts=Counts(),
+                            dedupe_key=idem_key,
+                        )
+                        try:
+                            gh.create_check_run(
+                                name=CHECK_NAME,
+                                head_sha=ctx.head_sha,
+                                conclusion="neutral",
+                                summary=reason_msg,
+                                title="Omar Gate: RATE LIMITED",
+                                text=f"Scan skipped — cooldown period ({wait_mins} min) not met.",
+                            )
+                        except Exception:
+                            pass
+                        exit_code = 0
 
                     collector.record_preflight_exit(reason="rate_limit", exit_code=exit_code)
                     return exit_code
