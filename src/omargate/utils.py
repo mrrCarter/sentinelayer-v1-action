@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -19,6 +20,18 @@ def safe_read_text(path: Path, max_bytes: int = 5_000_000) -> str:
     if len(data) > max_bytes:
         raise ValueError(f"File too large: {path} ({len(data)} bytes)")
     return data.decode("utf-8", errors="replace")
+
+def parse_iso8601(value: Optional[str]) -> Optional[datetime]:
+    """Parse an ISO-8601 timestamp, handling the trailing 'Z' that fromisoformat rejects."""
+    if not value:
+        return None
+    try:
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
 
 def ensure_writable_dir(path: Path) -> bool:
     try:

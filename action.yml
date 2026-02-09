@@ -9,7 +9,28 @@ inputs:
   # Required
   openai_api_key:
     description: 'OpenAI API key for LLM calls (BYO)'
-    required: true
+    required: false
+    default: ''
+
+  llm_provider:
+    description: 'LLM provider: openai, anthropic, google, xai'
+    required: false
+    default: 'openai'
+
+  anthropic_api_key:
+    description: 'Anthropic API key (required if llm_provider=anthropic)'
+    required: false
+    default: ''
+
+  google_api_key:
+    description: 'Google AI API key (required if llm_provider=google)'
+    required: false
+    default: ''
+
+  xai_api_key:
+    description: 'xAI API key (required if llm_provider=xai)'
+    required: false
+    default: ''
 
   # GitHub integration (recommended)
   github_token:
@@ -60,19 +81,39 @@ inputs:
     default: 'P1'
 
   model:
-    description: 'Primary OpenAI model'
-    required: false
-    default: 'gpt-5.2-codex'
-
-  model_fallback:
-    description: 'Fallback OpenAI model'
+    description: 'LLM API model (used when Codex CLI is unavailable). Recommended: gpt-4.1 for best results, gpt-4.1-mini for cost control.'
     required: false
     default: 'gpt-4.1'
+
+  model_fallback:
+    description: 'Fallback LLM API model (if primary model fails or quota exceeded)'
+    required: false
+    default: 'gpt-4.1-mini'
 
   llm_failure_policy:
     description: 'If LLM call fails: block (fail-closed), deterministic_only, allow_with_warning'
     required: false
     default: 'block'
+
+  use_codex:
+    description: 'Use Codex CLI for deep agentic audit (falls back to API)'
+    required: false
+    default: 'true'
+
+  codex_model:
+    description: 'Model for Codex CLI'
+    required: false
+    default: 'gpt-5.2-codex'
+
+  codex_timeout:
+    description: 'Timeout in seconds for Codex execution'
+    required: false
+    default: '300'
+
+  run_harness:
+    description: 'Run SentinelLayer portable security test harness'
+    required: false
+    default: 'true'
 
   # Rate limiting / cost control
   max_daily_scans:
@@ -84,6 +125,11 @@ inputs:
     description: 'Minimum minutes between scans for same PR'
     required: false
     default: '5'
+
+  rate_limit_fail_mode:
+    description: "On GitHub API errors during rate limit enforcement: 'closed' (require approval) or 'open' (skip enforcement and proceed)"
+    required: false
+    default: 'closed'
 
   max_input_tokens:
     description: 'Maximum input tokens per scan (cost control)'

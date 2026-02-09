@@ -26,4 +26,8 @@ crash.*.log
 .terraformrc
 terraform.rc
 
+# Proprietary / internal-only
+SWE_excellence_framework.md
+.codex/
+
 nul

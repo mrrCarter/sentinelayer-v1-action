@@ -92,6 +92,7 @@ def render_pr_comment(
     version: str,
     findings: Optional[List[dict]] = None,
     warnings: Optional[List[str]] = None,
+    review_brief_md: Optional[str] = None,
     scan_mode: str = "pr-diff",
     policy_pack: str = "omar",
     policy_pack_version: str = "v1",
@@ -116,11 +117,28 @@ def render_pr_comment(
     artifacts_link = artifacts_url or dashboard_url or ""
     if artifacts_link:
         report_links = (
-            f"- [AUDIT_REPORT.md]({artifacts_link}) (if artifacts uploaded)\n"
-            f"- [REVIEW_BRIEF.md]({artifacts_link})"
+            f"- [Workflow run]({artifacts_link})\n"
+            "- Reports are generated on the runner: `AUDIT_REPORT.md`, `REVIEW_BRIEF.md`, `FINDINGS.jsonl`, `PACK_SUMMARY.json`.\n"
+            "- To make them downloadable, add `actions/upload-artifact` for `.sentinelayer/artifacts/`."
         )
     else:
         report_links = "- Artifacts not available."
+
+    inline_review_brief = ""
+    if review_brief_md:
+        trimmed = review_brief_md.strip()
+        if len(trimmed) > 30_000:
+            trimmed = trimmed[:30_000].rstrip() + "\n\n...(truncated)...\n"
+        inline_review_brief = "\n".join(
+            [
+                "",
+                "---",
+                "",
+                "#### REVIEW_BRIEF.md (inline)",
+                "",
+                trimmed,
+            ]
+        )
 
     lines = [
         f"## 🛡️ Omar Gate: {status_badge}",
@@ -157,7 +175,7 @@ def render_pr_comment(
             "<details>",
             "<summary>View full report</summary>",
             "",
-            report_links,
+            report_links + inline_review_brief,
             "",
             "</details>",
             "",

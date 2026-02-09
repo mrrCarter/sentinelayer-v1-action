@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -171,12 +172,17 @@ def _matches_ignore(path: str, patterns: List[str]) -> bool:
 
 def _run_node_mapper(repo_root: Path, max_files: int, max_file_size_bytes: int) -> Dict[str, Any]:
     script_path = Path(__file__).with_name("codebase_map.mjs")
-    result = subprocess.run(
-        ["node", str(script_path), str(repo_root), str(max_files), str(max_file_size_bytes)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["node", str(script_path), str(repo_root), str(max_files), str(max_file_size_bytes)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (FileNotFoundError, OSError):
+        # Node isn't guaranteed in all environments (eg local dev/test); fall back to a
+        # pure-Python mapper so ingest can still function.
+        return _run_python_mapper(repo_root, max_files, max_file_size_bytes)
     if result.returncode != 0:
         stderr = result.stderr.strip() or "unknown error"
         raise RuntimeError(f"codebase_map failed: {stderr}")
@@ -185,6 +191,89 @@ def _run_node_mapper(repo_root: Path, max_files: int, max_file_size_bytes: int) 
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"codebase_map invalid JSON: {exc}") from exc
+
+
+_EXCLUDED_DIRS = {
+    ".git",
+    "node_modules",
+    "vendor",
+    "dist",
+    "build",
+    "target",
+    ".venv",
+    ".idea",
+    ".vscode",
+    "__pycache__",
+    ".pytest_cache",
+}
+
+
+def _is_binary_file(path: Path) -> bool:
+    try:
+        with path.open("rb") as f:
+            chunk = f.read(4096)
+    except OSError:
+        return True
+    if not chunk:
+        return False
+    if b"\x00" in chunk:
+        return True
+    non_text = 0
+    for byte in chunk:
+        if byte < 7 or (byte > 14 and byte < 32) or byte == 127:
+            non_text += 1
+    return (non_text / len(chunk)) > 0.3
+
+
+def _run_python_mapper(repo_root: Path, max_files: int, max_file_size_bytes: int) -> Dict[str, Any]:
+    root = repo_root.resolve()
+    stats: Dict[str, Any] = {
+        "total_files": 0,
+        "binary_files": 0,
+        "too_large": 0,
+        "truncated": False,
+    }
+    files: List[Dict[str, Any]] = []
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Mutate dirnames in-place to prune traversal (os.walk contract).
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if d not in _EXCLUDED_DIRS and not os.path.islink(os.path.join(dirpath, d))
+        ]
+
+        for name in filenames:
+            if len(files) >= max_files:
+                stats["truncated"] = True
+                return {"root": str(root), "files": files, "stats": stats}
+
+            full_path = Path(dirpath) / name
+            if full_path.is_symlink():
+                continue
+
+            try:
+                st = full_path.stat()
+            except OSError:
+                continue
+
+            stats["total_files"] += 1
+            size_bytes = int(st.st_size)
+            if size_bytes > max_file_size_bytes:
+                stats["too_large"] += 1
+                continue
+
+            if _is_binary_file(full_path):
+                stats["binary_files"] += 1
+                continue
+
+            try:
+                rel_path = full_path.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            files.append({"path": rel_path, "size_bytes": size_bytes, "is_binary": False})
+
+    return {"root": str(root), "files": files, "stats": stats}
 
 
 def _detect_dependencies(repo_root: Path) -> Dict[str, Any]:
