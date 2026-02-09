@@ -192,7 +192,6 @@ class CodexRunner:
 
         cmd = [
             codex_bin,
-            "--no-project-doc",
             "exec",
             "--sandbox",
             sandbox,
