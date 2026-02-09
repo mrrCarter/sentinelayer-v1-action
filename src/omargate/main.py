@@ -44,7 +44,7 @@ from .telemetry.schemas import build_tier1_payload, build_tier2_payload, finding
 from .telemetry.uploader import upload_artifacts, upload_telemetry
 from .utils import ensure_writable_dir, json_dumps, parse_iso8601
 
-ACTION_VERSION = "1.2.1"
+ACTION_VERSION = "1.2.2"
 ACTION_MAJOR_VERSION = "1"
 CHECK_NAME = "Omar Gate"
 
