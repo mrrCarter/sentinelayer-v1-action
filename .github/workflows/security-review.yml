@@ -18,7 +18,7 @@ jobs:
 
       - name: Omar Gate
         id: omar
-        uses: ./
+        uses: mrrCarter/sentinelayer-v1-action@v1
         with:
           github_token: ${{ github.token }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }} # omit if deterministic-only
