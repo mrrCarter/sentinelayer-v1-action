@@ -16,6 +16,11 @@ LONG_FUNCTION_THRESHOLD = 80
 _COMMENT_LINE_RE = re.compile(r"^\s*(?://|#|\*|/\*)")
 # Categories where comment-line matches are almost always false positives.
 _COMMENT_SKIP_CATEGORIES = frozenset({"secrets"})
+# Extra placeholder tokens to skip (in addition to per-pattern false_positive_hints).
+_GLOBAL_PLACEHOLDER_TOKENS = frozenset({
+    "your", "placeholder", "changeme", "change_this", "replace",
+    "example", "sample", "dummy", "todo", "fixme", "xxx",
+})
 
 FUNCTION_START_PATTERNS = [
     re.compile(r"^\s*def\s+\w+\s*\("),
@@ -188,11 +193,20 @@ class PatternScanner:
                 if match.start() == match.end():
                     continue
                 line_start = _index_to_line(line_starts, match.start())
+                source_line = lines[line_start - 1] if line_start <= len(lines) else ""
                 # Skip comment lines for secrets patterns (reduces false positives
                 # from regex definitions, documentation examples, etc.)
                 if pattern.get("category") in _COMMENT_SKIP_CATEGORIES:
-                    source_line = lines[line_start - 1] if line_start <= len(lines) else ""
                     if _COMMENT_LINE_RE.match(source_line):
+                        continue
+                # Honour false_positive_hints from the pattern definition.
+                hints = pattern.get("false_positive_hints") or []
+                line_lower = source_line.lower()
+                if hints and any(h in line_lower for h in hints):
+                    continue
+                # Also skip lines containing global placeholder tokens.
+                if pattern.get("category") in _COMMENT_SKIP_CATEGORIES:
+                    if any(tok in line_lower for tok in _GLOBAL_PLACEHOLDER_TOKENS):
                         continue
                 end_index = max(match.end() - 1, match.start())
                 line_end = _index_to_line(line_starts, end_index)

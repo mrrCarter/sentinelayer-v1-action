@@ -9,6 +9,16 @@ from .pattern_scanner import Finding, PatternScanner, mask_secret_in_snippet
 
 MAX_SNIPPET_CHARS = 500
 
+# Common placeholder patterns found in .env.example / .env.template files.
+# These are never real secrets and should not be flagged.
+_PLACEHOLDER_RE = re.compile(
+    r"your[_-]|_here$|_here[_-]|placeholder|changeme|change_this|"
+    r"replace_this|example|sample|xxx+$|\.\.\.+$|YOUR[_-]|"
+    r"sk_test_your|sk_live_your|pk_test_your|AKIA_your|whsec_your|re_your|"
+    r"^user:pass@|^username:password@|^password$",
+    re.IGNORECASE,
+)
+
 
 def _truncate_snippet(snippet: str, max_chars: int = MAX_SNIPPET_CHARS) -> str:
     if len(snippet) <= max_chars:
@@ -69,6 +79,14 @@ class ConfigScanner:
         return findings
 
     def _scan_env(self, file_path: str, content: str) -> List[Finding]:
+        # Template / example .env files contain only placeholders — skip entirely.
+        lower_path = file_path.lower()
+        if any(
+            lower_path.endswith(suffix)
+            for suffix in (".example", ".template", ".sample", ".env.local.example")
+        ):
+            return []
+
         findings: List[Finding] = []
         for line_no, line in enumerate(content.splitlines(), start=1):
             stripped = line.strip()
@@ -79,6 +97,9 @@ class ConfigScanner:
             _, value = stripped.split("=", 1)
             value = value.strip().strip("'\"")
             if not value or len(value) < 8:
+                continue
+            # Skip obvious placeholder values (your_key_here, etc.)
+            if _PLACEHOLDER_RE.search(value):
                 continue
             snippet = mask_secret_in_snippet(line, "secrets")
             snippet = _truncate_snippet(snippet)
