@@ -14,7 +14,16 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Omar Gate
+        id: omar
         uses: mrrCarter/sentinelayer-v1-action@v1.2.3
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           github_token: ${{ github.token }}
+
+      - name: Upload scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omar-gate-${{ steps.omar.outputs.run_id }}
+          path: .sentinelayer/runs/${{ steps.omar.outputs.run_id }}
+          if-no-files-found: warn
