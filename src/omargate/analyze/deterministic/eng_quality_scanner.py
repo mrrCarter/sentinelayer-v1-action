@@ -244,10 +244,14 @@ class EngQualityScanner:
         findings: list[Finding] = []
         obj_re = re.compile(r"=\s*\{\s*\{")
         fn_re = re.compile(r"=\s*\{\s*(?:\(\s*\)\s*=>|function\s*\()")
+        max_per_file = 3  # Cap to avoid flooding reports
 
         for path, content in self._iter_files(files, exts=(".jsx", ".tsx")):
             lines = content.splitlines()
+            file_count = 0
             for idx, line in enumerate(lines):
+                if file_count >= max_per_file:
+                    break
                 if "<" not in line or "=" not in line or "{" not in line:
                     continue
                 if obj_re.search(line) or fn_re.search(line):
@@ -262,6 +266,7 @@ class EngQualityScanner:
                             confidence=0.6,
                         )
                     )
+                    file_count += 1
         return findings
 
     def _scan_console_log(self, files: dict[str, str]) -> list[Finding]:
@@ -273,10 +278,14 @@ class EngQualityScanner:
             recommendation="Remove console.log or guard behind a debug flag; keep logs structured and intentional.",
         )
         findings: list[Finding] = []
+        max_per_file = 5  # Cap to avoid flooding reports
         for path, content in self._iter_files(files, exts=_JS_EXTS):
             if self._is_test_file(path):
                 continue
+            file_count = 0
             for m in re.finditer(r"\bconsole\.log\s*\(", content):
+                if file_count >= max_per_file:
+                    break
                 line = self._index_to_line(content, m.start())
                 snippet = self._line_snippet(content, line, line)
                 findings.append(
@@ -284,6 +293,7 @@ class EngQualityScanner:
                         rule, file_path=path, line_start=line, snippet=snippet, confidence=0.9
                     )
                 )
+                file_count += 1
         return findings
 
     def _scan_useeffect_empty_deps_outer_state(self, files: dict[str, str]) -> list[Finding]:

@@ -9,7 +9,16 @@ import re
 from .pattern_scanner import Finding, mask_secret_in_snippet
 
 MAX_SNIPPET_CHARS = 500
-ENTROPY_THRESHOLD = 3.5
+ENTROPY_THRESHOLD = 4.0
+
+# Matches obvious code identifiers that should not be flagged as secrets.
+# Only skip strings that clearly follow naming conventions with underscores
+# (snake_case, SCREAMING_SNAKE). Pure alphanumeric strings are NOT skipped
+# because high-entropy secrets can also be purely alphanumeric.
+_CODE_IDENTIFIER_RE = re.compile(
+    r"^[a-zA-Z][a-zA-Z0-9]*(?:_[a-zA-Z0-9]+){2,}$"  # snake_case with 3+ segments
+)
+_COMMENT_LINE_RE = re.compile(r"^\s*(?://|#|\*|/\*)")
 
 _SECRET_PATTERNS = [
     {
@@ -104,8 +113,15 @@ def scan_for_secrets(content: str, file_path: str) -> List[Finding]:
 
     for pattern in _SECRET_PATTERNS:
         for match in pattern["regex"].finditer(content):
-            matched_spans.append(match.span())
             line_start = _index_to_line(line_starts, match.start())
+            # Skip matches on comment lines (regex definitions, documentation, etc.)
+            source_line = lines[line_start - 1] if line_start <= len(lines) else ""
+            if _COMMENT_LINE_RE.match(source_line):
+                continue
+            # Skip matches inside regex literals (e.g. /AKIA[0-9A-Z]{16}/)
+            if re.search(r"[/=]\s*/.+/", source_line):
+                continue
+            matched_spans.append(match.span())
             end_index = max(match.end() - 1, match.start())
             line_end = _index_to_line(line_starts, end_index)
             snippet = _snippet_from_lines(lines, line_start, line_end)
@@ -133,7 +149,14 @@ def scan_for_secrets(content: str, file_path: str) -> List[Finding]:
         candidate = match.group(0)
         if calculate_entropy(candidate) < ENTROPY_THRESHOLD:
             continue
+        # Skip common code identifiers (camelCase, snake_case, etc.)
+        if _CODE_IDENTIFIER_RE.match(candidate):
+            continue
+        # Skip candidates on comment lines
         line_start = _index_to_line(line_starts, match.start())
+        source_line = lines[line_start - 1] if line_start <= len(lines) else ""
+        if _COMMENT_LINE_RE.match(source_line):
+            continue
         end_index = max(match.end() - 1, match.start())
         line_end = _index_to_line(line_starts, end_index)
         snippet = _snippet_from_lines(lines, line_start, line_end)

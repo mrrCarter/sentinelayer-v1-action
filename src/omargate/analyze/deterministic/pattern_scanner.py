@@ -13,6 +13,10 @@ MAX_SNIPPET_CHARS = 500
 MAX_SCAN_BYTES = 1_000_000
 LONG_FUNCTION_THRESHOLD = 80
 
+_COMMENT_LINE_RE = re.compile(r"^\s*(?://|#|\*|/\*)")
+# Categories where comment-line matches are almost always false positives.
+_COMMENT_SKIP_CATEGORIES = frozenset({"secrets"})
+
 FUNCTION_START_PATTERNS = [
     re.compile(r"^\s*def\s+\w+\s*\("),
     re.compile(r"^\s*(?:async\s+)?function\s+\w+\s*\("),
@@ -184,6 +188,12 @@ class PatternScanner:
                 if match.start() == match.end():
                     continue
                 line_start = _index_to_line(line_starts, match.start())
+                # Skip comment lines for secrets patterns (reduces false positives
+                # from regex definitions, documentation examples, etc.)
+                if pattern.get("category") in _COMMENT_SKIP_CATEGORIES:
+                    source_line = lines[line_start - 1] if line_start <= len(lines) else ""
+                    if _COMMENT_LINE_RE.match(source_line):
+                        continue
                 end_index = max(match.end() - 1, match.start())
                 line_end = _index_to_line(line_starts, end_index)
                 snippet = _snippet_from_lines(lines, line_start, line_end)
