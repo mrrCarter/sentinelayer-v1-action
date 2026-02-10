@@ -13,26 +13,40 @@ SentinelLayer (policy pack: `Omar Gate`) analyzes pull requests for security vul
 
 ```yaml
 # .github/workflows/security.yml
-name: SentinelLayer Security Review
-on: [pull_request]
+name: Security Review
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+  id-token: write  # For telemetry (optional)
+
 jobs:
-  security:
+  security-review:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      checks: write
     steps:
       - uses: actions/checkout@v4
-      - uses: mrrCarter/sentinelayer-v1-action@v1
+
+      - name: Omar Gate
+        id: omar
+        uses: mrrCarter/sentinelayer-v1-action@v1
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-```
+          github_token: ${{ github.token }}
+          severity_gate: P1
+          scan_mode: pr-diff
 
-Notes:
-- If `@v1` is not available yet, use `@main` or pin to a commit SHA.
-- PR comments use the Issues API; if comment publishing fails, add `issues: write` to workflow permissions.
+      - name: Upload Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentinelayer-${{ steps.omar.outputs.run_id }}
+          path: .sentinelayer/runs/${{ steps.omar.outputs.run_id }}
+          if-no-files-found: warn
+```
 
 ## What It Scans For (P0-P3)
 
@@ -67,8 +81,10 @@ Scan Settings
 | Input | Default | Description | Example |
 |---|---|---|---|
 | `scan_mode` | `pr-diff` | `pr-diff` (fast), `deep` (full repo), `nightly` (scheduled). | `deep` |
-| `model` | `gpt-5.2-codex` | Primary OpenAI model (Responses API). | `gpt-5.2-codex` |
-| `model_fallback` | `gpt-4.1` | Fallback OpenAI model. | `gpt-4.1` |
+| `use_codex` | `true` | Use Codex CLI for deep agentic audit (falls back to API). | `false` |
+| `codex_model` | `gpt-5.2-codex` | Model for Codex CLI. | `gpt-5.2-codex` |
+| `model` | `gpt-4.1` | LLM API fallback model (used when Codex CLI is unavailable). | `gpt-4.1` |
+| `model_fallback` | `gpt-4.1-mini` | Secondary fallback model. | `gpt-4.1-mini` |
 | `max_input_tokens` | `100000` | Max context budget per run (cost control). | `80000` |
 | `llm_failure_policy` | `block` | On LLM failure: `block`, `deterministic_only`, `allow_with_warning`. | `deterministic_only` |
 | `policy_pack` | `omar` | Policy pack identifier. | `omar` |
@@ -89,7 +105,7 @@ Cost Control
 | Input | Default | Description | Example |
 |---|---|---|---|
 | `max_daily_scans` | `20` | Maximum scans per repo per day (0 = unlimited). | `0` |
-| `min_scan_interval_minutes` | `5` | Minimum minutes between scans for same PR head SHA. | `15` |
+| `min_scan_interval_minutes` | `2` | Minimum minutes between scans for same PR head SHA. | `15` |
 | `rate_limit_fail_mode` | `closed` | On GitHub API errors during rate limit enforcement: `closed` (require approval) or `open` (skip enforcement and proceed). | `open` |
 | `require_cost_confirmation` | `5.00` | If estimated cost exceeds this USD threshold, require approval. | `2.50` |
 | `approval_mode` | `pr_label` | High-cost scan approval: `pr_label`, `workflow_dispatch`, `none`. | `workflow_dispatch` |
@@ -189,7 +205,7 @@ SentinelLayer dashboard: https://sentinelayer.com
 Your repository is analyzed in your GitHub runner. SentinelLayer dashboard telemetry is opt-in by tier; Tier 1 is aggregate-only, Tier 2 includes metadata, and Tier 3 can include uploaded artifacts. LLM analysis sends a bounded context to OpenAI using your `openai_api_key`.
 
 **What LLM models are used?**
-Default primary model is `gpt-5.2-codex` (via Responses API), with `gpt-4.1` as fallback (configurable).
+Primary analysis uses Codex CLI with `gpt-5.2-codex` for deep agentic audit. If Codex CLI is unavailable, falls back to `gpt-4.1` via the Responses API, then `gpt-4.1-mini` as secondary fallback. All models are configurable via `codex_model`, `model`, and `model_fallback` inputs.
 
 **What about false positives?**
 SentinelLayer combines deterministic rules with LLM review and includes a `confidence` field per finding. Tune enforcement via `severity_gate`, and consider `llm_failure_policy=deterministic_only` for stricter determinism.
