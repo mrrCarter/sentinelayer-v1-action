@@ -1,12 +1,8 @@
 [allowlist]
   description = "SentinelLayer false-positive allowlist"
-
-  # Test fixtures that contain deliberate dummy secrets for scanner regression tests.
-  [[allowlist.paths]]
-    regex = '''tests/'''
-    description = "Test fixtures contain synthetic secrets for scanner validation"
-
-  # README workflow examples (no real secrets).
-  [[allowlist.paths]]
-    regex = '''README\.md'''
-    description = "Documentation examples are not real secrets"
+  # Test fixtures contain deliberate dummy secrets for scanner regression tests.
+  # README workflow examples are not real secrets.
+  paths = [
+    '''tests/''',
+    '''README\.md''',
+  ]
