@@ -960,28 +960,28 @@ class EngQualityScanner:
             recommendation="Move secrets to GitHub Secrets/OIDC and reference them via ${{ secrets.* }}; rotate exposed keys.",
         )
         findings: list[Finding] = []
-        secret_key_re = re.compile(
-            r"\b(OPENAI_API_KEY|ANTHROPIC_API_KEY|GOOGLE_API_KEY|XAI_API_KEY|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|GITHUB_TOKEN|TOKEN|SECRET|PASSWORD)\b",
-            re.IGNORECASE,
-        )
-        value_re = re.compile(r":\s*(.+)\s*$")
+        secret_key_re = re.compile(r"(?:^|_)(token|secret|password|api[_-]?key)(?:$|_)", re.IGNORECASE)
+        yaml_pair_re = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.+?)\s*$")
         for path, content in self._iter_files(files, exts=(".yml", ".yaml")):
             if not path.lower().startswith(".github/workflows/"):
                 continue
             for idx, line in enumerate(content.splitlines()):
-                if not secret_key_re.search(line):
-                    continue
-                if "${{ secrets." in line.lower():
-                    continue
-                m = value_re.search(line)
+                m = yaml_pair_re.match(line)
                 if not m:
                     continue
-                raw_val = m.group(1).strip().strip("'\"")
+                key = m.group(1).strip()
+                if not secret_key_re.search(key):
+                    continue
+
+                raw_val = m.group(2).strip().strip("'\"")
                 if not raw_val:
                     continue
                 if raw_val.startswith("${{"):
                     continue
                 if raw_val.startswith("$"):
+                    continue
+                lowered = raw_val.lower()
+                if lowered in {"true", "false", "null", "~"}:
                     continue
                 if len(raw_val) < 8:
                     continue

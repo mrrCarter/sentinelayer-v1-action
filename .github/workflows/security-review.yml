@@ -67,6 +67,11 @@ jobs:
     name: Omar Review
     needs: [quality-gates, secret-scanning]
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: src
+      CODEX_CLI_VERSION: "0.98.0"
+      CLAUDE_CLI_VERSION: "2.1.39"
+      GEMINI_CLI_VERSION: "0.28.0"
     permissions:
       contents: read
       pull-requests: write
@@ -75,37 +80,107 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: "npm"
+
+      - name: Prepare global npm bin path
+        run: |
+          mkdir -p "$HOME/.npm-global/bin"
+          npm config set prefix "$HOME/.npm-global"
+          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
+
+      - name: Cache LLM CLI packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+            ~/.npm-global
+          key: ${{ runner.os }}-llm-cli-${{ env.CODEX_CLI_VERSION }}-${{ env.CLAUDE_CLI_VERSION }}-${{ env.GEMINI_CLI_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-llm-cli-
 
       - name: Install LLM CLIs
+        shell: bash
         run: |
-          npm install -g @openai/codex@0.98.0
-          npm install -g @anthropic-ai/claude-code || true
-          npm install -g @google/gemini-cli || npm install -g @google-ai/gemini-cli || true
+          set -euo pipefail
+
+          install_pinned_cli() {
+            local binary="$1"
+            local package="$2"
+            local version="$3"
+            local current=""
+
+            if command -v "${binary}" >/dev/null 2>&1; then
+              current="$(${binary} --version 2>/dev/null || true)"
+            fi
+
+            if [[ -n "${current}" ]] && grep -Fq "${version}" <<<"${current}"; then
+              echo "${binary} already cached (${current})"
+              return 0
+            fi
+
+            echo "Installing ${package}@${version}"
+            npm install -g "${package}@${version}"
+          }
+
+          install_pinned_cli codex @openai/codex "${CODEX_CLI_VERSION}"
+          install_pinned_cli claude @anthropic-ai/claude-code "${CLAUDE_CLI_VERSION}"
+          install_pinned_cli gemini @google/gemini-cli "${GEMINI_CLI_VERSION}"
 
       - name: Verify LLM CLIs
         run: |
-          codex --version || true
-          claude --version || true
-          gemini --version || true
+          set -euo pipefail
+          echo "codex:  $(command -v codex)"
+          echo "claude: $(command -v claude)"
+          echo "gemini: $(command -v gemini)"
+          codex --version
+          claude --version
+          gemini --version
 
-      - name: Omar Gate
+      - name: Omar Gate (Host Runner)
         id: omar
-        uses: ./
-        with:
-          github_token: ${{ github.token }}
-          llm_provider: ${{ vars.OMAR_LLM_PROVIDER || 'openai' }}
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          google_api_key: ${{ secrets.GOOGLE_API_KEY }}
-          model: ${{ vars.OMAR_MODEL || 'gpt-4.1' }}
-          model_fallback: ${{ vars.OMAR_MODEL_FALLBACK || 'gpt-4.1-mini' }}
-          use_codex: true
-          severity_gate: P1
-          scan_mode: pr-diff
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          INPUT_GITHUB_TOKEN: ${{ github.token }}
+          INPUT_SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
+          INPUT_LLM_PROVIDER: ${{ vars.OMAR_LLM_PROVIDER || 'openai' }}
+          INPUT_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          INPUT_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          INPUT_GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          INPUT_XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          INPUT_MODEL: ${{ vars.OMAR_MODEL || 'gpt-4.1' }}
+          INPUT_MODEL_FALLBACK: ${{ vars.OMAR_MODEL_FALLBACK || 'gpt-4.1-mini' }}
+          INPUT_USE_CODEX: "true"
+          INPUT_CODEX_MODEL: ${{ vars.OMAR_CODEX_MODEL || 'gpt-5.2-codex' }}
+          INPUT_SEVERITY_GATE: P1
+          INPUT_SCAN_MODE: pr-diff
+        run: python -m omargate.main
+
+      - name: Publish Codebase Snapshot Summary
+        if: always() && steps.omar.outputs.codebase_ingest_summary_md_artifact != ''
+        env:
+          SNAPSHOT_SUMMARY_MD: ${{ steps.omar.outputs.codebase_ingest_summary_md_artifact }}
+        run: |
+          if [ -f "${SNAPSHOT_SUMMARY_MD}" ]; then
+            cat "${SNAPSHOT_SUMMARY_MD}" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "Codebase snapshot summary not found at ${SNAPSHOT_SUMMARY_MD}" >> "${GITHUB_STEP_SUMMARY}"
+          fi
 
       - name: Upload Omar Gate artifacts
         if: always()

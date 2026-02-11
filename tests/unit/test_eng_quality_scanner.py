@@ -82,3 +82,33 @@ def test_console_log_in_test_file_not_flagged() -> None:
     findings = scanner.scan(files)
     assert not any(f.pattern_id == "EQ-005" for f in findings)
 
+
+def test_workflow_secret_labels_not_flagged_as_hardcoded_secrets() -> None:
+    files = {
+        ".github/workflows/security-review.yml": (
+            "name: Security Review\n"
+            "jobs:\n"
+            "  secret-scanning:\n"
+            "    name: Secret Scanning\n"
+            "  upload:\n"
+            "    name: Upload secret scan artifacts\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = scanner.scan(files)
+    assert not any(f.pattern_id == "EQ-021" for f in findings)
+
+
+def test_workflow_hardcoded_secret_env_value_detected() -> None:
+    files = {
+        ".github/workflows/security-review.yml": (
+            "jobs:\n"
+            "  omar-review:\n"
+            "    env:\n"
+            "      OPENAI_API_KEY: sk_live_1234567890abcdef123456\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = scanner.scan(files)
+    assert any(f.pattern_id == "EQ-021" for f in findings)
+
