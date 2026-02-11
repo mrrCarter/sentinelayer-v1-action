@@ -461,6 +461,7 @@ class AnalysisOrchestrator:
             scan_mode=scan_mode,
             diff_content=diff_content,
             hotspot_files=hotspots,
+            ingest=ingest,
         )
 
         runner = CodexRunner(api_key=api_key, model=self.config.codex_model)

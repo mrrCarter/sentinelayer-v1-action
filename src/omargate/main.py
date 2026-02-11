@@ -18,6 +18,7 @@ from .context import GitHubContext
 from .gate import evaluate_gate
 from .github import GitHubClient, findings_to_annotations
 from .idempotency import compute_idempotency_key
+from .ingest.codebase_snapshot import build_codebase_snapshot, write_codebase_ingest_artifacts
 from .logging import OmarLogger
 from .models import Counts, GateConfig, GateResult, GateStatus
 from .artifacts import write_audit_report
@@ -448,6 +449,7 @@ async def async_main() -> int:
     dashboard_url: Optional[str] = None
     idem_key = ""
     analysis = None
+    codebase_snapshot: Optional[dict] = None
     gate_result: Optional[GateResult] = None
     findings_path: Optional[Path] = None
     pack_summary_path: Optional[Path] = None
@@ -765,6 +767,17 @@ async def async_main() -> int:
             with logger.stage("packaging"):
                 ingest_path = run_dir / "INGEST.json"
                 ingest_path.write_text(json_dumps(analysis.ingest), encoding="utf-8")
+
+                try:
+                    # Deterministic, bounded codebase snapshot artifacts (no LLM required).
+                    codebase_snapshot = build_codebase_snapshot(analysis.ingest)
+                    write_codebase_ingest_artifacts(
+                        run_dir, analysis.ingest, snapshot=codebase_snapshot
+                    )
+                except Exception as exc:
+                    logger.warning("Codebase snapshot generation failed", error=str(exc))
+                    analysis.warnings.append("Codebase snapshot generation failed")
+
                 findings_path = run_dir / "FINDINGS.jsonl"
                 write_findings_jsonl(findings_path, analysis.findings)
 
@@ -945,6 +958,7 @@ async def async_main() -> int:
                             estimated_cost_usd=estimated_cost,
                             version=ACTION_VERSION,
                             findings=analysis.findings,
+                            codebase_snapshot=codebase_snapshot,
                             warnings=analysis.warnings,
                             review_brief_md=review_brief_md,
                             scan_mode=config.scan_mode,
@@ -1039,6 +1053,7 @@ async def async_main() -> int:
                         gate_result=gate_result,
                         summary=summary_payload,
                         findings=analysis.findings,
+                        codebase_snapshot=codebase_snapshot,
                         run_id=run_id,
                         version=ACTION_VERSION,
                     )
@@ -1372,6 +1387,24 @@ def _write_github_outputs(
         f.write(f"p3_count={gate_result.counts.p3}\n")
         f.write(f"findings_artifact={_to_workspace_relative(findings_path)}\n")
         f.write(f"pack_summary_artifact={_to_workspace_relative(pack_summary_path)}\n")
+        ingest_path = pack_summary_path.parent / "INGEST.json"
+        if ingest_path.exists():
+            f.write(f"ingest_artifact={_to_workspace_relative(ingest_path)}\n")
+        codebase_ingest_path = pack_summary_path.parent / "CODEBASE_INGEST.json"
+        if codebase_ingest_path.exists():
+            f.write(
+                f"codebase_ingest_artifact={_to_workspace_relative(codebase_ingest_path)}\n"
+            )
+        codebase_summary_json = pack_summary_path.parent / "CODEBASE_INGEST_SUMMARY.json"
+        if codebase_summary_json.exists():
+            f.write(
+                f"codebase_ingest_summary_artifact={_to_workspace_relative(codebase_summary_json)}\n"
+            )
+        codebase_summary_md = pack_summary_path.parent / "CODEBASE_INGEST_SUMMARY.md"
+        if codebase_summary_md.exists():
+            f.write(
+                f"codebase_ingest_summary_md_artifact={_to_workspace_relative(codebase_summary_md)}\n"
+            )
         if review_brief_path and review_brief_path.exists():
             f.write(
                 f"review_brief_artifact={_to_workspace_relative(review_brief_path)}\n"

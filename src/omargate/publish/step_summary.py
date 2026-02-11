@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+from typing import Optional
 
 from ..formatting import format_int, truncate
 from ..models import GateResult, GateStatus
+from ..ingest.codebase_snapshot import render_codebase_snapshot_md
 
 
 def _status_key(status: GateStatus | str) -> str:
@@ -26,6 +28,8 @@ def write_step_summary(
     findings: list[dict],
     run_id: str,
     version: str,
+    *,
+    codebase_snapshot: Optional[dict] = None,
 ) -> None:
     """
     Write GitHub Actions Step Summary.
@@ -92,6 +96,25 @@ def write_step_summary(
             message = truncate(str(finding.get("message") or "No description"), 200)
             md.append(f"- **{severity}** `{file_path}:{line_start}` · **{category}**: {message}")
         md.append("")
+
+    if codebase_snapshot:
+        try:
+            snapshot_md = render_codebase_snapshot_md(codebase_snapshot).strip()
+            if snapshot_md.startswith("# "):
+                snapshot_md = "### " + snapshot_md[2:]
+            md.extend(
+                [
+                    "<details>",
+                    "<summary>Codebase Snapshot (Deterministic)</summary>",
+                    "",
+                    snapshot_md,
+                    "",
+                    "</details>",
+                    "",
+                ]
+            )
+        except Exception:
+            pass
 
     md.append(f"<sub>Omar Gate v{version} • run_id={run_id[:8]}</sub>")
     md.append("")

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from ...ingest.codebase_snapshot import build_codebase_snapshot
 from ...ingest.quick_learn import QuickLearnSummary
 
 
@@ -181,15 +182,58 @@ class ContextBuilder:
         """Build system context header."""
         stats = ingest.get("stats", {})
         dependencies = ingest.get("dependencies", {})
-        return (
+
+        overview = (
             "## Repository Overview\n"
             f"- Total files: {stats.get('total_files', '?')}\n"
             f"- In-scope files: {stats.get('in_scope_files', '?')}\n"
             f"- Total lines: {stats.get('total_lines', '?')}\n"
             f"- Package manager: {dependencies.get('package_manager', 'unknown')}\n\n"
-            "## Hotspot Categories\n"
-            f"{self._format_hotspots(ingest.get('hotspots', {}))}\n"
         )
+
+        snapshot_section = ""
+        try:
+            snapshot = build_codebase_snapshot(
+                ingest,
+                max_largest_files=10,
+                max_god_files=10,
+                hotspot_examples=3,
+            )
+        except Exception:
+            snapshot = {}
+
+        if isinstance(snapshot, dict) and snapshot:
+            snap_stats = snapshot.get("stats", {}) if isinstance(snapshot.get("stats"), dict) else {}
+            source_loc = snap_stats.get("source_loc_total")
+            threshold = snapshot.get("god_threshold_loc", 1000)
+            languages = snapshot.get("languages", []) if isinstance(snapshot.get("languages"), list) else []
+            god_files = snapshot.get("god_files", []) if isinstance(snapshot.get("god_files"), list) else []
+
+            snapshot_lines: List[str] = []
+            if source_loc is not None:
+                snapshot_lines.append(f"- Source LOC: {source_loc}")
+            if languages:
+                top_langs = ", ".join(
+                    f"{item.get('language', 'unknown')}={item.get('loc', 0)}"
+                    for item in languages[:8]
+                )
+                snapshot_lines.append(f"- Top languages: {top_langs}")
+            if god_files:
+                top_god = ", ".join(str(item.get("path") or "?") for item in god_files[:5])
+                snapshot_lines.append(f"- God components (>= {threshold} LOC): {top_god}")
+
+            if snapshot_lines:
+                snapshot_section = (
+                    "## Codebase Snapshot (Deterministic)\n"
+                    + "\n".join(snapshot_lines)
+                    + "\n\n"
+                )
+
+        hotspots_section = (
+            "## Hotspot Categories\n" f"{self._format_hotspots(ingest.get('hotspots', {}))}\n"
+        )
+
+        return overview + snapshot_section + hotspots_section
 
     def _build_deterministic_context(self, findings: List[dict]) -> str:
         """Summarize deterministic findings for LLM context."""

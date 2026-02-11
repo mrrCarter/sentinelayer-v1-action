@@ -201,6 +201,18 @@ outputs:
     description: 'Path to findings JSONL artifact'
   pack_summary_artifact:
     description: 'Path to PACK_SUMMARY.json'
+  ingest_artifact:
+    description: 'Path to INGEST.json (full ingest payload)'
+  codebase_ingest_artifact:
+    description: 'Path to CODEBASE_INGEST.json (alias of INGEST.json)'
+  codebase_ingest_summary_artifact:
+    description: 'Path to CODEBASE_INGEST_SUMMARY.json (codebase snapshot)'
+  codebase_ingest_summary_md_artifact:
+    description: 'Path to CODEBASE_INGEST_SUMMARY.md (human-readable snapshot)'
+  review_brief_artifact:
+    description: 'Path to REVIEW_BRIEF.md'
+  audit_report_artifact:
+    description: 'Path to AUDIT_REPORT.md'
   estimated_cost_usd:
     description: 'Estimated LLM cost for this run'
   idempotency_key:

@@ -33,6 +33,10 @@ Primary artifacts:
 - `REVIEW_BRIEF.md` (high-level summary)
 - `AUDIT_REPORT.md` (detailed report)
 - `PACK_SUMMARY.json` (counts, checksums, and run metadata)
+- `CODEBASE_INGEST_SUMMARY.md` (deterministic snapshot: LOC, languages, god components)
+- `CODEBASE_INGEST_SUMMARY.json` (snapshot, machine-readable)
+- `CODEBASE_INGEST.md` (bounded source index)
+- `CODEBASE_INGEST.json` (full ingest payload + file inventory)
 
 If you want artifacts preserved outside the runner, add an upload step:
 
