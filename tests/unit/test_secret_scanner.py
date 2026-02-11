@@ -33,3 +33,18 @@ def test_entropy_scanner_emits_finding() -> None:
     entropy_findings = [finding for finding in findings if finding.pattern_id == "SEC-ENTROPY"]
     assert entropy_findings
     assert "****" in entropy_findings[0].snippet
+
+
+def test_entropy_skips_path_template_constants() -> None:
+    content = (
+        'TEMPLATES = ["docs/templates/ADR_TEMPLATE.md", '
+        '"docs/templates/RUNBOOK_TEMPLATE.md"]\n'
+    )
+    findings = scan_for_secrets(content, "scripts/doc_inventory.py")
+    assert not any(f.pattern_id == "SEC-ENTROPY" for f in findings)
+
+
+def test_entropy_skips_markdown_table_lines() -> None:
+    content = "| Incident ID | |\n| --- | --- |\n"
+    findings = scan_for_secrets(content, "docs/table.md")
+    assert not any(f.pattern_id == "SEC-ENTROPY" for f in findings)

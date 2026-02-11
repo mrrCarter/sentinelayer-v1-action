@@ -26,6 +26,24 @@ def test_eval_detected_as_p0() -> None:
     assert finding.severity == "P0"
 
 
+def test_eval_string_literal_not_flagged_in_python() -> None:
+    files = {
+        "src/rules.py": (
+            "RULE = 'Use of eval() or Function() constructor can enable arbitrary code execution.'\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = scanner.scan(files)
+    assert not any(f.pattern_id == "EQ-008" for f in findings)
+
+
+def test_eval_call_detected_in_python() -> None:
+    files = {"src/app.py": "def run(user_input):\n    return eval(user_input)\n"}
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = scanner.scan(files)
+    assert any(f.pattern_id == "EQ-008" for f in findings)
+
+
 def test_dockerfile_without_user_detected_as_p2() -> None:
     files = {"Dockerfile": "FROM python:3.11\nRUN echo hi\n"}
     scanner = EngQualityScanner(tech_stack=[])
