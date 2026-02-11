@@ -105,7 +105,7 @@ def test_workflow_hardcoded_secret_env_value_detected() -> None:
             "jobs:\n"
             "  omar-review:\n"
             "    env:\n"
-            "      OPENAI_API_KEY: sk_live_1234567890abcdef123456\n"
+            "      OPENAI_API_KEY: " + "sk" + "_live_1234567890abcdef123456" + "\n"
         )
     }
     scanner = EngQualityScanner(tech_stack=["Python"])
