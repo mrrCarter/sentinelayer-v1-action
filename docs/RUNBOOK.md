@@ -500,7 +500,7 @@ gh run rerun <run-id> --failed
   - Tier 3: Full artifact upload, requires explicit opt-in.
 - **OIDC for Tier 2+:** Use `id-token: write` permission. Never send Bearer tokens for Tier 1 (causes spurious 401s if OIDC verification fails server-side).
 - **Fork PRs:** Treat as untrusted. Default `fork_policy: block` prevents running LLM analysis on fork PRs (which don't have access to secrets). Use `pull_request_target` only with strict workflow hardening.
-- **Docker action:** Runs as non-root (`omar:1001`) inside the container. For host-runner execution (`python -m omargate.main`), the runner's own user context applies.
+- **Docker action:** Runs as root inside an ephemeral container. GitHub Actions mounts `/github/workspace`, `/github/file_commands`, and other paths owned by the host runner UID; dropping to a non-root user breaks post-step writes (`GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY`). The container is destroyed after the job step. For host-runner execution (`python -m omargate.main`), the runner's own user context applies.
 - **Secrets in findings:** All secrets in finding snippets are masked with `****` by `mask_secret_in_snippet()`.
 - **Artifact integrity:** `PACK_SUMMARY.json` contains SHA-256 of `FINDINGS.jsonl`. Gate validates checksums before evaluating.
 

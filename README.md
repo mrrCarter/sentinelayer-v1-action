@@ -425,6 +425,36 @@ jobs:
 
 ---
 
+## False Positive Defense
+
+Omar Gate uses three independent layers so that **LLM analysis can never unilaterally block a merge**:
+
+### Layer 1 — AST & Syntax-Aware Deterministic Analysis
+- Python `eval()`/`exec()` detected via `ast.parse` + `ast.walk`, not regex — eliminates self-referential matches in comments, strings, and docs.
+- JS/TS comment and string literals are blanked before pattern matching.
+- Entropy-based secret detection requires context keywords nearby, minimum length (32), and high Shannon entropy (>4.7) to flag.
+
+### Layer 2 — Git-Aware Diff Scoping
+- Only **added** lines can produce blocking (P0/P1) findings.
+- Removed lines are scanned separately at P3 (advisory only).
+- Entropy matches in doc files (`.md`, `.rst`, `.txt`) and historical commits are auto-downgraded to P3.
+
+### Layer 3 — LLM Guardrails (Corroboration Required)
+- LLM-sourced P0/P1 findings are automatically **downgraded to P2** unless a deterministic finding in the *same file*, *same category*, and within *5 lines* corroborates them.
+- Findings referencing files not in the scanned diff are dropped entirely.
+- Line numbers are clamped to valid ranges; hallucinated locations are discarded.
+
+| Finding Source | Can Block Merge? |
+|---|:---:|
+| Deterministic scanner (regex, AST, config) | Yes |
+| Harness (pip-audit, gitleaks) | Yes |
+| LLM/Codex **with** deterministic corroboration | Yes |
+| LLM/Codex **without** corroboration | No (advisory P2) |
+
+> See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#false-positive-defense) for the full technical breakdown of each layer.
+
+---
+
 ## Troubleshooting
 
 ### "Illegal header value b'Bearer '"
@@ -454,7 +484,7 @@ Your repository is analyzed in your GitHub runner. SentinelLayer dashboard telem
 Primary analysis uses Codex CLI with `gpt-5.2-codex` for deep agentic audit. If Codex CLI is unavailable, falls back to `gpt-4.1` via the Responses API, then `gpt-4.1-mini` as secondary fallback. All models are configurable via `codex_model`, `model`, and `model_fallback` inputs.
 
 **What about false positives?**
-SentinelLayer combines deterministic rules with LLM review and includes a `confidence` field per finding. LLM/Codex high-severity findings now require deterministic/harness corroboration to remain blocking; uncorroborated LLM-only P0/P1 findings are automatically downgraded to advisory P2.
+Omar Gate has a 3-layer defense against false positives: AST-aware deterministic analysis, git-aware diff scoping, and LLM guardrails that require deterministic corroboration. LLM-only P0/P1 findings without corroboration are automatically downgraded to advisory P2 — they can't block your merge. See [False Positive Defense](#false-positive-defense) for details.
 
 **Is it free?**
 See https://sentinelayer.com for current tier limits and pricing.
