@@ -320,8 +320,9 @@ permissions:
   id-token: write
 ```
 
-Optional audience override:
-- Set `SENTINELAYER_OIDC_AUDIENCE` as an environment variable in your workflow or runner.
+OIDC audience:
+- Default audience is `sentinelayer`.
+- Optional override: set `SENTINELAYER_OIDC_AUDIENCE` in your workflow or runner.
 
 ## Outputs
 

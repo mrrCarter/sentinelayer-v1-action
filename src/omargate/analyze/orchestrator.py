@@ -178,7 +178,13 @@ class AnalysisOrchestrator:
                     findings_count=len(llm_findings),
                 )
 
-        if (not ran_codex or not llm_success) and self._should_run_llm():
+        codex_failed_with_strict_mode = (
+            ran_codex and not llm_success and bool(getattr(self.config, "codex_only", False))
+        )
+
+        if codex_failed_with_strict_mode:
+            warnings.append("Codex audit failed (codex_only=true, API fallback disabled)")
+        elif (not ran_codex or not llm_success) and self._should_run_llm():
             with self.logger.stage("llm_analysis"):
                 llm_result = await self._run_llm_analysis(
                     ingest=ingest,
@@ -205,6 +211,11 @@ class AnalysisOrchestrator:
 
         # Step 6: Merge findings
         base_findings = harness_findings + det_findings
+        llm_findings = self._apply_llm_guardrails(
+            llm_findings=llm_findings,
+            non_llm_findings=base_findings,
+            ingest=ingest,
+        )
         all_findings = self._merge_findings(base_findings, llm_findings)
         add_fingerprints_to_findings(
             all_findings,
@@ -545,6 +556,113 @@ class AnalysisOrchestrator:
         )
 
         return merged
+
+    def _apply_llm_guardrails(
+        self,
+        *,
+        llm_findings: List[dict],
+        non_llm_findings: List[dict],
+        ingest: dict,
+    ) -> List[dict]:
+        """
+        Normalize and guardrail LLM/Codex findings before merge.
+
+        Rules:
+        - Ignore findings pointing to unknown files.
+        - Clamp line numbers to file bounds when ingest line counts are available.
+        - For LLM/Codex P0/P1 findings, require deterministic/harness corroboration.
+          If not corroborated, downgrade to P2 advisory to avoid blocking on LLM-only claims.
+        """
+        files = ingest.get("files", []) if isinstance(ingest, dict) else []
+        line_limits: dict[str, int] = {}
+        for file_info in files:
+            if not isinstance(file_info, dict):
+                continue
+            rel_path = file_info.get("path")
+            if not isinstance(rel_path, str) or not rel_path:
+                continue
+            lines = file_info.get("lines")
+            if isinstance(lines, int) and lines > 0:
+                line_limits[rel_path.replace("\\", "/")] = lines
+            else:
+                line_limits[rel_path.replace("\\", "/")] = 1
+
+        normalized: List[dict] = []
+        for finding in llm_findings:
+            if not isinstance(finding, dict):
+                continue
+            path_raw = finding.get("file_path")
+            if not isinstance(path_raw, str) or not path_raw:
+                continue
+            path = path_raw.replace("\\", "/")
+            max_line = line_limits.get(path)
+            if max_line is None:
+                continue
+
+            try:
+                line_start = int(finding.get("line_start") or 1)
+            except (TypeError, ValueError):
+                line_start = 1
+            try:
+                line_end = int(finding.get("line_end") or line_start)
+            except (TypeError, ValueError):
+                line_end = line_start
+
+            line_start = min(max(line_start, 1), max_line)
+            line_end = min(max(line_end, line_start), max_line)
+
+            severity = str(finding.get("severity") or "P3")
+            source = str(finding.get("source") or "llm").lower()
+            category = str(finding.get("category") or "unknown")
+            message = str(finding.get("message") or "")
+
+            try:
+                confidence = float(finding.get("confidence", 0.8))
+            except (TypeError, ValueError):
+                confidence = 0.8
+            confidence = min(max(confidence, 0.0), 1.0)
+
+            if source in {"llm", "codex"} and severity in {"P0", "P1"}:
+                if not self._is_corroborated(path, line_start, category, non_llm_findings):
+                    severity = "P2"
+                    confidence = min(confidence, 0.75)
+                    if message:
+                        message = f"{message} (LLM-only, needs deterministic corroboration)"
+
+            fixed = dict(finding)
+            fixed["file_path"] = path
+            fixed["line_start"] = line_start
+            fixed["line_end"] = line_end
+            fixed["severity"] = severity
+            fixed["confidence"] = confidence
+            fixed["message"] = message
+            normalized.append(fixed)
+
+        return normalized
+
+    def _is_corroborated(
+        self,
+        path: str,
+        line_start: int,
+        category: str,
+        non_llm_findings: List[dict],
+    ) -> bool:
+        for finding in non_llm_findings:
+            if not isinstance(finding, dict):
+                continue
+            other_path = str(finding.get("file_path") or "").replace("\\", "/")
+            if other_path != path:
+                continue
+            other_category = str(finding.get("category") or "")
+            if other_category and category and other_category != category:
+                continue
+            try:
+                other_line = int(finding.get("line_start") or 1)
+            except (TypeError, ValueError):
+                other_line = 1
+            if abs(other_line - line_start) <= 5:
+                return True
+        return False
 
     def _count_by_severity(self, findings: List[dict]) -> dict:
         """Count findings by severity."""

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from .pattern_scanner import Finding, PatternScanner, mask_secret_in_snippet
 
@@ -39,7 +39,9 @@ class ConfigScanner:
             pattern for pattern in self._pattern_scanner.patterns if str(pattern.get("id", "")).startswith("CICD-")
         ]
 
-    def scan_file(self, file_path: Path, content: str) -> List[Finding]:
+    def scan_file(
+        self, file_path: Path, content: str, *, repo_root: Optional[Path] = None
+    ) -> List[Finding]:
         rel_path = file_path.as_posix()
         normalized = rel_path.replace("\\", "/")
         name = file_path.name.lower()
@@ -52,7 +54,7 @@ class ConfigScanner:
             findings.extend(self._scan_package_json(rel_path, content))
 
         if name in {"tsconfig.json", "jsconfig.json"}:
-            findings.extend(self._scan_tsconfig(rel_path, content))
+            findings.extend(self._scan_tsconfig(rel_path, content, repo_root=repo_root))
 
         if name in {"docker-compose.yml", "docker-compose.yaml"}:
             findings.extend(self._scan_docker_compose(rel_path, content))
@@ -75,7 +77,7 @@ class ConfigScanner:
                 content = full_path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            findings.extend(self.scan_file(Path(rel_path), content))
+            findings.extend(self.scan_file(Path(rel_path), content, repo_root=repo_root))
         return findings
 
     def _scan_env(self, file_path: str, content: str) -> List[Finding]:
@@ -150,7 +152,51 @@ class ConfigScanner:
                     )
         return findings
 
-    def _scan_tsconfig(self, file_path: str, content: str) -> List[Finding]:
+    def _load_json_file(self, path: Path) -> Optional[dict]:
+        try:
+            raw = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _tsconfig_refs_are_strict(self, config_data: dict, file_path: str, repo_root: Path) -> bool:
+        refs = config_data.get("references")
+        if not isinstance(refs, list) or not refs:
+            return False
+
+        base_dir = (repo_root / file_path).parent
+        checked = 0
+        strict_true = 0
+        for entry in refs:
+            if not isinstance(entry, dict):
+                continue
+            ref_path = entry.get("path")
+            if not isinstance(ref_path, str) or not ref_path.strip():
+                continue
+            ref = (base_dir / ref_path).resolve()
+            if ref.is_dir():
+                ref = ref / "tsconfig.json"
+            if ref.suffix.lower() != ".json":
+                ref = ref / "tsconfig.json"
+
+            payload = self._load_json_file(ref)
+            if payload is None:
+                continue
+            checked += 1
+            compiler = payload.get("compilerOptions")
+            strict_value = compiler.get("strict") if isinstance(compiler, dict) else None
+            if strict_value is True:
+                strict_true += 1
+
+        return checked > 0 and strict_true == checked
+
+    def _scan_tsconfig(
+        self, file_path: str, content: str, *, repo_root: Optional[Path] = None
+    ) -> List[Finding]:
         try:
             data = json.loads(content)
         except json.JSONDecodeError:
@@ -160,6 +206,13 @@ class ConfigScanner:
         if isinstance(compiler, dict):
             strict_value = compiler.get("strict")
         if strict_value is True:
+            return []
+        if (
+            strict_value is None
+            and repo_root is not None
+            and isinstance(data, dict)
+            and self._tsconfig_refs_are_strict(data, file_path, repo_root)
+        ):
             return []
         snippet = "\"strict\": false" if strict_value is False else "strict mode not enabled"
         snippet = _truncate_snippet(snippet)

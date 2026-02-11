@@ -32,7 +32,17 @@ def test_entropy_scanner_emits_finding() -> None:
     findings = scan_for_secrets(content, "config.ts")
     entropy_findings = [finding for finding in findings if finding.pattern_id == "SEC-ENTROPY"]
     assert entropy_findings
+    assert entropy_findings[0].severity == "P1"
     assert "****" in entropy_findings[0].snippet
+
+
+def test_entropy_scanner_strong_token_without_context_is_advisory() -> None:
+    candidate = "A9mQ2nV5xR7tY9pL3cD6fG1hJ4kN0sW2"
+    content = 'const blob = "' + candidate + '"'
+    findings = scan_for_secrets(content, "config.ts")
+    entropy_findings = [finding for finding in findings if finding.pattern_id == "SEC-ENTROPY"]
+    assert entropy_findings
+    assert entropy_findings[0].severity == "P2"
 
 
 def test_entropy_skips_path_template_constants() -> None:

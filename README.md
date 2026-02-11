@@ -4,7 +4,7 @@
 
 [![Action Version](https://img.shields.io/badge/action-v1-blue)](https://github.com/mrrCarter/sentinelayer-v1-action)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests: 186 passing](https://img.shields.io/badge/tests-186%20passing-brightgreen)](https://github.com/mrrCarter/sentinelayer-v1-action/actions/workflows/quality-gates.yml)
+[![Tests: 204 passing](https://img.shields.io/badge/tests-204%20passing-brightgreen)](https://github.com/mrrCarter/sentinelayer-v1-action/actions/workflows/quality-gates.yml)
 [![Marketplace](https://img.shields.io/badge/GitHub-Marketplace-blue)](https://github.com/marketplace?query=sentinelayer)
 
 Omar Gate runs a 7-layer security analysis on every pull request — combining deterministic pattern scanning, codebase-aware ingestion, and deep AI-powered code review — then blocks the merge if critical vulnerabilities are found.
@@ -39,9 +39,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: python -m pip install --upgrade pip
-      - run: pip install -r requirements.txt
-      - run: pip install pytest ruff
+          cache: "pip"
+          cache-dependency-path: requirements.lock.txt
+      - run: python -m pip install --require-hashes -r requirements.lock.txt
+      - run: python -m pip install --disable-pip-version-check ruff==0.15.0
       - run: ruff check src tests
       - run: python -m pytest tests/unit tests/integration -q
 
@@ -52,7 +53,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install gitleaks
         run: |
-          curl -sSLo gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.24.2/gitleaks_8.24.2_linux_x64.tar.gz
+          curl -fsSLo gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.24.2/gitleaks_8.24.2_linux_x64.tar.gz
+          echo "fa0500f6b7e41d28791ebc680f5dd9899cd42b58629218a5f041efa899151a8e  gitleaks.tar.gz" | sha256sum --check --strict
           tar -xzf gitleaks.tar.gz
           sudo mv gitleaks /usr/local/bin/
       - run: gitleaks detect --source . --report-format json --report-path gitleaks-report.json --redact --no-git
@@ -311,6 +313,7 @@ Use these in subsequent workflow steps:
 | `model` | `gpt-4.1` | Primary LLM model |
 | `model_fallback` | `gpt-4.1-mini` | Fallback if primary fails or exceeds quota |
 | `use_codex` | `true` | Enable Codex CLI for deep agentic audit (OpenAI only) |
+| `codex_only` | `false` | If `true`, disable API fallback and use Codex CLI only |
 | `codex_model` | `gpt-5.2-codex` | Model for Codex CLI |
 | `codex_timeout` | `300` | Codex CLI timeout in seconds |
 
@@ -451,7 +454,7 @@ Your repository is analyzed in your GitHub runner. SentinelLayer dashboard telem
 Primary analysis uses Codex CLI with `gpt-5.2-codex` for deep agentic audit. If Codex CLI is unavailable, falls back to `gpt-4.1` via the Responses API, then `gpt-4.1-mini` as secondary fallback. All models are configurable via `codex_model`, `model`, and `model_fallback` inputs.
 
 **What about false positives?**
-SentinelLayer combines deterministic rules with LLM review and includes a `confidence` field per finding. Tune enforcement via `severity_gate`, and consider `llm_failure_policy=deterministic_only` for stricter determinism.
+SentinelLayer combines deterministic rules with LLM review and includes a `confidence` field per finding. LLM/Codex high-severity findings now require deterministic/harness corroboration to remain blocking; uncorroborated LLM-only P0/P1 findings are automatically downgraded to advisory P2.
 
 **Is it free?**
 See https://sentinelayer.com for current tier limits and pricing.
@@ -460,7 +463,7 @@ See https://sentinelayer.com for current tier limits and pricing.
 
 ## Test Coverage
 
-**186 tests** (unit + integration) — all passing. Covers deterministic scanners, Codex CLI, LLM fallback, telemetry, rate limiting, gate logic, and config validation.
+**204 tests** (unit + integration) — all passing. Covers deterministic scanners, Codex CLI, LLM fallback, telemetry, rate limiting, gate logic, and config validation.
 
 ---
 

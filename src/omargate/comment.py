@@ -350,6 +350,44 @@ def render_pr_comment(
 
     lines.extend(["### Next Steps", "", next_steps, ""])
 
+    # False-positive defense explainer — always shown so users understand trust model.
+    fp_defense = "\n".join(
+        [
+            "<details>",
+            "<summary>False Positive Defense (3 layers)</summary>",
+            "",
+            "Omar Gate uses three independent layers to minimize false positives:",
+            "",
+            "**Layer 1 — AST & Syntax-Aware Deterministic Analysis**",
+            "- Python `eval()`/`exec()` detected via `ast.parse` + `ast.walk`, not regex — "
+            "eliminates self-referential matches in comments, strings, and docs.",
+            "- JS/TS comment and string literals are blanked before pattern matching.",
+            "- Entropy-based secret detection requires context keywords nearby, "
+            "minimum length (32), and high Shannon entropy (>4.7) to flag.",
+            "",
+            "**Layer 2 — Git-Aware Diff Scoping**",
+            "- Only *added* lines can produce blocking (P0/P1) findings.",
+            "- Removed lines are scanned separately at P3 for optional triage.",
+            "- Entropy matches in doc files (`.md`, `.rst`, `.txt`) and historical "
+            "commits are auto-downgraded to P3.",
+            "",
+            "**Layer 3 — LLM Guardrails (Corroboration Required)**",
+            "- LLM-sourced P0/P1 findings are automatically downgraded to P2 "
+            "unless a deterministic finding in the *same file*, *same category*, "
+            "and within *5 lines* corroborates them.",
+            "- Findings referencing files not in the scanned diff are dropped entirely.",
+            "- Line numbers are clamped to valid ranges; hallucinated locations are discarded.",
+            "",
+            "This layered approach ensures that blocking findings are backed by "
+            "deterministic evidence — LLM analysis enriches results but cannot "
+            "unilaterally block a merge.",
+            "",
+            "</details>",
+        ]
+    )
+    lines.append(fp_defense)
+    lines.append("")
+
     if warnings_section:
         lines.append(warnings_section)
         lines.append("")

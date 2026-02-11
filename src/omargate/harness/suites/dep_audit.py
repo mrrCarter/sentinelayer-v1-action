@@ -9,6 +9,32 @@ from ...analyze.deterministic.pattern_scanner import Finding, _truncate_snippet
 from ..runner import SecuritySuite, run_command
 
 
+def _parse_pip_vulnerability_count(payload: Any) -> int:
+    """
+    Parse pip-audit JSON output and return total vulnerability count.
+
+    pip-audit returns:
+      {"dependencies":[{"name":"x","version":"1.0","vulns":[...]}], "fixes":[...]}
+    Older versions may return a list directly.
+    """
+    deps: list[Any] = []
+    if isinstance(payload, dict):
+        dependencies = payload.get("dependencies")
+        if isinstance(dependencies, list):
+            deps = dependencies
+    elif isinstance(payload, list):
+        deps = payload
+
+    total = 0
+    for dep in deps:
+        if not isinstance(dep, dict):
+            continue
+        vulns = dep.get("vulns")
+        if isinstance(vulns, list):
+            total += len(vulns)
+    return total
+
+
 def _parse_npm_critical_count(payload: dict[str, Any]) -> int:
     meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
     vulns_meta = meta.get("vulnerabilities") if isinstance(meta.get("vulnerabilities"), dict) else {}
@@ -101,10 +127,11 @@ class DepAuditSuite(SecuritySuite):
             payload = json.loads(res.stdout)
         except json.JSONDecodeError:
             return None
-        if not payload:
+        vuln_count = _parse_pip_vulnerability_count(payload)
+        if vuln_count <= 0:
             return None
 
-        snippet = _truncate_snippet(f"count={len(payload)}", max_chars=200)
+        snippet = _truncate_snippet(f"vulnerabilities={vuln_count}", max_chars=200)
         return Finding(
             id="HARNESS-PIP-AUDIT",
             pattern_id="HARNESS-PIP-AUDIT",

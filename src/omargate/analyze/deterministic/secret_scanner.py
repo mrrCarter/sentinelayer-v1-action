@@ -10,6 +10,8 @@ from .pattern_scanner import Finding, mask_secret_in_snippet
 
 MAX_SNIPPET_CHARS = 500
 ENTROPY_THRESHOLD = 4.0
+STRONG_ENTROPY_THRESHOLD = 4.7
+STRONG_ENTROPY_MIN_LENGTH = 32
 
 # Matches obvious code identifiers that should not be flagged as secrets.
 # Only skip strings that clearly follow naming conventions with underscores
@@ -256,7 +258,8 @@ def scan_for_secrets(content: str, file_path: str) -> List[Finding]:
         if _overlaps(match.span(), matched_spans):
             continue
         candidate = match.group(0)
-        if calculate_entropy(candidate) < ENTROPY_THRESHOLD:
+        entropy = calculate_entropy(candidate)
+        if entropy < ENTROPY_THRESHOLD:
             continue
         # Skip common code identifiers (camelCase, snake_case, etc.)
         if _looks_like_non_secret_identifier(candidate):
@@ -266,26 +269,41 @@ def scan_for_secrets(content: str, file_path: str) -> List[Finding]:
         source_line = lines[line_start - 1] if line_start <= len(lines) else ""
         if _COMMENT_LINE_RE.match(source_line):
             continue
-        if not _likely_secret_context(source_line, candidate):
+        has_secret_context = _likely_secret_context(source_line, candidate)
+        if not has_secret_context and (
+            len(candidate) < STRONG_ENTROPY_MIN_LENGTH or entropy < STRONG_ENTROPY_THRESHOLD
+        ):
             continue
         end_index = max(match.end() - 1, match.start())
         line_end = _index_to_line(line_starts, end_index)
         snippet = _snippet_from_lines(lines, line_start, line_end)
         snippet = mask_secret_in_snippet(snippet, "secrets")
         snippet = _truncate_snippet(snippet)
+        severity = "P1" if has_secret_context else "P2"
+        message = (
+            "High-entropy string detected"
+            if has_secret_context
+            else "High-entropy string detected (no explicit secret context)"
+        )
+        recommendation = (
+            "Move secrets to a secure store and rotate credentials"
+            if has_secret_context
+            else "Review this token-like value; move to a secure store if it is a credential"
+        )
+        confidence = 1.0 if has_secret_context else 0.7
         findings.append(
             Finding(
                 id=f"SEC-ENTROPY-{file_path}-{line_start}",
                 pattern_id="SEC-ENTROPY",
-                severity="P1",
+                severity=severity,
                 category="secrets",
                 file_path=file_path,
                 line_start=line_start,
                 line_end=line_end,
                 snippet=snippet,
-                message="High-entropy string detected",
-                recommendation="Move secrets to a secure store and rotate credentials",
-                confidence=1.0,
+                message=message,
+                recommendation=recommendation,
+                confidence=confidence,
             )
         )
 

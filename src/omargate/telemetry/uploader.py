@@ -178,7 +178,7 @@ async def fetch_oidc_token(logger: Optional[OmarLogger] = None) -> Optional[str]
     if not request_url or not request_token:
         return None
 
-    audience = os.environ.get("SENTINELAYER_OIDC_AUDIENCE")
+    audience = (os.environ.get("SENTINELAYER_OIDC_AUDIENCE") or "sentinelayer").strip()
     if audience:
         separator = "&" if "?" in request_url else "?"
         request_url = f"{request_url}{separator}audience={audience}"

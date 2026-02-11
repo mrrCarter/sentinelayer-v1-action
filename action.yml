@@ -88,7 +88,7 @@ inputs:
   model_fallback:
     description: 'Fallback LLM API model (if primary model fails or quota exceeded)'
     required: false
-    default: 'gpt-4.1-mini'
+    default: 'gpt-4o'
 
   llm_failure_policy:
     description: 'If LLM call fails: block (fail-closed), deterministic_only, allow_with_warning'
@@ -99,6 +99,11 @@ inputs:
     description: 'Use Codex CLI for deep agentic audit (falls back to API)'
     required: false
     default: 'true'
+
+  codex_only:
+    description: 'Use Codex CLI as the only LLM path (disable API fallback)'
+    required: false
+    default: 'false'
 
   codex_model:
     description: 'Model for Codex CLI'

@@ -39,6 +39,30 @@ def test_tsconfig_strict_disabled(config_scanner: ConfigScanner) -> None:
     assert any(finding.pattern_id == "CONF-TS-001" for finding in findings)
 
 
+def test_tsconfig_with_strict_references_not_flagged(
+    config_scanner: ConfigScanner, tmp_path: Path
+) -> None:
+    (tmp_path / "tsconfig.json").write_text(
+        '{"references":[{"path":"./tsconfig.app.json"},{"path":"./tsconfig.node.json"}]}',
+        encoding="utf-8",
+    )
+    (tmp_path / "tsconfig.app.json").write_text(
+        '{"compilerOptions":{"strict": true}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "tsconfig.node.json").write_text(
+        '{"compilerOptions":{"strict": true}}',
+        encoding="utf-8",
+    )
+    files = [
+        {"path": "tsconfig.json"},
+        {"path": "tsconfig.app.json"},
+        {"path": "tsconfig.node.json"},
+    ]
+    findings = config_scanner.scan_files(files, tmp_path)
+    assert not any(finding.pattern_id == "CONF-TS-001" for finding in findings)
+
+
 def test_docker_compose_privileged_detected(config_scanner: ConfigScanner) -> None:
     content = "\n".join(
         [
