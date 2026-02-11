@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 import re
 from typing import Iterable, Optional
@@ -11,6 +12,11 @@ _JS_EXTS = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
 _PY_EXTS = (".py",)
 _GO_EXTS = (".go",)
 _BACKEND_EXTS = _JS_EXTS + _PY_EXTS + _GO_EXTS
+
+_JS_COMMENTS_AND_STRINGS_RE = re.compile(
+    r"//[^\n]*|/\*[\s\S]*?\*/|'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`",
+    re.MULTILINE,
+)
 
 
 @dataclass(frozen=True)
@@ -46,7 +52,7 @@ class EngQualityScanner:
         return any(any(marker in t for marker in frontend_markers) for t in self.tech_stack)
 
     def _has_backend(self) -> bool:
-        backend_markers = ("node", "express", "django", "fastapi", "go")
+        backend_markers = ("node", "express", "django", "fastapi", "flask", "python", "go")
         return any(any(marker in t for marker in backend_markers) for t in self.tech_stack)
 
     def _scan_frontend(self, files: dict[str, str]) -> list[Finding]:
@@ -115,6 +121,34 @@ class EngQualityScanner:
         end = min(line_end, len(lines))
         snippet = "\n".join(lines[start:end])
         return _truncate_snippet(snippet)
+
+    def _blank_non_newlines(self, text: str) -> str:
+        return "".join("\n" if ch == "\n" else " " for ch in text)
+
+    def _strip_js_comments_and_strings(self, content: str) -> str:
+        def _repl(match: re.Match[str]) -> str:
+            return self._blank_non_newlines(match.group(0))
+
+        return _JS_COMMENTS_AND_STRINGS_RE.sub(_repl, content)
+
+    def _python_eval_call_lines(self, content: str) -> set[int]:
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            return set()
+
+        lines: set[int] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Name):
+                if func.id in {"eval", "exec"}:
+                    lines.add(int(getattr(node, "lineno", 1) or 1))
+            elif isinstance(func, ast.Attribute):
+                if func.attr in {"eval", "exec"}:
+                    lines.add(int(getattr(node, "lineno", 1) or 1))
+        return lines
 
     def _make_finding(
         self,
@@ -399,14 +433,47 @@ class EngQualityScanner:
             pattern_id="EQ-008",
             severity="P0",
             category="backend",
-            message="Use of eval() or Function() constructor can enable arbitrary code execution.",
-            recommendation="Remove eval/Function; use safe parsers/validators and explicit logic.",
+            message="Use of eval()/exec() or Function() constructor can enable arbitrary code execution.",
+            recommendation="Remove eval/exec/Function; use safe parsers/validators and explicit logic.",
         )
         findings: list[Finding] = []
-        regex = re.compile(r"\beval\s*\(|\bnew\s+Function\s*\(", re.IGNORECASE)
         for path, content in self._iter_files(files, exts=_BACKEND_EXTS):
             if self._is_test_file(path):
                 continue
+            if path.endswith(_PY_EXTS):
+                for line in sorted(self._python_eval_call_lines(content)):
+                    snippet = self._line_snippet(content, line, line)
+                    findings.append(
+                        self._make_finding(
+                            rule,
+                            file_path=path,
+                            line_start=line,
+                            snippet=snippet,
+                            confidence=0.95,
+                        )
+                    )
+                continue
+
+            # JS/TS: strip strings/comments before regex so we don't flag rule text/docs.
+            if path.endswith(_JS_EXTS):
+                regex = re.compile(r"\beval\s*\(|\bnew\s+Function\s*\(", re.IGNORECASE)
+                scrubbed = self._strip_js_comments_and_strings(content)
+                for m in regex.finditer(scrubbed):
+                    line = self._index_to_line(scrubbed, m.start())
+                    snippet = self._line_snippet(content, line, line)
+                    findings.append(
+                        self._make_finding(
+                            rule,
+                            file_path=path,
+                            line_start=line,
+                            snippet=snippet,
+                            confidence=0.95,
+                        )
+                    )
+                continue
+
+            # Go and other backend files: conservative regex.
+            regex = re.compile(r"\beval\s*\(", re.IGNORECASE)
             for m in regex.finditer(content):
                 line = self._index_to_line(content, m.start())
                 snippet = self._line_snippet(content, line, line)
@@ -416,7 +483,7 @@ class EngQualityScanner:
                         file_path=path,
                         line_start=line,
                         snippet=snippet,
-                        confidence=0.95,
+                        confidence=0.8,
                     )
                 )
         return findings

@@ -22,19 +22,72 @@ name: Security Review
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
-  pull-requests: write
-  checks: write
-  id-token: write
 
 jobs:
-  security-review:
+  quality-gates:
+    name: Quality Gates
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: src
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+      - run: pip install pytest ruff
+      - run: ruff check src tests
+      - run: python -m pytest tests/unit tests/integration -q
+
+  secret-scanning:
+    name: Secret Scanning
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install gitleaks
+        run: |
+          curl -sSLo gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.24.2/gitleaks_8.24.2_linux_x64.tar.gz
+          tar -xzf gitleaks.tar.gz
+          sudo mv gitleaks /usr/local/bin/
+      - run: gitleaks detect --source . --report-format json --report-path gitleaks-report.json --redact --no-git
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gitleaks-${{ github.run_id }}
+          path: gitleaks-report.json
+
+  omar-review:
+    name: Omar Review
+    needs: [quality-gates, secret-scanning]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install LLM CLIs
+        run: |
+          npm install -g @openai/codex@0.98.0
+          npm install -g @anthropic-ai/claude-code || true
+          npm install -g @google/gemini-cli || npm install -g @google-ai/gemini-cli || true
+
+      - name: Verify LLM CLIs
+        run: |
+          codex --version || true
+          claude --version || true
+          gemini --version || true
 
       - name: Omar Gate
         id: omar
@@ -58,6 +111,8 @@ That's it. Open a PR and Omar Gate will:
 3. Post a detailed security report as a PR comment
 4. Block the merge if P0/P1 issues are found
 5. Upload full audit artifacts for download
+
+The workflow above intentionally runs **Quality Gates** and **Secret Scanning** in parallel, then runs **Omar Review** only after both pass.
 
 > **Required inputs:** `github_token` and an API key for your chosen LLM provider. Without `github_token`, the action cannot fetch your PR diff and will fail. Without an API key, only deterministic scanning runs (no AI analysis).
 

@@ -16,9 +16,31 @@ ENTROPY_THRESHOLD = 4.0
 # (snake_case, SCREAMING_SNAKE). Pure alphanumeric strings are NOT skipped
 # because high-entropy secrets can also be purely alphanumeric.
 _CODE_IDENTIFIER_RE = re.compile(
-    r"^[a-zA-Z][a-zA-Z0-9]*(?:_[a-zA-Z0-9]+){2,}$"  # snake_case with 3+ segments
+    r"^[a-zA-Z][a-zA-Z0-9]*(?:_[a-zA-Z0-9]+){1,}$"  # snake_case with 2+ segments
 )
+_SCREAMING_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
 _COMMENT_LINE_RE = re.compile(r"^\s*(?://|#|\*|/\*)")
+_MARKDOWN_TABLE_LINE_RE = re.compile(r"^\s*\|.*\|")
+_SECRET_CONTEXT_KEY_RE = re.compile(
+    r"(secret|token|password|passwd|pwd|api[_-]?key|private[_-]?key|credential|auth|bearer)",
+    re.IGNORECASE,
+)
+_ENV_ASSIGN_RE = re.compile(r"^\s*([A-Z][A-Z0-9_]{2,})\s*=")
+_KNOWN_SECRET_PREFIXES = (
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "sk_live_",
+    "sk_test_",
+    "xoxb-",
+    "xoxp-",
+    "xoxa-",
+    "aiZa",
+    "ya29.",
+    "eyJ",  # JWT-like payload, explicit regex also covers these
+)
 
 _SECRET_PATTERNS = [
     {
@@ -105,6 +127,88 @@ def _overlaps(span: Tuple[int, int], spans: List[Tuple[int, int]]) -> bool:
     return False
 
 
+def _has_known_secret_prefix(candidate: str) -> bool:
+    lowered = candidate.lower()
+    for prefix in _KNOWN_SECRET_PREFIXES:
+        if lowered.startswith(prefix.lower()):
+            return True
+    return False
+
+
+def _char_class_count(candidate: str) -> int:
+    classes = 0
+    if any(c.islower() for c in candidate):
+        classes += 1
+    if any(c.isupper() for c in candidate):
+        classes += 1
+    if any(c.isdigit() for c in candidate):
+        classes += 1
+    if any(c in "+/=_-" for c in candidate):
+        classes += 1
+    return classes
+
+
+def _looks_like_non_secret_identifier(candidate: str) -> bool:
+    if _has_known_secret_prefix(candidate):
+        return False
+    if _SCREAMING_SNAKE_RE.match(candidate):
+        return True
+    if _CODE_IDENTIFIER_RE.match(candidate):
+        # A long snake_case identifier without diverse charset is usually code, not a secret.
+        return _char_class_count(candidate) <= 2
+    if "/" in candidate or "\\" in candidate:
+        return True
+    if "." in candidate:
+        return True
+
+    has_digit = any(c.isdigit() for c in candidate)
+    has_lower = any(c.islower() for c in candidate)
+    has_upper = any(c.isupper() for c in candidate)
+    has_symbol = any(c in "+/=_-" for c in candidate)
+    class_count = _char_class_count(candidate)
+
+    # Tokens with very low variety are typically identifiers.
+    if class_count <= 2:
+        return True
+
+    # If no digits, require mixed case + symbol entropy to avoid flagging identifiers like ADR_TEMPLATE.
+    if not has_digit and not (has_symbol and has_lower and has_upper):
+        return True
+
+    return False
+
+
+def _likely_secret_context(source_line: str, candidate: str) -> bool:
+    if _has_known_secret_prefix(candidate):
+        return True
+
+    stripped = source_line.strip()
+    if not stripped:
+        return False
+    if _MARKDOWN_TABLE_LINE_RE.match(stripped):
+        return False
+
+    lowered = source_line.lower()
+    if "authorization" in lowered or "bearer " in lowered:
+        return True
+
+    env_m = _ENV_ASSIGN_RE.search(source_line)
+    if env_m and _SECRET_CONTEXT_KEY_RE.search(env_m.group(1)):
+        return True
+
+    idx = source_line.find(candidate)
+    if idx < 0:
+        idx = len(source_line)
+    before = source_line[:idx]
+    after = source_line[idx + len(candidate) :]
+    if _SECRET_CONTEXT_KEY_RE.search(before):
+        return True
+    if _SECRET_CONTEXT_KEY_RE.search(after):
+        return True
+
+    return False
+
+
 def scan_for_secrets(content: str, file_path: str) -> List[Finding]:
     line_starts = _build_line_starts(content)
     lines = content.splitlines()
@@ -150,12 +254,14 @@ def scan_for_secrets(content: str, file_path: str) -> List[Finding]:
         if calculate_entropy(candidate) < ENTROPY_THRESHOLD:
             continue
         # Skip common code identifiers (camelCase, snake_case, etc.)
-        if _CODE_IDENTIFIER_RE.match(candidate):
+        if _looks_like_non_secret_identifier(candidate):
             continue
         # Skip candidates on comment lines
         line_start = _index_to_line(line_starts, match.start())
         source_line = lines[line_start - 1] if line_start <= len(lines) else ""
         if _COMMENT_LINE_RE.match(source_line):
+            continue
+        if not _likely_secret_context(source_line, candidate):
             continue
         end_index = max(match.end() - 1, match.start())
         line_end = _index_to_line(line_starts, end_index)

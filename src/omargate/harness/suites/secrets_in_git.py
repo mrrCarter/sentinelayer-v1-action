@@ -81,31 +81,43 @@ class SecretsInGitSuite(SecuritySuite):
                     continue
                 if line.startswith("+") and not line.startswith("+++"):
                     file_lines[current_file].append(line[1:])
-                if line.startswith("-") and not line.startswith("---"):
-                    file_lines[current_file].append(line[1:])
 
             for file_path, lines in file_lines.items():
                 if not lines:
                     continue
                 content = "\n".join(lines)
                 for f in scan_for_secrets(content, file_path):
+                    if f.pattern_id == "SEC-ENTROPY" and file_path.lower().endswith(
+                        (".md", ".rst", ".txt")
+                    ):
+                        continue
                     key = (f.pattern_id, f.file_path, f.line_start)
                     if key in seen:
                         continue
                     seen.add(key)
+                    severity = f.severity
+                    confidence = f.confidence
+                    message = f"{f.message} (found in git history)"
+
+                    # Historical entropy findings are high-noise; keep as advisory only.
+                    if f.pattern_id == "SEC-ENTROPY":
+                        severity = "P3"
+                        confidence = min(float(confidence), 0.45)
+                        message = "Historical high-entropy string detected (manual triage recommended)"
+
                     findings.append(
                         Finding(
                             id=f"HARNESS-HISTORY-{f.id}",
                             pattern_id=f.pattern_id,
-                            severity=f.severity,
+                            severity=severity,
                             category=f.category,
                             file_path=f.file_path,
                             line_start=f.line_start,
                             line_end=f.line_end,
                             snippet=f.snippet,
-                            message=f"{f.message} (found in git history)",
+                            message=message,
                             recommendation=f.recommendation,
-                            confidence=f.confidence,
+                            confidence=confidence,
                             source="harness",
                         )
                     )
