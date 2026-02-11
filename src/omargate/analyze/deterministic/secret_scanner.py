@@ -16,9 +16,10 @@ ENTROPY_THRESHOLD = 4.0
 # (snake_case, SCREAMING_SNAKE). Pure alphanumeric strings are NOT skipped
 # because high-entropy secrets can also be purely alphanumeric.
 _CODE_IDENTIFIER_RE = re.compile(
-    r"^[a-zA-Z][a-zA-Z0-9]*(?:_[a-zA-Z0-9]+){1,}$"  # snake_case with 2+ segments
+    r"^_*[a-zA-Z][a-zA-Z0-9]*(?:_[a-zA-Z0-9]+){1,}$"  # snake_case with 2+ segments
 )
-_SCREAMING_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
+_SCREAMING_SNAKE_RE = re.compile(r"^_*[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
+_IDENTIFIER_TOKEN_RE = re.compile(r"^_*[A-Za-z][A-Za-z0-9_]*$")
 _COMMENT_LINE_RE = re.compile(r"^\s*(?://|#|\*|/\*)")
 _MARKDOWN_TABLE_LINE_RE = re.compile(r"^\s*\|.*\|")
 _SECRET_CONTEXT_KEY_RE = re.compile(
@@ -151,6 +152,10 @@ def _char_class_count(candidate: str) -> int:
 def _looks_like_non_secret_identifier(candidate: str) -> bool:
     if _has_known_secret_prefix(candidate):
         return False
+    if candidate.count("=") == 1:
+        left, right = candidate.split("=", 1)
+        if _IDENTIFIER_TOKEN_RE.match(left) and _IDENTIFIER_TOKEN_RE.match(right):
+            return True
     if _SCREAMING_SNAKE_RE.match(candidate):
         return True
     if _CODE_IDENTIFIER_RE.match(candidate):

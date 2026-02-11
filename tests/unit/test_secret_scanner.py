@@ -48,3 +48,15 @@ def test_entropy_skips_markdown_table_lines() -> None:
     content = "| Incident ID | |\n| --- | --- |\n"
     findings = scan_for_secrets(content, "docs/table.md")
     assert not any(f.pattern_id == "SEC-ENTROPY" for f in findings)
+
+
+def test_entropy_skips_private_constant_identifiers() -> None:
+    content = 'MAX = _VERY_LONG_INTERNAL_CONFIGURATION_CONSTANT_NAME\n'
+    findings = scan_for_secrets(content, "src/module.py")
+    assert not any(f.pattern_id == "SEC-ENTROPY" for f in findings)
+
+
+def test_entropy_skips_identifier_assignment_pairs() -> None:
+    content = "excerpt = _truncate_to_tokens(excerpt, max_tokens=_MAX_TOKENS)\n"
+    findings = scan_for_secrets(content, "src/omargate/ingest/quick_learn.py")
+    assert not any(f.pattern_id == "SEC-ENTROPY" for f in findings)
