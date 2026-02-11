@@ -30,6 +30,10 @@ def generate_artifact_manifest(
         ("PACK_SUMMARY.json", "application/json"),
         ("FINDINGS.jsonl", "application/jsonl"),
         ("INGEST.json", "application/json"),
+        ("CODEBASE_INGEST.json", "application/json"),
+        ("CODEBASE_INGEST_SUMMARY.json", "application/json"),
+        ("CODEBASE_INGEST_SUMMARY.md", "text/markdown"),
+        ("CODEBASE_INGEST.md", "text/markdown"),
         ("REVIEW_BRIEF.md", "text/markdown"),
         ("AUDIT_REPORT.md", "text/markdown"),
     ]

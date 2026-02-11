@@ -9,6 +9,7 @@ from .formatting import (
     humanize_duration_ms,
     truncate,
 )
+from .ingest.codebase_snapshot import render_codebase_snapshot_md
 from .models import GateResult, GateStatus
 
 MARKER_PREFIX = "<!-- sentinelayer:omar-gate:v1:"
@@ -170,6 +171,33 @@ def _top_findings_section(
 
     return "\n".join(lines)
 
+def _codebase_snapshot_section(codebase_snapshot: Optional[dict]) -> str:
+    if not codebase_snapshot:
+        return ""
+    try:
+        snapshot_md = render_codebase_snapshot_md(codebase_snapshot).strip()
+    except Exception:
+        return ""
+
+    # Avoid giant headings inside PR comment sections.
+    if snapshot_md.startswith("# "):
+        snapshot_md = "### " + snapshot_md[2:]
+
+    # GitHub comment bodies have practical size limits; keep this bounded.
+    if len(snapshot_md) > 12_000:
+        snapshot_md = snapshot_md[:12_000].rstrip() + "\n\n...(truncated)...\n"
+
+    return "\n".join(
+        [
+            "<details>",
+            "<summary>Codebase Snapshot (Deterministic)</summary>",
+            "",
+            snapshot_md,
+            "",
+            "</details>",
+        ]
+    )
+
 
 def render_pr_comment(
     result: GateResult,
@@ -197,6 +225,7 @@ def render_pr_comment(
     dedupe_key: Optional[str] = None,
     head_sha: Optional[str] = None,
     server_url: str = "https://github.com",
+    codebase_snapshot: Optional[dict] = None,
 ) -> str:
     """
     Render the PR comment for Omar Gate.
@@ -240,6 +269,10 @@ def render_pr_comment(
         "  - `REVIEW_BRIEF.md` (reviewer summary)",
         "  - `FINDINGS.jsonl` (all findings)",
         "  - `PACK_SUMMARY.json` (counts + integrity)",
+        "  - `CODEBASE_INGEST_SUMMARY.md` (deterministic codebase snapshot)",
+        "  - `CODEBASE_INGEST_SUMMARY.json` (snapshot, machine-readable)",
+        "  - `CODEBASE_INGEST.md` (source index)",
+        "  - `CODEBASE_INGEST.json` (full ingest + file inventory)",
         f"- Run artifacts: `.sentinelayer/runs/{run_id}/`",
         "- Upload with `actions/upload-artifact` (replace the step id if yours is not `omar`):",
         "```yaml",
@@ -293,8 +326,26 @@ def render_pr_comment(
         "",
     ]
 
+    if codebase_snapshot:
+        stats = codebase_snapshot.get("stats", {}) if isinstance(codebase_snapshot, dict) else {}
+        loc = stats.get("source_loc_total")
+        in_scope = stats.get("in_scope_files")
+        if loc is not None or in_scope is not None:
+            loc_str = format_int(int(loc)) if loc is not None else "?"
+            in_scope_str = format_int(int(in_scope)) if in_scope is not None else "?"
+            # Insert just below the Duration line (before the first blank line).
+            lines.insert(
+                5,
+                f"**Codebase:** `{in_scope_str}` in-scope files • `{loc_str}` LOC (source)",
+            )
+
     if top_findings_section:
         lines.append(top_findings_section)
+        lines.append("")
+
+    snapshot_section = _codebase_snapshot_section(codebase_snapshot)
+    if snapshot_section:
+        lines.append(snapshot_section)
         lines.append("")
 
     lines.extend(["### Next Steps", "", next_steps, ""])

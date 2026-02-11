@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from ..formatting import humanize_duration_ms
+from ..ingest.codebase_snapshot import build_codebase_snapshot
 
 SEVERITY_ICONS = {"P0": "🔴", "P1": "🟠", "P2": "🟡", "P3": "⚪"}
 CATEGORY_ICONS = {
@@ -114,6 +115,18 @@ def generate_audit_report(
     stats = ingest.get("stats", {})
     hotspots = ingest.get("hotspots", {})
     hotspot_count = sum(len(files) for files in hotspots.values())
+    snapshot = {}
+    try:
+        snapshot = build_codebase_snapshot(ingest)
+    except Exception:
+        snapshot = {}
+    snapshot_stats = snapshot.get("stats", {}) if isinstance(snapshot, dict) else {}
+    source_loc_total = int(snapshot_stats.get("source_loc_total", 0) or 0)
+    languages = snapshot.get("languages", []) if isinstance(snapshot, dict) else []
+    god_files = snapshot.get("god_files", []) if isinstance(snapshot, dict) else []
+    largest_source_files = (
+        snapshot.get("largest_source_files", []) if isinstance(snapshot, dict) else []
+    )
 
     lines.extend(
         [
@@ -123,6 +136,7 @@ def generate_audit_report(
             "|--------|-------|",
             f"| Files Scanned | {stats.get('in_scope_files', 0)} |",
             f"| Total Lines | {stats.get('total_lines', 0):,} |",
+            f"| LOC (source only) | {source_loc_total:,} |",
             f"| Hotspots Identified | {hotspot_count} |",
             f"| Package Manager | {ingest.get('dependencies', {}).get('package_manager', 'unknown')} |",
             "",
@@ -136,6 +150,33 @@ def generate_audit_report(
             if files:
                 icon = CATEGORY_ICONS.get(category, "📁")
                 lines.append(f"- {icon} **{category.title()}**: {len(files)} files")
+        lines.append("")
+
+    if languages:
+        lines.extend(["### Language Breakdown (Source Only)", ""])
+        lines.extend(["| Language | Files | LOC |", "|---|---:|---:|"])
+        for item in languages[:20]:
+            lang = str(item.get("language") or "unknown")
+            files = int(item.get("files", 0) or 0)
+            loc = int(item.get("loc", 0) or 0)
+            lines.append(f"| {lang} | {files} | {loc:,} |")
+        lines.append("")
+
+    if god_files:
+        threshold = int(snapshot.get("god_threshold_loc", 1000) or 1000)
+        lines.extend([f"### God Components (>= {threshold} LOC)", ""])
+        for item in god_files[:25]:
+            path = str(item.get("path") or "?")
+            loc = int(item.get("lines", 0) or 0)
+            lines.append(f"- `{path}` ({loc:,} LOC)")
+        lines.append("")
+
+    if largest_source_files:
+        lines.extend(["### Largest Source Files", ""])
+        for item in largest_source_files[:25]:
+            path = str(item.get("path") or "?")
+            loc = int(item.get("lines", 0) or 0)
+            lines.append(f"- `{path}` ({loc:,} LOC)")
         lines.append("")
 
     lines.extend(["---", ""])

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
+from ...ingest.codebase_snapshot import build_codebase_snapshot
 from ...ingest.quick_learn import QuickLearnSummary
 
 
@@ -91,6 +92,7 @@ class CodexPromptBuilder:
         scan_mode: str,
         diff_content: Optional[str] = None,
         hotspot_files: Optional[List[str]] = None,
+        ingest: Optional[dict] = None,
     ) -> BuiltCodexPrompt:
         repo_root = repo_root.resolve()
         deterministic_findings = deterministic_findings or []
@@ -126,6 +128,7 @@ class CodexPromptBuilder:
 
         add(self._build_persona_section())
         add(self._build_project_context(quick_learn), allow_truncate=True)
+        add(self._build_codebase_snapshot_section(ingest), allow_truncate=True)
         add(self._build_deterministic_summary(deterministic_findings))
         add(self._build_task_instructions(tech_stack))
 
@@ -167,6 +170,43 @@ class CodexPromptBuilder:
             files_included=files_included,
             files_truncated=files_truncated,
         )
+
+    def _build_codebase_snapshot_section(self, ingest: Optional[dict]) -> str:
+        if not ingest:
+            return ""
+        try:
+            snapshot = build_codebase_snapshot(
+                ingest,
+                max_largest_files=10,
+                max_god_files=10,
+                hotspot_examples=3,
+            )
+        except Exception:
+            return ""
+
+        stats = snapshot.get("stats", {}) if isinstance(snapshot, dict) else {}
+        source_loc = stats.get("source_loc_total")
+        in_scope = stats.get("in_scope_files")
+        threshold = snapshot.get("god_threshold_loc", 1000)
+        languages = snapshot.get("languages", []) if isinstance(snapshot, dict) else []
+        god_files = snapshot.get("god_files", []) if isinstance(snapshot, dict) else []
+
+        lines: List[str] = ["## Codebase Snapshot (Deterministic)"]
+        if in_scope is not None:
+            lines.append(f"- In-scope files (source): {in_scope}")
+        if source_loc is not None:
+            lines.append(f"- Source LOC: {source_loc}")
+        if languages:
+            top_langs = ", ".join(
+                f"{item.get('language', 'unknown')}={item.get('loc', 0)}"
+                for item in languages[:8]
+            )
+            lines.append(f"- Top languages: {top_langs}")
+        if god_files:
+            top_god = ", ".join(str(item.get("path") or "?") for item in god_files[:5])
+            lines.append(f"- God components (>= {threshold} LOC): {top_god}")
+        lines.append("")
+        return "\n".join(lines) + "\n"
 
     def _build_persona_section(self) -> str:
         return (

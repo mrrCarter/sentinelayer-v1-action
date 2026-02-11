@@ -204,6 +204,8 @@ Full audit artifacts available for download from the Actions tab:
 - `FINDINGS.jsonl` — machine-readable findings (for CI integration)
 - `PACK_SUMMARY.json` — counts, integrity hash, metadata
 - `CODEBASE_INGEST.json` — codebase metrics and file inventory
+- `CODEBASE_INGEST_SUMMARY.md` — deterministic snapshot (LOC, languages, god components)
+- `CODEBASE_INGEST_SUMMARY.json` — same snapshot (machine-readable)
 
 ---
 
@@ -218,6 +220,14 @@ Use these in subsequent workflow steps:
 | `run_id` | Unique run identifier |
 | `estimated_cost_usd` | Estimated LLM cost for the run |
 | `findings_artifact` | Path to findings JSONL |
+| `pack_summary_artifact` | Path to `PACK_SUMMARY.json` |
+| `ingest_artifact` | Path to `INGEST.json` |
+| `codebase_ingest_artifact` | Path to `CODEBASE_INGEST.json` |
+| `codebase_ingest_summary_artifact` | Path to `CODEBASE_INGEST_SUMMARY.json` |
+| `codebase_ingest_summary_md_artifact` | Path to `CODEBASE_INGEST_SUMMARY.md` |
+| `review_brief_artifact` | Path to `REVIEW_BRIEF.md` (if generated) |
+| `audit_report_artifact` | Path to `AUDIT_REPORT.md` (if generated) |
+| `idempotency_key` | Idempotency key used for dedupe |
 
 ---
 

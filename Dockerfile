@@ -38,6 +38,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 COPY --from=builder /install /usr/local
 COPY src /app/src
+COPY prompts /app/prompts
 COPY entrypoint.sh /app/entrypoint.sh
 
 RUN chmod +x /app/entrypoint.sh

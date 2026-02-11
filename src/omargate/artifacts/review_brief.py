@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 from .priority_ranker import CATEGORY_SCORE, CATEGORIES, SEVERITY_SCORE, detect_categories, rank_files
+from ..ingest.codebase_snapshot import build_codebase_snapshot
 
 CATEGORY_ACTIONS = {
     "auth": "Review auth and session controls",
@@ -55,6 +56,8 @@ def render_review_brief(
     detected_categories = _collect_detected_categories(findings, ingest)
     badges = _format_category_badges(detected_categories)
 
+    snapshot_lines = _format_codebase_snapshot(ingest)
+
     ranked_files = rank_files(findings, ingest, top_n=10)
     risk_table = _format_risk_table(ranked_files)
     review_order = _format_review_order(findings, ingest, ranked_files)
@@ -76,6 +79,15 @@ def render_review_brief(
     lines.append("")
     lines.append("---")
     lines.append("")
+
+    if snapshot_lines:
+        lines.append("## Codebase Snapshot (Deterministic)")
+        lines.append("")
+        lines.extend(snapshot_lines)
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
     lines.append("## Categories Detected")
     lines.append("")
     lines.append(badges)
@@ -126,6 +138,48 @@ def render_review_brief(
     lines.append("")
 
     return "\n".join(lines)
+
+def _format_codebase_snapshot(ingest: dict) -> List[str]:
+    """Return a small, deterministic codebase summary for the review brief."""
+    try:
+        snapshot = build_codebase_snapshot(ingest)
+    except Exception:
+        return []
+
+    stats = snapshot.get("stats", {}) if isinstance(snapshot, dict) else {}
+    deps = snapshot.get("dependencies", {}) if isinstance(snapshot, dict) else {}
+    languages = snapshot.get("languages", []) if isinstance(snapshot, dict) else []
+    god_files = snapshot.get("god_files", []) if isinstance(snapshot, dict) else []
+
+    in_scope = int(stats.get("in_scope_files", 0) or 0)
+    loc = int(stats.get("source_loc_total", 0) or 0)
+    pm = str(deps.get("package_manager") or "unknown")
+
+    lines: List[str] = []
+    lines.append(f"- In-scope files (source): `{in_scope}`")
+    lines.append(f"- LOC (source only): `{loc:,}`")
+    lines.append(f"- Package manager: `{pm}`")
+
+    if languages:
+        top = []
+        for item in languages[:5]:
+            lang = str(item.get("language") or "unknown")
+            loc_lang = int(item.get("loc", 0) or 0)
+            top.append(f"`{lang}` ({loc_lang:,} LOC)")
+        lines.append(f"- Top languages: {', '.join(top)}")
+
+    if god_files:
+        threshold = int(snapshot.get("god_threshold_loc", 1000) or 1000)
+        top = []
+        for item in god_files[:5]:
+            path = str(item.get("path") or "?")
+            loc_item = int(item.get("lines", 0) or 0)
+            top.append(f"`{path}` ({loc_item:,} LOC)")
+        lines.append(f"- God components (>= {threshold} LOC): {', '.join(top)}")
+
+    lines.append("- Artifacts: `CODEBASE_INGEST_SUMMARY.md` / `CODEBASE_INGEST_SUMMARY.json`")
+
+    return lines
 
 
 def _files_scanned(ingest: dict) -> int:
