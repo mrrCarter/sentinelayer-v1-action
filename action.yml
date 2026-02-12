@@ -44,6 +44,11 @@ inputs:
     required: false
     default: ''
 
+  sentinelayer_managed_llm:
+    description: 'Use Sentinelayer-managed LLM proxy (free-trial mode). If false, auto-enabled when openai_api_key is empty and sentinelayer_token is set.'
+    required: false
+    default: 'false'
+
   telemetry_tier:
     description: 'Telemetry tier: 0=off, 1=aggregate, 2=metadata, 3=full artifacts'
     required: false

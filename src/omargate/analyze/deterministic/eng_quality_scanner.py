@@ -78,6 +78,8 @@ class EngQualityScanner:
         findings.extend(self._scan_mutations_without_idempotency(files))
         findings.extend(self._scan_missing_request_id_schema(files))
         findings.extend(self._scan_external_calls_without_fallback(files))
+        findings.extend(self._scan_oidc_verify_aud_disabled(files))
+        findings.extend(self._scan_oauth_callback_missing_state(files))
         return findings
 
     def _scan_infrastructure(self, files: dict[str, str]) -> list[Finding]:
@@ -894,8 +896,11 @@ class EngQualityScanner:
             recommendation="Add a non-root user and set USER to reduce container blast radius.",
         )
         findings: list[Finding] = []
+        waiver_re = re.compile(r"omargate:\s*allow-root-user", re.IGNORECASE)
         for path, content in self._iter_files(files):
             if path.lower().endswith("/dockerfile") or path.lower() == "dockerfile":
+                if waiver_re.search(content):
+                    continue
                 has_user = any(
                     ln.strip().upper().startswith("USER ")
                     for ln in content.splitlines()
@@ -906,6 +911,78 @@ class EngQualityScanner:
                 findings.append(
                     self._make_finding(rule, file_path=path, line_start=1, snippet="", confidence=0.9)
                 )
+        return findings
+
+    # --------------------
+    # Auth rules
+    # --------------------
+
+    def _scan_oidc_verify_aud_disabled(self, files: dict[str, str]) -> list[Finding]:
+        rule = _Rule(
+            pattern_id="EQ-022",
+            severity="P1",
+            category="auth",
+            message="OIDC token verification appears to disable audience checks (verify_aud: False).",
+            recommendation="Validate token audience explicitly to prevent accepting tokens minted for other audiences.",
+        )
+        findings: list[Finding] = []
+        regex = re.compile(r"[\"']?verify_aud[\"']?\s*[:=]\s*False")
+        for path, content in self._iter_files(files, exts=_PY_EXTS):
+            norm = path.lower()
+            if "/auth/" not in norm and "oidc" not in norm:
+                continue
+            for match in regex.finditer(content):
+                line = self._index_to_line(content, match.start())
+                snippet = self._line_snippet(content, line, line)
+                findings.append(
+                    self._make_finding(
+                        rule,
+                        file_path=path,
+                        line_start=line,
+                        snippet=snippet,
+                        confidence=0.95,
+                    )
+                )
+        return findings
+
+    def _scan_oauth_callback_missing_state(self, files: dict[str, str]) -> list[Finding]:
+        rule = _Rule(
+            pattern_id="EQ-023",
+            severity="P1",
+            category="auth",
+            message="OAuth callback request model appears to miss a state field validation.",
+            recommendation="Require and verify OAuth state to prevent CSRF/login swapping attacks.",
+        )
+        findings: list[Finding] = []
+        class_re = re.compile(r"class\s+OAuthCallbackRequest\s*\(\s*BaseModel\s*\)\s*:")
+        field_code_re = re.compile(r"^\s*code\s*:\s*str\s*$", re.MULTILINE)
+        field_state_re = re.compile(r"^\s*state\s*:\s*str\s*$", re.MULTILINE)
+
+        for path, content in self._iter_files(files, exts=_PY_EXTS):
+            norm = path.lower()
+            if "auth" not in norm:
+                continue
+            if "/auth/github/callback" not in content:
+                continue
+            class_match = class_re.search(content)
+            if not class_match:
+                continue
+            window = content[class_match.start() : class_match.start() + 800]
+            if not field_code_re.search(window):
+                continue
+            if field_state_re.search(window):
+                continue
+            line = self._index_to_line(content, class_match.start())
+            snippet = self._line_snippet(content, line, min(line + 8, line + 8))
+            findings.append(
+                self._make_finding(
+                    rule,
+                    file_path=path,
+                    line_start=line,
+                    snippet=snippet,
+                    confidence=0.9,
+                )
+            )
         return findings
 
     def _scan_terraform_remote_backend(self, files: dict[str, str]) -> list[Finding]:
@@ -994,7 +1071,7 @@ class EngQualityScanner:
 
     def _scan_missing_health_endpoint(self, files: dict[str, str]) -> list[Finding]:
         rule = _Rule(
-            pattern_id="EQ-022",
+            pattern_id="EQ-024",
             severity="P2",
             category="infrastructure",
             message="No obvious health check endpoint detected in server code.",
@@ -1002,7 +1079,7 @@ class EngQualityScanner:
         )
         # Only enforce if we see likely server code.
         server_signal_re = re.compile(
-            r"\b(FastAPI\s*\(|express\s*\(|@app\.(get|post)|router\.(get|post))\b",
+            r"(FastAPI\s*\(|express\s*\(|@app\.(get|post)\s*\(|router\.(get|post)\s*\()",
             re.IGNORECASE,
         )
         health_re = re.compile(

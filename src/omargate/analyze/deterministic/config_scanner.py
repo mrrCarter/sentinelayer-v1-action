@@ -20,6 +20,59 @@ _PLACEHOLDER_RE = re.compile(
 )
 
 
+def _strip_json_comments(content: str) -> str:
+    """
+    Strip // and /* */ comments from JSONC while preserving string literals.
+
+    tsconfig files commonly use JSONC, which json.loads cannot parse directly.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(content)
+    in_string = False
+    quote_char = ""
+
+    while i < n:
+        ch = content[i]
+        nxt = content[i + 1] if i + 1 < n else ""
+
+        if in_string:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(content[i + 1])
+                i += 2
+                continue
+            if ch == quote_char:
+                in_string = False
+            i += 1
+            continue
+
+        if ch in {"'", '"'}:
+            in_string = True
+            quote_char = ch
+            out.append(ch)
+            i += 1
+            continue
+
+        if ch == "/" and nxt == "/":
+            i += 2
+            while i < n and content[i] != "\n":
+                i += 1
+            continue
+
+        if ch == "/" and nxt == "*":
+            i += 2
+            while i + 1 < n and not (content[i] == "*" and content[i + 1] == "/"):
+                i += 1
+            i = i + 2 if i + 1 < n else n
+            continue
+
+        out.append(ch)
+        i += 1
+
+    return "".join(out)
+
+
 def _truncate_snippet(snippet: str, max_chars: int = MAX_SNIPPET_CHARS) -> str:
     if len(snippet) <= max_chars:
         return snippet
@@ -38,6 +91,16 @@ class ConfigScanner:
         self._cicd_patterns = [
             pattern for pattern in self._pattern_scanner.patterns if str(pattern.get("id", "")).startswith("CICD-")
         ]
+
+    def _load_json_content(self, raw: str) -> Optional[dict]:
+        if not isinstance(raw, str):
+            return None
+        stripped = _strip_json_comments(raw)
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def scan_file(
         self, file_path: Path, content: str, *, repo_root: Optional[Path] = None
@@ -157,11 +220,7 @@ class ConfigScanner:
             raw = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return None
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            return None
-        return payload if isinstance(payload, dict) else None
+        return self._load_json_content(raw)
 
     def _tsconfig_refs_are_strict(self, config_data: dict, file_path: str, repo_root: Path) -> bool:
         refs = config_data.get("references")
@@ -197,9 +256,8 @@ class ConfigScanner:
     def _scan_tsconfig(
         self, file_path: str, content: str, *, repo_root: Optional[Path] = None
     ) -> List[Finding]:
-        try:
-            data = json.loads(content)
-        except json.JSONDecodeError:
+        data = self._load_json_content(content)
+        if data is None:
             return []
         compiler = data.get("compilerOptions") if isinstance(data, dict) else None
         strict_value = None

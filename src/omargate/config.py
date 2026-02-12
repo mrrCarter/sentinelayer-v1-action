@@ -65,6 +65,13 @@ class OmarGateConfig(BaseSettings):
 
     # Sentinelayer integration (optional)
     sentinelayer_token: SecretStr = Field(default="", description="Sentinelayer API token")
+    sentinelayer_managed_llm: bool = Field(
+        default=False,
+        description=(
+            "Use Sentinelayer-managed LLM proxy. If false, managed mode auto-enables "
+            "when openai_api_key is empty and sentinelayer_token is provided."
+        ),
+    )
     telemetry_tier: conint(ge=0, le=3) = Field(
         default=1,
         description="Telemetry tier: 0=off, 1=aggregate, 2=metadata, 3=full artifacts",
@@ -163,4 +170,29 @@ class OmarGateConfig(BaseSettings):
         if provider == "xai" and not self.xai_api_key.get_secret_value():
             raise ValueError("xai_api_key is required when llm_provider=xai")
 
+        if self.sentinelayer_managed_llm:
+            if provider != "openai":
+                raise ValueError("sentinelayer_managed_llm currently supports only llm_provider=openai")
+            if not self.sentinelayer_token.get_secret_value():
+                raise ValueError(
+                    "sentinelayer_token is required when sentinelayer_managed_llm=true"
+                )
+
         return self
+
+    def use_managed_llm_proxy(self) -> bool:
+        """
+        Whether to use Sentinelayer-managed OpenAI proxy for LLM analysis.
+
+        Explicit enable takes priority.
+        Implicit enable supports 48-hour trial UX when BYO key is absent.
+        """
+        if self.llm_provider != "openai":
+            return False
+
+        if self.sentinelayer_managed_llm:
+            return bool(self.sentinelayer_token.get_secret_value())
+
+        has_openai = bool(self.openai_api_key.get_secret_value())
+        has_sentinelayer = bool(self.sentinelayer_token.get_secret_value())
+        return (not has_openai) and has_sentinelayer

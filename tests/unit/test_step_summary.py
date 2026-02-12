@@ -25,9 +25,23 @@ def test_step_summary_writes_file(tmp_path, monkeypatch) -> None:
         }
     ]
 
-    write_step_summary(gate_result, summary, findings, "test-run", "1.0.0")
+    write_step_summary(
+        gate_result,
+        summary,
+        findings,
+        "test-run",
+        "1.0.0",
+        codebase_snapshot={
+            "stats": {"in_scope_files": 10, "source_loc_total": 1000},
+            "languages": [{"language": "python", "files": 8, "loc": 900}],
+            "hotspots": [],
+        },
+        codebase_synopsis="README: Deterministic gate for CI pipelines.",
+    )
 
     assert summary_file.exists()
     content = summary_file.read_text(encoding="utf-8")
     assert "Omar Gate" in content
     assert "P0" in content
+    assert "Codebase Synopsis" in content
+    assert "README: Deterministic gate for CI pipelines." in content

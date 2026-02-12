@@ -46,3 +46,21 @@ def test_config_is_frozen(monkeypatch: pytest.MonkeyPatch) -> None:
     # Pydantic 2.x raises ValidationError for frozen models
     with pytest.raises((TypeError, ValidationError)):
         cfg.scan_mode = "deep"
+
+
+def test_managed_llm_auto_enables_without_openai_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("INPUT_OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("INPUT_SENTINELAYER_TOKEN", "sl_test_token")
+    cfg = OmarGateConfig()
+    assert cfg.use_managed_llm_proxy() is True
+
+
+def test_managed_llm_explicit_requires_sentinelayer_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("INPUT_SENTINELAYER_TOKEN", raising=False)
+    monkeypatch.setenv("INPUT_SENTINELAYER_MANAGED_LLM", "true")
+    with pytest.raises(ValidationError):
+        OmarGateConfig()

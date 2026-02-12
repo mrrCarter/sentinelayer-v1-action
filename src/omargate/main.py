@@ -18,7 +18,11 @@ from .context import GitHubContext
 from .gate import evaluate_gate
 from .github import GitHubClient, findings_to_annotations
 from .idempotency import compute_idempotency_key
-from .ingest.codebase_snapshot import build_codebase_snapshot, write_codebase_ingest_artifacts
+from .ingest.codebase_snapshot import (
+    build_codebase_snapshot,
+    build_codebase_synopsis,
+    write_codebase_ingest_artifacts,
+)
 from .logging import OmarLogger
 from .models import Counts, GateConfig, GateResult, GateStatus
 from .artifacts import write_audit_report
@@ -450,6 +454,7 @@ async def async_main() -> int:
     idem_key = ""
     analysis = None
     codebase_snapshot: Optional[dict] = None
+    codebase_synopsis = ""
     gate_result: Optional[GateResult] = None
     findings_path: Optional[Path] = None
     pack_summary_path: Optional[Path] = None
@@ -771,6 +776,10 @@ async def async_main() -> int:
                 try:
                     # Deterministic, bounded codebase snapshot artifacts (no LLM required).
                     codebase_snapshot = build_codebase_snapshot(analysis.ingest)
+                    codebase_synopsis = build_codebase_synopsis(
+                        codebase_snapshot=codebase_snapshot,
+                        quick_learn=analysis.quick_learn,
+                    )
                     write_codebase_ingest_artifacts(
                         run_dir, analysis.ingest, snapshot=codebase_snapshot
                     )
@@ -959,6 +968,7 @@ async def async_main() -> int:
                             version=ACTION_VERSION,
                             findings=analysis.findings,
                             codebase_snapshot=codebase_snapshot,
+                            codebase_synopsis=codebase_synopsis,
                             warnings=analysis.warnings,
                             review_brief_md=review_brief_md,
                             scan_mode=config.scan_mode,
@@ -1054,6 +1064,7 @@ async def async_main() -> int:
                         summary=summary_payload,
                         findings=analysis.findings,
                         codebase_snapshot=codebase_snapshot,
+                        codebase_synopsis=codebase_synopsis,
                         run_id=run_id,
                         version=ACTION_VERSION,
                     )

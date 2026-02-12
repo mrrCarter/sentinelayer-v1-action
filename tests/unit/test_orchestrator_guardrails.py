@@ -108,6 +108,23 @@ def test_llm_findings_for_unknown_files_are_dropped(tmp_path: Path, monkeypatch:
     assert guarded == []
 
 
+def test_should_run_llm_with_managed_proxy_when_byo_key_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("INPUT_OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("INPUT_SENTINELAYER_TOKEN", "sl_test_token")
+    config = OmarGateConfig()
+    logger = OmarLogger("test-run")
+    orchestrator = AnalysisOrchestrator(
+        config=config,
+        logger=logger,
+        repo_root=tmp_path,
+        allow_llm=True,
+    )
+
+    assert orchestrator._should_run_llm() is True
+
+
 @pytest.mark.anyio
 async def test_codex_only_disables_api_fallback_on_codex_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

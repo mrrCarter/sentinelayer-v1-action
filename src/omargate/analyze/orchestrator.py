@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import List, Optional
 
@@ -23,6 +24,7 @@ class AnalysisResult:
     """Complete analysis result."""
 
     findings: List[dict]
+    quick_learn: Optional[QuickLearnSummary]
     ingest: dict
     counts: dict
     ingest_stats: dict
@@ -248,6 +250,7 @@ class AnalysisOrchestrator:
 
         return AnalysisResult(
             findings=all_findings,
+            quick_learn=quick_learn,
             ingest=ingest,
             counts=counts,
             ingest_stats=stats,
@@ -269,6 +272,8 @@ class AnalysisOrchestrator:
         primary_provider = detect_provider_from_model(
             self.config.model, default_provider=self.config.llm_provider
         )
+        if primary_provider == "openai" and self.config.use_managed_llm_proxy():
+            return True
         api_key = self._get_provider_api_key(primary_provider)
         return bool(api_key)
 
@@ -387,6 +392,9 @@ class AnalysisOrchestrator:
             anthropic_api_key=self.config.anthropic_api_key.get_secret_value(),
             google_api_key=self.config.google_api_key.get_secret_value(),
             xai_api_key=self.config.xai_api_key.get_secret_value(),
+            managed_llm=self.config.use_managed_llm_proxy(),
+            sentinelayer_token=self.config.sentinelayer_token.get_secret_value(),
+            managed_api_url=os.environ.get("SENTINELAYER_API_URL", "https://api.sentinelayer.com"),
         )
 
         response = await client.analyze(

@@ -96,7 +96,9 @@ jobs:
         uses: mrrCarter/sentinelayer-v1-action@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          sentinelayer_managed_llm: ${{ secrets.OPENAI_API_KEY == '' && secrets.SENTINELAYER_TOKEN != '' }}
 
       - name: Upload Artifacts
         if: always()
@@ -116,7 +118,7 @@ That's it. Open a PR and Omar Gate will:
 
 The workflow above intentionally runs **Quality Gates** and **Secret Scanning** in parallel, then runs **Omar Review** only after both pass.
 
-> **Required inputs:** `github_token` and an API key for your chosen LLM provider. Without `github_token`, the action cannot fetch your PR diff and will fail. Without an API key, only deterministic scanning runs (no AI analysis).
+> **Required inputs:** `github_token` and either (a) an API key for your chosen LLM provider, or (b) `sentinelayer_token` with managed proxy enabled. The Quick Start enables managed mode automatically when `OPENAI_API_KEY` is empty and `SENTINELAYER_TOKEN` is set.
 
 ---
 
@@ -126,11 +128,14 @@ The workflow above intentionally runs **Quality Gates** and **Secret Scanning** 
 
 Copy the Quick Start YAML above into `.github/workflows/security-review.yml` in your repository.
 
-### Step 2: Add your API key as a repository secret
+### Step 2: Add your LLM secret(s) as repository secrets
 
 1. Go to your repo **Settings** > **Secrets and variables** > **Actions**
 2. Click **New repository secret**
-3. Add your API key (see [Choose Your LLM](#choose-your-llm) below for which key to add)
+3. Add either:
+   - `OPENAI_API_KEY` for BYO OpenAI billing, or
+   - `SENTINELAYER_TOKEN` to use Sentinelayer-managed proxy mode (48-hour onboarding window)
+4. You can set both secrets; the workflow uses BYO key when present and auto-falls back to managed mode when it is not.
 
 > `GITHUB_TOKEN` is provided automatically by GitHub Actions — you do not need to create it as a secret. Just pass it as `${{ secrets.GITHUB_TOKEN }}`.
 
@@ -168,6 +173,20 @@ Omar Gate supports multiple LLM providers. Pick one based on your needs:
 > Use budget models for frequent PR scans during development. Use premium models for release gates and security audits.
 
 ### Provider Configuration
+
+**Managed-first with BYO fallback (recommended for onboarding)**
+```yaml
+- name: Omar Gate
+  uses: mrrCarter/sentinelayer-v1-action@v1
+  with:
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+    openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+    sentinelayer_managed_llm: ${{ secrets.OPENAI_API_KEY == '' && secrets.SENTINELAYER_TOKEN != '' }}
+    llm_provider: openai
+    model: gpt-4.1
+    model_fallback: gpt-4.1-mini
+```
 
 **OpenAI (default)**
 ```yaml
@@ -295,7 +314,7 @@ Use these in subsequent workflow steps:
 | Input | Description |
 |-------|-------------|
 | `github_token` | GitHub token for fetching PR diffs and posting comments. Use `${{ secrets.GITHUB_TOKEN }}`. |
-| API key | At least one of: `openai_api_key`, `anthropic_api_key`, `google_api_key`. Without this, only deterministic scanning runs. |
+| API key / managed proxy | Either provide a BYO key (`openai_api_key`, `anthropic_api_key`, `google_api_key`) or use managed mode with `sentinelayer_token` + `sentinelayer_managed_llm=true` (or auto-detect when OpenAI key is empty). |
 
 ### Scan Settings
 
@@ -312,6 +331,7 @@ Use these in subsequent workflow steps:
 | `llm_provider` | `openai` | `openai`, `anthropic`, `google`, `xai` |
 | `model` | `gpt-4.1` | Primary LLM model |
 | `model_fallback` | `gpt-4.1-mini` | Fallback if primary fails or exceeds quota |
+| `sentinelayer_managed_llm` | `false` | Route OpenAI calls through Sentinelayer-managed proxy. If `false`, auto-enables when `openai_api_key` is empty and `sentinelayer_token` is set |
 | `use_codex` | `true` | Enable Codex CLI for deep agentic audit (OpenAI only) |
 | `codex_only` | `false` | If `true`, disable API fallback and use Codex CLI only |
 | `codex_model` | `gpt-5.2-codex` | Model for Codex CLI |
@@ -462,8 +482,8 @@ Omar Gate uses three independent layers so that **LLM analysis can never unilate
 **Fix:** Add `github_token: ${{ secrets.GITHUB_TOKEN }}` to your `with:` block.
 
 ### "Codex skipped (missing openai_api_key)"
-**Cause:** No LLM API key was provided. Only deterministic scanning ran.
-**Fix:** Add your API key as a repository secret and pass it in the `with:` block.
+**Cause:** No BYO LLM key was provided, and managed proxy auth was not available.
+**Fix:** Add your API key as a repository secret, or configure managed mode with `sentinelayer_token` (and `id-token: write`) so the action can use the Sentinelayer proxy.
 
 ### 15,000+ findings on first run
 **Cause:** The deterministic scanner runs regex patterns across your entire codebase. Many findings are informational (P3) or low severity.
@@ -478,7 +498,7 @@ Omar Gate uses three independent layers so that **LLM analysis can never unilate
 ## FAQ
 
 **Do you store my code?**
-Your repository is analyzed in your GitHub runner. SentinelLayer dashboard telemetry is opt-in by tier; Tier 1 is aggregate-only, Tier 2 includes metadata, and Tier 3 can include uploaded artifacts. LLM analysis sends a bounded context to your LLM provider using your own API key.
+Your repository is analyzed in your GitHub runner. SentinelLayer dashboard telemetry is opt-in by tier; Tier 1 is aggregate-only, Tier 2 includes metadata, and Tier 3 can include uploaded artifacts. LLM analysis sends a bounded context to your LLM provider using your own API key, or through Sentinelayer-managed proxy mode when enabled.
 
 **What LLM models are used?**
 Primary analysis uses Codex CLI with `gpt-5.2-codex` for deep agentic audit. If Codex CLI is unavailable, falls back to `gpt-4.1` via the Responses API, then `gpt-4.1-mini` as secondary fallback. All models are configurable via `codex_model`, `model`, and `model_fallback` inputs.

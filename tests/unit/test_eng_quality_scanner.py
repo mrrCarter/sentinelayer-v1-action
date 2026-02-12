@@ -53,6 +53,19 @@ def test_dockerfile_without_user_detected_as_p2() -> None:
     assert finding.severity == "P2"
 
 
+def test_dockerfile_root_user_waiver_suppresses_finding() -> None:
+    files = {
+        "Dockerfile": (
+            "FROM python:3.11\n"
+            "# omargate:allow-root-user\n"
+            "RUN echo hi\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=[])
+    findings = scanner.scan(files)
+    assert not any(f.pattern_id == "EQ-018" for f in findings)
+
+
 def test_env_file_committed_detected_as_p0() -> None:
     files = {
         ".env": "OPENAI_API_KEY=sk-test\n",
@@ -111,4 +124,51 @@ def test_workflow_hardcoded_secret_env_value_detected() -> None:
     scanner = EngQualityScanner(tech_stack=["Python"])
     findings = scanner.scan(files)
     assert any(f.pattern_id == "EQ-021" for f in findings)
+
+
+def test_oidc_verify_aud_false_detected_as_p1() -> None:
+    files = {
+        "sentinelayer-api/src/auth/oidc_verifier.py": (
+            "payload = jwt.decode(token, jwks, options={\"verify_aud\": False})\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python", "FastAPI"])
+    findings = scanner.scan(files)
+    finding = next((f for f in findings if f.pattern_id == "EQ-022"), None)
+    assert finding is not None
+    assert finding.severity == "P1"
+
+
+def test_oauth_callback_missing_state_detected_as_p1() -> None:
+    files = {
+        "sentinelayer-api/src/routes/auth.py": (
+            "class OAuthCallbackRequest(BaseModel):\n"
+            "    code: str\n\n"
+            "@router.post('/auth/github/callback')\n"
+            "async def github_callback():\n"
+            "    pass\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python", "FastAPI"])
+    findings = scanner.scan(files)
+    finding = next((f for f in findings if f.pattern_id == "EQ-023"), None)
+    assert finding is not None
+    assert finding.severity == "P1"
+
+
+def test_missing_health_endpoint_uses_distinct_rule_id() -> None:
+    files = {
+        "sentinelayer-api/src/main.py": (
+            "from fastapi import FastAPI\n"
+            "app = FastAPI()\n"
+            "@app.get('/auth/me')\n"
+            "async def me():\n"
+            "    return {'ok': True}\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python", "FastAPI"])
+    findings = scanner.scan(files)
+    finding = next((f for f in findings if f.pattern_id == "EQ-024"), None)
+    assert finding is not None
+    assert finding.severity == "P2"
 
