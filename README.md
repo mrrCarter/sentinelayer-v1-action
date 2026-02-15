@@ -2,205 +2,83 @@
 
 **AI-powered security gate that blocks P0/P1 vulnerabilities before merge.**
 
-[![Action Version](https://img.shields.io/badge/action-v1-blue)](https://github.com/mrrCarter/sentinelayer-v1-action)
+[![Action Version](https://img.shields.io/badge/action-v1.3.0-blue)](https://github.com/mrrCarter/sentinelayer-v1-action)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests: 204 passing](https://img.shields.io/badge/tests-204%20passing-brightgreen)](https://github.com/mrrCarter/sentinelayer-v1-action/actions/workflows/quality-gates.yml)
-[![Marketplace](https://img.shields.io/badge/GitHub-Marketplace-blue)](https://github.com/marketplace?query=sentinelayer)
+[![Tests: 219 passing](https://img.shields.io/badge/tests-219%20passing-brightgreen)](https://github.com/mrrCarter/sentinelayer-v1-action/actions/workflows/quality-gates.yml)
 
 Omar Gate runs a 7-layer security analysis on every pull request — combining deterministic pattern scanning, codebase-aware ingestion, and deep AI-powered code review — then blocks the merge if critical vulnerabilities are found.
 
-Built by engineers, for engineers. No vendor lock-in. Bring your own LLM.
+Works on any repo. Any language. Bring your own LLM key.
 
 ---
 
-## Quick Start
+## Quick Start (2 minutes)
 
-Create `.github/workflows/security-review.yml` in your repository:
+### Step 1: Get an OpenAI API Key
+
+Go to [platform.openai.com/api-keys](https://platform.openai.com/api-keys) and create a new API key. You only need the basic tier — a typical PR scan costs $0.05-$0.50.
+
+> Don't have an OpenAI account? You can also use [Anthropic](https://console.anthropic.com/), [Google AI](https://aistudio.google.com/apikey), or skip the AI entirely and run [deterministic-only mode](#option-c-no-api-key-deterministic-only-free) for free.
+
+### Step 2: Add the API Key to Your Repo
+
+1. Go to your GitHub repo
+2. Click **Settings** (top bar) > **Secrets and variables** > **Actions**
+3. Click **New repository secret**
+4. Name: `OPENAI_API_KEY` | Value: paste your key
+5. Click **Add secret**
+
+> You do NOT need to create a `GITHUB_TOKEN` secret — GitHub provides it automatically.
+
+### Step 3: Create the Workflow File
+
+In your repo, create the file `.github/workflows/security-review.yml`:
 
 ```yaml
 name: Security Review
-
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
+  pull-requests: write
+  checks: write
 
 jobs:
-  quality-gates:
-    name: Quality Gates
-    runs-on: ubuntu-latest
-    env:
-      PYTHONPATH: src
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-          cache-dependency-path: requirements.lock.txt
-      - run: python -m pip install --require-hashes -r requirements.lock.txt
-      - run: python -m pip install --disable-pip-version-check ruff==0.15.0
-      - run: ruff check src tests
-      - run: python -m pytest tests/unit tests/integration -q
-
-  secret-scanning:
-    name: Secret Scanning
+  security-scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install gitleaks
-        run: |
-          curl -fsSLo gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.24.2/gitleaks_8.24.2_linux_x64.tar.gz
-          echo "fa0500f6b7e41d28791ebc680f5dd9899cd42b58629218a5f041efa899151a8e  gitleaks.tar.gz" | sha256sum --check --strict
-          tar -xzf gitleaks.tar.gz
-          sudo mv gitleaks /usr/local/bin/
-      - run: gitleaks detect --source . --report-format json --report-path gitleaks-report.json --redact --no-git
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: gitleaks-${{ github.run_id }}
-          path: gitleaks-report.json
-
-  omar-review:
-    name: Omar Review
-    needs: [quality-gates, secret-scanning]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      checks: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install LLM CLIs
-        run: |
-          npm install -g @openai/codex@0.98.0
-          npm install -g @anthropic-ai/claude-code || true
-          npm install -g @google/gemini-cli || npm install -g @google-ai/gemini-cli || true
-
-      - name: Verify LLM CLIs
-        run: |
-          codex --version || true
-          claude --version || true
-          gemini --version || true
 
       - name: Omar Gate
-        id: omar
         uses: mrrCarter/sentinelayer-v1-action@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          sentinelayer_managed_llm: ${{ secrets.OPENAI_API_KEY == '' && secrets.SENTINELAYER_TOKEN != '' }}
-
-      - name: Upload Artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: sentinelayer-${{ steps.omar.outputs.run_id }}
-          path: .sentinelayer/runs/${{ steps.omar.outputs.run_id }}
-          if-no-files-found: warn
 ```
 
-That's it. Open a PR and Omar Gate will:
-1. Scan your codebase for secrets, vulnerabilities, and misconfigurations
-2. Run AI-powered deep analysis on high-risk files
+### Step 4: Open a Pull Request
+
+Commit the workflow file, push it to a branch, and open a PR. Omar Gate runs automatically and will:
+
+1. Scan your codebase for secrets, vulnerabilities, and misconfigurations (free, ~10s)
+2. Send high-risk files to GPT-4.1 for deep AI analysis (~30s, uses your API key)
 3. Post a detailed security report as a PR comment
-4. Block the merge if P0/P1 issues are found
-5. Upload full audit artifacts for download
+4. Block the merge if P0 (critical) or P1 (high) issues are found
+5. Upload full audit artifacts you can download from the Actions tab
 
-The workflow above intentionally runs **Quality Gates** and **Secret Scanning** in parallel, then runs **Omar Review** only after both pass.
-
-> **Required inputs:** `github_token` and either (a) an API key for your chosen LLM provider, or (b) `sentinelayer_token` with managed proxy enabled. The Quick Start enables managed mode automatically when `OPENAI_API_KEY` is empty and `SENTINELAYER_TOKEN` is set.
+**That's it. Four steps.**
 
 ---
 
-## Setup (3 Steps)
+## Setup Options
 
-### Step 1: Add the workflow file
+### Option A: Minimal (Quick Start above)
+Just `github_token` + `openai_api_key`. Uses GPT-4.1 for AI analysis. Works on any repo, any language.
 
-Copy the Quick Start YAML above into `.github/workflows/security-review.yml` in your repository.
+### Option B: Use a Different LLM Provider
 
-### Step 2: Add your LLM secret(s) as repository secrets
-
-1. Go to your repo **Settings** > **Secrets and variables** > **Actions**
-2. Click **New repository secret**
-3. Add either:
-   - `OPENAI_API_KEY` for BYO OpenAI billing, or
-   - `SENTINELAYER_TOKEN` to use Sentinelayer-managed proxy mode (48-hour onboarding window)
-4. You can set both secrets; the workflow uses BYO key when present and auto-falls back to managed mode when it is not.
-
-> `GITHUB_TOKEN` is provided automatically by GitHub Actions — you do not need to create it as a secret. Just pass it as `${{ secrets.GITHUB_TOKEN }}`.
-
-### Step 3: Open a pull request
-
-That's it. Omar Gate triggers automatically on every PR.
-
----
-
-## Choose Your LLM
-
-Omar Gate supports multiple LLM providers. Pick one based on your needs:
-
-### Model Comparison
-
-| Model | Provider | Quality | Cost | Speed | Best For |
-|-------|----------|:-------:|:----:|:-----:|----------|
-| `gpt-5.2-codex` | OpenAI | ★★★★★ | $$$ | Medium | Deep agentic audit, full codebase understanding |
-| `claude-opus-4-6` | Anthropic | ★★★★★ | $$$ | Medium | Nuanced analysis, architectural review |
-| `claude-sonnet-4-5` | Anthropic | ★★★★ | $$ | Fast | Strong balance of quality and cost |
-| `gpt-4.1` | OpenAI | ★★★★ | $$ | Fast | Reliable all-rounder, great default |
-| `gemini-2.5-pro` | Google | ★★★★ | $$ | Fast | Large context window, good for big repos |
-| `gpt-4.1-mini` | OpenAI | ★★★ | $ | Very Fast | Budget-friendly, frequent scans |
-| `gemini-2.5-flash` | Google | ★★★ | $ | Very Fast | Cheapest option with decent quality |
-
-**Cost estimates by codebase size:**
-
-| Repo Size | Files | Premium Model ($$$/scan) | Standard Model ($$/scan) | Budget Model ($/scan) |
-|-----------|------:|:------------------------:|:------------------------:|:---------------------:|
-| Small | <100 | ~$0.50 | ~$0.20 | ~$0.05 |
-| Medium | 100-500 | ~$2-5 | ~$1-2 | ~$0.25-0.50 |
-| Large | 500-2000 | ~$5-15 | ~$3-8 | ~$1-3 |
-| Monorepo | 2000+ | ~$15-30 | ~$8-15 | ~$3-8 |
-
-> Use budget models for frequent PR scans during development. Use premium models for release gates and security audits.
-
-### Provider Configuration
-
-**Managed-first with BYO fallback (recommended for onboarding)**
-```yaml
-- name: Omar Gate
-  uses: mrrCarter/sentinelayer-v1-action@v1
-  with:
-    github_token: ${{ secrets.GITHUB_TOKEN }}
-    sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
-    openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-    sentinelayer_managed_llm: ${{ secrets.OPENAI_API_KEY == '' && secrets.SENTINELAYER_TOKEN != '' }}
-    llm_provider: openai
-    model: gpt-4.1
-    model_fallback: gpt-4.1-mini
-```
-
-**OpenAI (default)**
-```yaml
-- name: Omar Gate
-  uses: mrrCarter/sentinelayer-v1-action@v1
-  with:
-    github_token: ${{ secrets.GITHUB_TOKEN }}
-    openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-    llm_provider: openai
-    model: gpt-4.1              # or gpt-5.2-codex for deepest analysis
-    model_fallback: gpt-4.1-mini
-```
-
-**Anthropic**
+**Anthropic (Claude)**
 ```yaml
 - name: Omar Gate
   uses: mrrCarter/sentinelayer-v1-action@v1
@@ -208,10 +86,10 @@ Omar Gate supports multiple LLM providers. Pick one based on your needs:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
     llm_provider: anthropic
-    model: claude-sonnet-4-5     # or claude-opus-4-6 for deepest analysis
+    model: claude-sonnet-4-5
 ```
 
-**Google**
+**Google (Gemini)**
 ```yaml
 - name: Omar Gate
   uses: mrrCarter/sentinelayer-v1-action@v1
@@ -219,8 +97,62 @@ Omar Gate supports multiple LLM providers. Pick one based on your needs:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     google_api_key: ${{ secrets.GOOGLE_API_KEY }}
     llm_provider: google
-    model: gemini-2.5-pro        # or gemini-2.5-flash for budget
+    model: gemini-2.5-pro
 ```
+
+### Option C: No API Key (Deterministic Only, Free)
+```yaml
+- name: Omar Gate
+  uses: mrrCarter/sentinelayer-v1-action@v1
+  with:
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    llm_failure_policy: deterministic_only
+```
+
+Runs secrets scanning, config analysis, dependency auditing, and pattern matching — no LLM required. Free, fast (~10s). Catches hardcoded secrets, `eval()`/`exec()`, insecure configs, and known CVEs.
+
+### Common Customizations
+
+```yaml
+- name: Omar Gate
+  uses: mrrCarter/sentinelayer-v1-action@v1
+  with:
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+
+    # What blocks the merge?
+    severity_gate: P1        # P0 = only criticals, P1 = critical+high (default), P2 = medium+, none = report only
+
+    # What to scan?
+    scan_mode: pr-diff        # pr-diff = changed files only (fast, default), deep = full repo
+
+    # Which model?
+    model: gpt-4.1            # gpt-4.1 (default), gpt-4.1-mini (budget), gpt-5.2-codex (deepest)
+    model_fallback: gpt-4.1-mini  # fallback if primary fails
+```
+
+---
+
+## Choose Your LLM
+
+| Model | Provider | Quality | Cost | Speed | Best For |
+|-------|----------|:-------:|:----:|:-----:|----------|
+| `gpt-5.2-codex` | OpenAI | best | $$$ | Medium | Deep agentic audit, full codebase understanding |
+| `claude-opus-4-6` | Anthropic | best | $$$ | Medium | Nuanced analysis, architectural review |
+| `claude-sonnet-4-5` | Anthropic | great | $$ | Fast | Strong balance of quality and cost |
+| `gpt-4.1` | OpenAI | great | $$ | Fast | Reliable all-rounder, great default |
+| `gemini-2.5-pro` | Google | great | $$ | Fast | Large context window, good for big repos |
+| `gpt-4.1-mini` | OpenAI | good | $ | Very Fast | Budget-friendly, frequent scans |
+| `gemini-2.5-flash` | Google | good | $ | Very Fast | Cheapest option with decent quality |
+
+**Cost estimates per scan:**
+
+| Repo Size | Files | Premium ($$$/scan) | Standard ($$/scan) | Budget ($/scan) |
+|-----------|------:|:------------------:|:------------------:|:---------------:|
+| Small | <100 | ~$0.50 | ~$0.20 | ~$0.05 |
+| Medium | 100-500 | ~$2-5 | ~$1-2 | ~$0.25-0.50 |
+| Large | 500-2000 | ~$5-15 | ~$3-8 | ~$1-3 |
+| Monorepo | 2000+ | ~$15-30 | ~$8-15 | ~$3-8 |
 
 ---
 
@@ -233,16 +165,16 @@ Omar Gate runs a two-phase analysis pipeline:
 | Layer | Engine | Time | What It Catches |
 |:-----:|--------|:----:|-----------------|
 | 1 | Codebase ingest | ~1s | File tree, LOC counts, god components, complexity metrics |
-| 2 | Regex scanner | ~7s | Hardcoded secrets, `eval()`, known-bad patterns, leaked credentials |
+| 2 | Pattern scanner | ~7s | Hardcoded secrets, `eval()`, known-bad patterns, leaked credentials |
 | 3 | Config scanner | ~2s | Insecure `.env` files, weak TypeScript config, HTTP dependencies |
-| 4 | CI/CD scanner | ~1s | Workflow injection, script injection, privilege escalation |
+| 4 | Dep audit + harness | ~5s | Known CVEs (pip-audit, npm-audit), workflow injection, privilege escalation |
 
-### Phase 2: AI-Powered Analysis (uses your LLM, runs after Phase 1)
+### Phase 2: AI-Powered Analysis (uses your LLM key, runs after Phase 1)
 
 | Layer | Engine | Time | What It Catches |
 |:-----:|--------|:----:|-----------------|
-| 5 | Codex / Claude / Gemini | ~30-120s | RCE, SQLi, auth bypass, business logic flaws, broken references |
-| 6 | Security test harness | ~5s | Portable security tests |
+| 5 | GPT-4.1 / Claude / Gemini | ~30-120s | RCE, SQLi, auth bypass, business logic flaws, broken references |
+| 6 | LLM guardrails | ~1s | Validates AI findings against deterministic evidence |
 | 7 | Fail-closed gate | ~1s | Blocks merge if P0/P1 found, posts findings to PR |
 
 **How the AI phase works:**
@@ -250,12 +182,6 @@ Omar Gate runs a two-phase analysis pipeline:
 - The AI receives this data + the PR diff + your README — it does NOT crawl the codebase blindly
 - The AI targets specific files identified as high-risk by the deterministic scan
 - This dramatically reduces token usage and cost while maintaining deep analysis quality
-
-### First Run vs Subsequent Runs
-
-**First PR on your repo:** Omar Gate generates a detailed codebase summary — tech stack, architecture, LOC breakdown, key entry points, dependency analysis. This context is used to make all future scans smarter.
-
-**Subsequent PRs:** A 3-sentence summary referencing the cached profile. Faster, cheaper, focused on what changed.
 
 ---
 
@@ -266,22 +192,18 @@ Every scan posts a detailed report to your PR:
 - **Gate status** (passed/blocked) with severity breakdown
 - **Top findings** with file paths, line numbers, and GitHub permalinks
 - **Risk hotspots** ranked by severity and category
-- **Suggested review order** by category (Auth, Payment, Database, etc.)
 - **Codebase metrics** — LOC, god components, complexity scores
-- **Quick commands** to find related patterns in your codebase
 
 ### Check Run
-A GitHub check run appears on the PR with pass/fail status and a link to the full report.
+A GitHub check run appears on the PR with pass/fail status.
 
 ### Downloadable Artifacts
-Full audit artifacts available for download from the Actions tab:
+Full audit artifacts available from the Actions tab:
 - `AUDIT_REPORT.md` — complete findings report
 - `REVIEW_BRIEF.md` — reviewer summary with priority order
 - `FINDINGS.jsonl` — machine-readable findings (for CI integration)
 - `PACK_SUMMARY.json` — counts, integrity hash, metadata
-- `CODEBASE_INGEST.json` — codebase metrics and file inventory
-- `CODEBASE_INGEST_SUMMARY.md` — deterministic snapshot (LOC, languages, god components)
-- `CODEBASE_INGEST_SUMMARY.json` — same snapshot (machine-readable)
+- `CODEBASE_INGEST_SUMMARY.md` — deterministic codebase snapshot
 
 ---
 
@@ -296,33 +218,27 @@ Use these in subsequent workflow steps:
 | `run_id` | Unique run identifier |
 | `estimated_cost_usd` | Estimated LLM cost for the run |
 | `findings_artifact` | Path to findings JSONL |
-| `pack_summary_artifact` | Path to `PACK_SUMMARY.json` |
-| `ingest_artifact` | Path to `INGEST.json` |
-| `codebase_ingest_artifact` | Path to `CODEBASE_INGEST.json` |
-| `codebase_ingest_summary_artifact` | Path to `CODEBASE_INGEST_SUMMARY.json` |
-| `codebase_ingest_summary_md_artifact` | Path to `CODEBASE_INGEST_SUMMARY.md` |
-| `review_brief_artifact` | Path to `REVIEW_BRIEF.md` (if generated) |
-| `audit_report_artifact` | Path to `AUDIT_REPORT.md` (if generated) |
-| `idempotency_key` | Idempotency key used for dedupe |
+| `audit_report_artifact` | Path to `AUDIT_REPORT.md` |
 
 ---
 
 ## Configuration Reference
 
-### Required Inputs
+### Required
 
 | Input | Description |
 |-------|-------------|
-| `github_token` | GitHub token for fetching PR diffs and posting comments. Use `${{ secrets.GITHUB_TOKEN }}`. |
-| API key / managed proxy | Either provide a BYO key (`openai_api_key`, `anthropic_api_key`, `google_api_key`) or use managed mode with `sentinelayer_token` + `sentinelayer_managed_llm=true` (or auto-detect when OpenAI key is empty). |
+| `github_token` | GitHub token. Use `${{ secrets.GITHUB_TOKEN }}` (provided automatically). |
+| LLM API key | `openai_api_key`, `anthropic_api_key`, or `google_api_key`. Or skip for deterministic-only mode. |
 
 ### Scan Settings
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `severity_gate` | `P1` | Block threshold. `P0` = only criticals, `P1` = criticals + high, `P2` = medium+, `none` = report only |
-| `scan_mode` | `pr-diff` | `pr-diff` (fast, scans changed files + context), `deep` (full repo scan) |
-| `llm_failure_policy` | `block` | What happens if the LLM fails: `block` (fail-closed), `deterministic_only` (fall back to regex), `allow_with_warning` |
+| `severity_gate` | `P1` | Block threshold: `P0`, `P1`, `P2`, or `none` (report only) |
+| `scan_mode` | `pr-diff` | `pr-diff` (changed files), `deep` (full repo) |
+| `llm_failure_policy` | `block` | If LLM fails: `block`, `deterministic_only`, `allow_with_warning` |
+| `run_harness` | `true` | Run dep audit (pip-audit, npm-audit) and security harness |
 
 ### LLM Settings
 
@@ -330,45 +246,37 @@ Use these in subsequent workflow steps:
 |-------|---------|-------------|
 | `llm_provider` | `openai` | `openai`, `anthropic`, `google`, `xai` |
 | `model` | `gpt-4.1` | Primary LLM model |
-| `model_fallback` | `gpt-4.1-mini` | Fallback if primary fails or exceeds quota |
-| `sentinelayer_managed_llm` | `false` | Route OpenAI calls through Sentinelayer-managed proxy. If `false`, auto-enables when `openai_api_key` is empty and `sentinelayer_token` is set |
-| `use_codex` | `true` | Enable Codex CLI for deep agentic audit (OpenAI only) |
-| `codex_only` | `false` | If `true`, disable API fallback and use Codex CLI only |
+| `model_fallback` | `gpt-4.1-mini` | Fallback if primary fails |
+| `use_codex` | `true` | Use Codex CLI for deep agentic audit (OpenAI only, requires host runner) |
 | `codex_model` | `gpt-5.2-codex` | Model for Codex CLI |
-| `codex_timeout` | `300` | Codex CLI timeout in seconds |
 
 ### Rate Limiting
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `max_daily_scans` | `20` | Maximum scans per repo per day |
+| `max_daily_scans` | `20` | Max scans per repo per day |
 | `min_scan_interval_minutes` | `2` | Cooldown between scans |
-| `rate_limit_fail_mode` | `closed` | `closed` (block on limit) or `open` (allow on limit) |
 
 ### Security
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `fork_policy` | `block` | How to handle PRs from forks: `block`, `limited` (deterministic only), `allow` |
-| `approval_mode` | `pr_label` | Require label for scanning: `pr_label`, `always`, `manual` |
-| `approval_label` | `sentinelayer:approved` | Label that triggers scanning (when `approval_mode: pr_label`) |
+| `fork_policy` | `block` | Fork PRs: `block`, `limited` (deterministic only), `allow` |
 
 ### Telemetry
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `telemetry` | `true` | Send anonymous usage metrics |
-| `telemetry_tier` | `1` | `1` = anonymous aggregates, `2` = includes repo metadata, `3` = includes finding summaries |
-| `share_metadata` | `false` | Share repo metadata with Sentinelayer |
-| `training_opt_in` | `false` | Allow findings to improve the model (never shares your code) |
+| `telemetry` | `true` | Anonymous usage metrics (no code sent) |
+| `telemetry_tier` | `1` | `0` = off, `1` = anonymous, `2` = repo metadata, `3` = findings |
 
-See [action.yml](action.yml) for all 30+ configuration options.
+See [action.yml](action.yml) for all 30+ options. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed explanations.
 
 ---
 
 ## Advanced Examples
 
-### Strict Security Gate (Recommended for Production)
+### Strict Security Gate (Production)
 ```yaml
 - name: Omar Gate
   uses: mrrCarter/sentinelayer-v1-action@v1
@@ -376,7 +284,6 @@ See [action.yml](action.yml) for all 30+ configuration options.
     github_token: ${{ secrets.GITHUB_TOKEN }}
     openai_api_key: ${{ secrets.OPENAI_API_KEY }}
     severity_gate: P1
-    scan_mode: pr-diff
     llm_failure_policy: block
     fork_policy: block
 ```
@@ -389,10 +296,9 @@ See [action.yml](action.yml) for all 30+ configuration options.
     github_token: ${{ secrets.GITHUB_TOKEN }}
     openai_api_key: ${{ secrets.OPENAI_API_KEY }}
     severity_gate: none
-    scan_mode: pr-diff
 ```
 
-### Budget Mode (Deterministic + Cheap LLM)
+### Budget Mode
 ```yaml
 - name: Omar Gate
   uses: mrrCarter/sentinelayer-v1-action@v1
@@ -404,7 +310,7 @@ See [action.yml](action.yml) for all 30+ configuration options.
     use_codex: false
 ```
 
-### Deep Scan (Nightly / Release Gate)
+### Nightly Deep Scan
 ```yaml
 name: Nightly Security Audit
 on:
@@ -417,30 +323,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Omar Gate (Deep)
-        id: omar
         uses: mrrCarter/sentinelayer-v1-action@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           scan_mode: deep
-          model: gpt-5.2-codex
           severity_gate: P2
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: nightly-audit-${{ steps.omar.outputs.run_id }}
-          path: .sentinelayer/runs/${{ steps.omar.outputs.run_id }}
-```
-
-### With Claude (Anthropic)
-```yaml
-- name: Omar Gate
-  uses: mrrCarter/sentinelayer-v1-action@v1
-  with:
-    github_token: ${{ secrets.GITHUB_TOKEN }}
-    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-    llm_provider: anthropic
-    model: claude-sonnet-4-5
 ```
 
 ---
@@ -450,70 +338,62 @@ jobs:
 Omar Gate uses three independent layers so that **LLM analysis can never unilaterally block a merge**:
 
 ### Layer 1 — AST & Syntax-Aware Deterministic Analysis
-- Python `eval()`/`exec()` detected via `ast.parse` + `ast.walk`, not regex — eliminates self-referential matches in comments, strings, and docs.
-- JS/TS comment and string literals are blanked before pattern matching.
-- Entropy-based secret detection requires context keywords nearby, minimum length (32), and high Shannon entropy (>4.7) to flag.
+- Python `eval()`/`exec()` detected via `ast.parse` + `ast.walk`, not regex
+- JS/TS comment and string literals are blanked before pattern matching
+- Entropy-based secret detection requires context keywords, min length 32, Shannon entropy >4.7
 
 ### Layer 2 — Git-Aware Diff Scoping
-- Only **added** lines can produce blocking (P0/P1) findings.
-- Removed lines are scanned separately at P3 (advisory only).
-- Entropy matches in doc files (`.md`, `.rst`, `.txt`) and historical commits are auto-downgraded to P3.
+- Only **added** lines can produce blocking (P0/P1) findings
+- Removed lines are scanned separately at P3 (advisory only)
 
 ### Layer 3 — LLM Guardrails (Corroboration Required)
-- LLM-sourced P0/P1 findings are automatically **downgraded to P2** unless a deterministic finding in the *same file*, *same category*, and within *5 lines* corroborates them.
-- Findings referencing files not in the scanned diff are dropped entirely.
-- Line numbers are clamped to valid ranges; hallucinated locations are discarded.
+- LLM P0/P1 findings are **downgraded to P2** unless a deterministic finding in the *same file*, *same category*, within *5 lines* corroborates them
+- Findings referencing files not in the scanned diff are dropped entirely
 
 | Finding Source | Can Block Merge? |
 |---|:---:|
 | Deterministic scanner (regex, AST, config) | Yes |
 | Harness (pip-audit, gitleaks) | Yes |
-| LLM/Codex **with** deterministic corroboration | Yes |
-| LLM/Codex **without** corroboration | No (advisory P2) |
-
-> See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#false-positive-defense) for the full technical breakdown of each layer.
+| LLM **with** deterministic corroboration | Yes |
+| LLM **without** corroboration | No (advisory P2) |
 
 ---
 
 ## Troubleshooting
 
 ### "Illegal header value b'Bearer '"
-**Cause:** `github_token` was not passed to the action.
 **Fix:** Add `github_token: ${{ secrets.GITHUB_TOKEN }}` to your `with:` block.
 
-### "Codex skipped (missing openai_api_key)"
-**Cause:** No BYO LLM key was provided, and managed proxy auth was not available.
-**Fix:** Add your API key as a repository secret, or configure managed mode with `sentinelayer_token` (and `id-token: write`) so the action can use the Sentinelayer proxy.
+### "LLM analysis skipped"
+**Fix:** Add your API key as a repository secret (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `GOOGLE_API_KEY`).
 
-### 15,000+ findings on first run
-**Cause:** The deterministic scanner runs regex patterns across your entire codebase. Many findings are informational (P3) or low severity.
-**Fix:** This is expected on the first scan. Focus on P0/P1 findings. Use `severity_gate: P1` to only block on critical issues. Subsequent scans on PRs will focus on changed files.
+### Too many findings on first run
+This is normal. The deterministic scanner scans your entire codebase. Most findings are P3 (informational). Focus on P0/P1. Subsequent PR scans only analyze changed files.
 
-### Action doesn't trigger on PR
-**Cause:** The workflow file must exist on the PR branch. If you're adding it for the first time, it needs to be part of the PR itself.
-**Fix:** Commit the workflow file to your branch, push, and open the PR. The action will trigger.
+### Action doesn't trigger
+The workflow file must exist on the PR branch. If adding it for the first time, it needs to be part of the PR itself.
 
 ---
 
 ## FAQ
 
 **Do you store my code?**
-Your repository is analyzed in your GitHub runner. SentinelLayer dashboard telemetry is opt-in by tier; Tier 1 is aggregate-only, Tier 2 includes metadata, and Tier 3 can include uploaded artifacts. LLM analysis sends a bounded context to your LLM provider using your own API key, or through Sentinelayer-managed proxy mode when enabled.
-
-**What LLM models are used?**
-Primary analysis uses Codex CLI with `gpt-5.2-codex` for deep agentic audit. If Codex CLI is unavailable, falls back to `gpt-4.1` via the Responses API, then `gpt-4.1-mini` as secondary fallback. All models are configurable via `codex_model`, `model`, and `model_fallback` inputs.
+No. Analysis runs entirely in your GitHub runner. Anonymous telemetry (Tier 1) sends only aggregate counts — no code, no file paths, no repo name. Higher tiers are opt-in.
 
 **What about false positives?**
-Omar Gate has a 3-layer defense against false positives: AST-aware deterministic analysis, git-aware diff scoping, and LLM guardrails that require deterministic corroboration. LLM-only P0/P1 findings without corroboration are automatically downgraded to advisory P2 — they can't block your merge. See [False Positive Defense](#false-positive-defense) for details.
+Omar Gate has a 3-layer defense. LLM-only findings without deterministic corroboration are automatically downgraded to advisory P2 — they can't block your merge. See [False Positive Defense](#false-positive-defense).
 
-**Is it free?**
-See https://sentinelayer.com for current tier limits and pricing.
+**How much does it cost?**
+The action itself is free. You pay your LLM provider for API usage. A typical PR scan on a medium repo costs $0.10-$0.50 with GPT-4.1. Use `gpt-4.1-mini` for ~5x cheaper scans.
+
+**What languages does it support?**
+All of them. Deterministic scanners have rules for Python, JavaScript/TypeScript, Go, Java, Ruby, PHP, C#, and more. The AI analysis works on any language your LLM understands.
 
 ---
 
 ## Test Coverage
 
-**204 tests** (unit + integration) — all passing. Covers deterministic scanners, Codex CLI, LLM fallback, telemetry, rate limiting, gate logic, and config validation.
+**219 tests** (unit + integration) — all passing. Covers deterministic scanners, LLM fallback, telemetry, rate limiting, gate logic, and config validation.
 
 ---
 
