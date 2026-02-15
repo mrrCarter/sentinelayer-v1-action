@@ -65,13 +65,13 @@ class SecretsInGitSuite(SecuritySuite):
                 continue
 
             current_file: Optional[str] = None
-            file_lines: Dict[str, List[str]] = {}
+            file_lines: Dict[str, Dict[str, List[str]]] = {}
             for line in show_res.stdout.splitlines():
                 maybe_path = _is_diff_path_line(line)
                 if maybe_path is not None:
                     current_file = maybe_path
                     if current_file and current_file not in file_lines:
-                        file_lines[current_file] = []
+                        file_lines[current_file] = {"added": [], "removed": []}
                     continue
 
                 if not current_file:
@@ -80,35 +80,76 @@ class SecretsInGitSuite(SecuritySuite):
                 if line.startswith("+++ ") or line.startswith("--- "):
                     continue
                 if line.startswith("+") and not line.startswith("+++"):
-                    file_lines[current_file].append(line[1:])
+                    file_lines[current_file]["added"].append(line[1:])
                 if line.startswith("-") and not line.startswith("---"):
-                    file_lines[current_file].append(line[1:])
+                    file_lines[current_file]["removed"].append(line[1:])
 
-            for file_path, lines in file_lines.items():
-                if not lines:
-                    continue
-                content = "\n".join(lines)
-                for f in scan_for_secrets(content, file_path):
-                    key = (f.pattern_id, f.file_path, f.line_start)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    findings.append(
-                        Finding(
-                            id=f"HARNESS-HISTORY-{f.id}",
-                            pattern_id=f.pattern_id,
-                            severity=f.severity,
-                            category=f.category,
-                            file_path=f.file_path,
-                            line_start=f.line_start,
-                            line_end=f.line_end,
-                            snippet=f.snippet,
-                            message=f"{f.message} (found in git history)",
-                            recommendation=f.recommendation,
-                            confidence=f.confidence,
-                            source="harness",
+            for file_path, diff_lines in file_lines.items():
+                added_lines = diff_lines.get("added", [])
+                removed_lines = diff_lines.get("removed", [])
+
+                if added_lines:
+                    content = "\n".join(added_lines)
+                    for f in scan_for_secrets(content, file_path):
+                        if f.pattern_id == "SEC-ENTROPY" and file_path.lower().endswith(
+                            (".md", ".rst", ".txt")
+                        ):
+                            continue
+                        key = (f.pattern_id, f.file_path, f.line_start)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        severity = f.severity
+                        confidence = f.confidence
+                        message = f"{f.message} (found in git history)"
+
+                        # Historical entropy findings are high-noise; keep as advisory only.
+                        if f.pattern_id == "SEC-ENTROPY":
+                            severity = "P3"
+                            confidence = min(float(confidence), 0.45)
+                            message = "Historical high-entropy string detected (manual triage recommended)"
+
+                        findings.append(
+                            Finding(
+                                id=f"HARNESS-HISTORY-{f.id}",
+                                pattern_id=f.pattern_id,
+                                severity=severity,
+                                category=f.category,
+                                file_path=f.file_path,
+                                line_start=f.line_start,
+                                line_end=f.line_end,
+                                snippet=f.snippet,
+                                message=message,
+                                recommendation=f.recommendation,
+                                confidence=confidence,
+                                source="harness",
+                            )
                         )
-                    )
+
+                # Removed lines may indicate credentials that were present in history.
+                if removed_lines:
+                    content = "\n".join(removed_lines)
+                    for f in scan_for_secrets(content, file_path):
+                        key = (f.pattern_id, f.file_path, f.line_start)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        findings.append(
+                            Finding(
+                                id=f"HARNESS-HISTORY-REMOVED-{f.id}",
+                                pattern_id=f.pattern_id,
+                                severity="P3",
+                                category=f.category,
+                                file_path=f.file_path,
+                                line_start=f.line_start,
+                                line_end=f.line_end,
+                                snippet=f.snippet,
+                                message="Potential secret detected in removed line (verify history cleanup)",
+                                recommendation="Confirm credential revocation/rotation and purge history if needed",
+                                confidence=min(float(f.confidence), 0.4),
+                                source="harness",
+                            )
+                        )
 
         return findings
 

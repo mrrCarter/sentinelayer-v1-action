@@ -1,0 +1,83 @@
+name: Deterministic Security Scan
+
+on:
+  push:
+    branches-ignore:
+      - 'dependabot/**'
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic-scan:
+    name: Deterministic Scan
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: src
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: requirements.lock.txt
+
+      - name: Install Dependencies
+        run: python -m pip install --require-hashes -r requirements.lock.txt
+
+      - name: Omar Gate (Deterministic Only)
+        id: omar
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          INPUT_GITHUB_TOKEN: ${{ github.token }}
+          INPUT_USE_CODEX: "false"
+          INPUT_SCAN_MODE: "deep"
+          INPUT_SEVERITY_GATE: "P1"
+          INPUT_RUN_HARNESS: "true"
+          INPUT_LLM_FAILURE_POLICY: "deterministic_only"
+          INPUT_TELEMETRY: "true"
+          INPUT_TELEMETRY_TIER: "1"
+        run: python -m omargate.main
+
+      - name: Upload scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentinelayer-deterministic-${{ github.run_id }}
+          path: .sentinelayer/runs/${{ steps.omar.outputs.run_id }}
+          if-no-files-found: warn
+
+  secret-scanning:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install gitleaks
+        run: |
+          curl -fsSLo gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.24.2/gitleaks_8.24.2_linux_x64.tar.gz
+          echo "fa0500f6b7e41d28791ebc680f5dd9899cd42b58629218a5f041efa899151a8e  gitleaks.tar.gz" | sha256sum --check --strict
+          tar -xzf gitleaks.tar.gz
+          sudo mv gitleaks /usr/local/bin/
+
+      - name: Run gitleaks
+        run: |
+          gitleaks detect \
+            --source . \
+            --report-format json \
+            --report-path gitleaks-report.json \
+            --redact \
+            --no-git
+
+      - name: Upload secret scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-push-${{ github.run_id }}
+          path: gitleaks-report.json
+          if-no-files-found: warn

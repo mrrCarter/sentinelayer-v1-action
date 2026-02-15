@@ -1,0 +1,8 @@
+[allowlist]
+  description = "SentinelLayer false-positive allowlist"
+  # Test fixtures contain deliberate dummy secrets for scanner regression tests.
+  # README workflow examples are not real secrets.
+  paths = [
+    '''tests/''',
+    '''README\.md''',
+  ]

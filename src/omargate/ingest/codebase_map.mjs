@@ -20,6 +20,11 @@ const EXCLUDED_DIRS = new Set([
   ".vscode",
   "__pycache__",
   ".pytest_cache",
+  ".mypy_cache",
+  ".ruff_cache",
+  ".tox",
+  ".cache",
+  ".sentinelayer",
 ]);
 
 const stats = {
@@ -83,7 +88,7 @@ async function walk(dir) {
       continue;
     }
     if (entry.isDirectory()) {
-      if (EXCLUDED_DIRS.has(entry.name)) {
+      if (EXCLUDED_DIRS.has(entry.name) || entry.name.startsWith(".tmp-run-")) {
         continue;
       }
       await walk(fullPath);

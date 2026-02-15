@@ -5,7 +5,7 @@ from typing import Optional
 
 from ..formatting import format_int, truncate
 from ..models import GateResult, GateStatus
-from ..ingest.codebase_snapshot import render_codebase_snapshot_md
+from ..ingest.codebase_snapshot import build_codebase_synopsis, render_codebase_snapshot_md
 
 
 def _status_key(status: GateStatus | str) -> str:
@@ -30,6 +30,7 @@ def write_step_summary(
     version: str,
     *,
     codebase_snapshot: Optional[dict] = None,
+    codebase_synopsis: Optional[str] = None,
 ) -> None:
     """
     Write GitHub Actions Step Summary.
@@ -75,6 +76,12 @@ def write_step_summary(
         f"| P3 (Low) | {format_int(counts.get('P3', 0))} | No |",
         "",
     ]
+
+    resolved_synopsis = (codebase_synopsis or "").strip()
+    if not resolved_synopsis and codebase_snapshot:
+        resolved_synopsis = build_codebase_synopsis(codebase_snapshot=codebase_snapshot)
+    if resolved_synopsis:
+        md.extend([f"**Codebase Synopsis:** {resolved_synopsis}", ""])
 
     if findings:
         md.append("### Top Findings")

@@ -140,3 +140,35 @@ def test_run_ingest_default_ignores_tests_and_env_local(
     assert ".env.local" not in paths
     assert "tests/secret.py" not in paths
     assert "src/app.py" in paths
+
+
+def test_run_ingest_default_ignores_local_cache_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_root = tmp_path / "repo"
+    (repo_root / ".mypy_cache").mkdir(parents=True)
+    (repo_root / "src").mkdir(parents=True)
+
+    ignored_file = repo_root / ".mypy_cache" / "meta.json"
+    ignored_file.write_text("{}", encoding="utf-8")
+    kept_file = repo_root / "src" / "app.py"
+    kept_file.write_text("print('ok')\n", encoding="utf-8")
+
+    node_payload = {
+        "files": [
+            {"path": ".mypy_cache/meta.json", "size_bytes": ignored_file.stat().st_size},
+            {"path": "src/app.py", "size_bytes": kept_file.stat().st_size},
+        ],
+        "stats": {"binary_files": 0, "too_large": 0, "truncated": False},
+    }
+
+    def fake_run(args, **kwargs):
+        return StubCompleted(json.dumps(node_payload))
+
+    monkeypatch.setattr(ingest_runner.subprocess, "run", fake_run)
+
+    result = run_ingest(repo_root)
+
+    paths = [entry["path"] for entry in result["files"]]
+    assert ".mypy_cache/meta.json" not in paths
+    assert "src/app.py" in paths

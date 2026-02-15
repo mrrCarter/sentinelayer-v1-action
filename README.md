@@ -4,7 +4,7 @@
 
 [![Action Version](https://img.shields.io/badge/action-v1-blue)](https://github.com/mrrCarter/sentinelayer-v1-action)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests: 186 passing](https://img.shields.io/badge/tests-186%20passing-brightgreen)](https://github.com/mrrCarter/sentinelayer-v1-action/actions/workflows/quality-gates.yml)
+[![Tests: 204 passing](https://img.shields.io/badge/tests-204%20passing-brightgreen)](https://github.com/mrrCarter/sentinelayer-v1-action/actions/workflows/quality-gates.yml)
 [![Marketplace](https://img.shields.io/badge/GitHub-Marketplace-blue)](https://github.com/marketplace?query=sentinelayer)
 
 Omar Gate runs a 7-layer security analysis on every pull request — combining deterministic pattern scanning, codebase-aware ingestion, and deep AI-powered code review — then blocks the merge if critical vulnerabilities are found.
@@ -22,26 +22,83 @@ name: Security Review
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
-  pull-requests: write
-  checks: write
-  id-token: write
 
 jobs:
-  security-review:
+  quality-gates:
+    name: Quality Gates
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: src
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: requirements.lock.txt
+      - run: python -m pip install --require-hashes -r requirements.lock.txt
+      - run: python -m pip install --disable-pip-version-check ruff==0.15.0
+      - run: ruff check src tests
+      - run: python -m pytest tests/unit tests/integration -q
+
+  secret-scanning:
+    name: Secret Scanning
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install gitleaks
+        run: |
+          curl -fsSLo gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.24.2/gitleaks_8.24.2_linux_x64.tar.gz
+          echo "fa0500f6b7e41d28791ebc680f5dd9899cd42b58629218a5f041efa899151a8e  gitleaks.tar.gz" | sha256sum --check --strict
+          tar -xzf gitleaks.tar.gz
+          sudo mv gitleaks /usr/local/bin/
+      - run: gitleaks detect --source . --report-format json --report-path gitleaks-report.json --redact --no-git
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gitleaks-${{ github.run_id }}
+          path: gitleaks-report.json
+
+  omar-review:
+    name: Omar Review
+    needs: [quality-gates, secret-scanning]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install LLM CLIs
+        run: |
+          npm install -g @openai/codex@0.98.0
+          npm install -g @anthropic-ai/claude-code || true
+          npm install -g @google/gemini-cli || npm install -g @google-ai/gemini-cli || true
+
+      - name: Verify LLM CLIs
+        run: |
+          codex --version || true
+          claude --version || true
+          gemini --version || true
 
       - name: Omar Gate
         id: omar
         uses: mrrCarter/sentinelayer-v1-action@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          sentinelayer_managed_llm: ${{ secrets.OPENAI_API_KEY == '' && secrets.SENTINELAYER_TOKEN != '' }}
 
       - name: Upload Artifacts
         if: always()
@@ -59,7 +116,9 @@ That's it. Open a PR and Omar Gate will:
 4. Block the merge if P0/P1 issues are found
 5. Upload full audit artifacts for download
 
-> **Required inputs:** `github_token` and an API key for your chosen LLM provider. Without `github_token`, the action cannot fetch your PR diff and will fail. Without an API key, only deterministic scanning runs (no AI analysis).
+The workflow above intentionally runs **Quality Gates** and **Secret Scanning** in parallel, then runs **Omar Review** only after both pass.
+
+> **Required inputs:** `github_token` and either (a) an API key for your chosen LLM provider, or (b) `sentinelayer_token` with managed proxy enabled. The Quick Start enables managed mode automatically when `OPENAI_API_KEY` is empty and `SENTINELAYER_TOKEN` is set.
 
 ---
 
@@ -69,11 +128,14 @@ That's it. Open a PR and Omar Gate will:
 
 Copy the Quick Start YAML above into `.github/workflows/security-review.yml` in your repository.
 
-### Step 2: Add your API key as a repository secret
+### Step 2: Add your LLM secret(s) as repository secrets
 
 1. Go to your repo **Settings** > **Secrets and variables** > **Actions**
 2. Click **New repository secret**
-3. Add your API key (see [Choose Your LLM](#choose-your-llm) below for which key to add)
+3. Add either:
+   - `OPENAI_API_KEY` for BYO OpenAI billing, or
+   - `SENTINELAYER_TOKEN` to use Sentinelayer-managed proxy mode (48-hour onboarding window)
+4. You can set both secrets; the workflow uses BYO key when present and auto-falls back to managed mode when it is not.
 
 > `GITHUB_TOKEN` is provided automatically by GitHub Actions — you do not need to create it as a secret. Just pass it as `${{ secrets.GITHUB_TOKEN }}`.
 
@@ -111,6 +173,20 @@ Omar Gate supports multiple LLM providers. Pick one based on your needs:
 > Use budget models for frequent PR scans during development. Use premium models for release gates and security audits.
 
 ### Provider Configuration
+
+**Managed-first with BYO fallback (recommended for onboarding)**
+```yaml
+- name: Omar Gate
+  uses: mrrCarter/sentinelayer-v1-action@v1
+  with:
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+    openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+    sentinelayer_managed_llm: ${{ secrets.OPENAI_API_KEY == '' && secrets.SENTINELAYER_TOKEN != '' }}
+    llm_provider: openai
+    model: gpt-4.1
+    model_fallback: gpt-4.1-mini
+```
 
 **OpenAI (default)**
 ```yaml
@@ -238,7 +314,7 @@ Use these in subsequent workflow steps:
 | Input | Description |
 |-------|-------------|
 | `github_token` | GitHub token for fetching PR diffs and posting comments. Use `${{ secrets.GITHUB_TOKEN }}`. |
-| API key | At least one of: `openai_api_key`, `anthropic_api_key`, `google_api_key`. Without this, only deterministic scanning runs. |
+| API key / managed proxy | Either provide a BYO key (`openai_api_key`, `anthropic_api_key`, `google_api_key`) or use managed mode with `sentinelayer_token` + `sentinelayer_managed_llm=true` (or auto-detect when OpenAI key is empty). |
 
 ### Scan Settings
 
@@ -255,7 +331,9 @@ Use these in subsequent workflow steps:
 | `llm_provider` | `openai` | `openai`, `anthropic`, `google`, `xai` |
 | `model` | `gpt-4.1` | Primary LLM model |
 | `model_fallback` | `gpt-4.1-mini` | Fallback if primary fails or exceeds quota |
+| `sentinelayer_managed_llm` | `false` | Route OpenAI calls through Sentinelayer-managed proxy. If `false`, auto-enables when `openai_api_key` is empty and `sentinelayer_token` is set |
 | `use_codex` | `true` | Enable Codex CLI for deep agentic audit (OpenAI only) |
+| `codex_only` | `false` | If `true`, disable API fallback and use Codex CLI only |
 | `codex_model` | `gpt-5.2-codex` | Model for Codex CLI |
 | `codex_timeout` | `300` | Codex CLI timeout in seconds |
 
@@ -367,6 +445,36 @@ jobs:
 
 ---
 
+## False Positive Defense
+
+Omar Gate uses three independent layers so that **LLM analysis can never unilaterally block a merge**:
+
+### Layer 1 — AST & Syntax-Aware Deterministic Analysis
+- Python `eval()`/`exec()` detected via `ast.parse` + `ast.walk`, not regex — eliminates self-referential matches in comments, strings, and docs.
+- JS/TS comment and string literals are blanked before pattern matching.
+- Entropy-based secret detection requires context keywords nearby, minimum length (32), and high Shannon entropy (>4.7) to flag.
+
+### Layer 2 — Git-Aware Diff Scoping
+- Only **added** lines can produce blocking (P0/P1) findings.
+- Removed lines are scanned separately at P3 (advisory only).
+- Entropy matches in doc files (`.md`, `.rst`, `.txt`) and historical commits are auto-downgraded to P3.
+
+### Layer 3 — LLM Guardrails (Corroboration Required)
+- LLM-sourced P0/P1 findings are automatically **downgraded to P2** unless a deterministic finding in the *same file*, *same category*, and within *5 lines* corroborates them.
+- Findings referencing files not in the scanned diff are dropped entirely.
+- Line numbers are clamped to valid ranges; hallucinated locations are discarded.
+
+| Finding Source | Can Block Merge? |
+|---|:---:|
+| Deterministic scanner (regex, AST, config) | Yes |
+| Harness (pip-audit, gitleaks) | Yes |
+| LLM/Codex **with** deterministic corroboration | Yes |
+| LLM/Codex **without** corroboration | No (advisory P2) |
+
+> See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#false-positive-defense) for the full technical breakdown of each layer.
+
+---
+
 ## Troubleshooting
 
 ### "Illegal header value b'Bearer '"
@@ -374,8 +482,8 @@ jobs:
 **Fix:** Add `github_token: ${{ secrets.GITHUB_TOKEN }}` to your `with:` block.
 
 ### "Codex skipped (missing openai_api_key)"
-**Cause:** No LLM API key was provided. Only deterministic scanning ran.
-**Fix:** Add your API key as a repository secret and pass it in the `with:` block.
+**Cause:** No BYO LLM key was provided, and managed proxy auth was not available.
+**Fix:** Add your API key as a repository secret, or configure managed mode with `sentinelayer_token` (and `id-token: write`) so the action can use the Sentinelayer proxy.
 
 ### 15,000+ findings on first run
 **Cause:** The deterministic scanner runs regex patterns across your entire codebase. Many findings are informational (P3) or low severity.
@@ -390,13 +498,13 @@ jobs:
 ## FAQ
 
 **Do you store my code?**
-Your repository is analyzed in your GitHub runner. SentinelLayer dashboard telemetry is opt-in by tier; Tier 1 is aggregate-only, Tier 2 includes metadata, and Tier 3 can include uploaded artifacts. LLM analysis sends a bounded context to your LLM provider using your own API key.
+Your repository is analyzed in your GitHub runner. SentinelLayer dashboard telemetry is opt-in by tier; Tier 1 is aggregate-only, Tier 2 includes metadata, and Tier 3 can include uploaded artifacts. LLM analysis sends a bounded context to your LLM provider using your own API key, or through Sentinelayer-managed proxy mode when enabled.
 
 **What LLM models are used?**
 Primary analysis uses Codex CLI with `gpt-5.2-codex` for deep agentic audit. If Codex CLI is unavailable, falls back to `gpt-4.1` via the Responses API, then `gpt-4.1-mini` as secondary fallback. All models are configurable via `codex_model`, `model`, and `model_fallback` inputs.
 
 **What about false positives?**
-SentinelLayer combines deterministic rules with LLM review and includes a `confidence` field per finding. Tune enforcement via `severity_gate`, and consider `llm_failure_policy=deterministic_only` for stricter determinism.
+Omar Gate has a 3-layer defense against false positives: AST-aware deterministic analysis, git-aware diff scoping, and LLM guardrails that require deterministic corroboration. LLM-only P0/P1 findings without corroboration are automatically downgraded to advisory P2 — they can't block your merge. See [False Positive Defense](#false-positive-defense) for details.
 
 **Is it free?**
 See https://sentinelayer.com for current tier limits and pricing.
@@ -405,7 +513,7 @@ See https://sentinelayer.com for current tier limits and pricing.
 
 ## Test Coverage
 
-**186 tests** (unit + integration) — all passing. Covers deterministic scanners, Codex CLI, LLM fallback, telemetry, rate limiting, gate logic, and config validation.
+**204 tests** (unit + integration) — all passing. Covers deterministic scanners, Codex CLI, LLM fallback, telemetry, rate limiting, gate logic, and config validation.
 
 ---
 

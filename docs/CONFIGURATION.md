@@ -1,77 +1,83 @@
 # SentinelLayer Action Configuration
 
-SentinelLayer is configured entirely via GitHub Action inputs (see `action.yml`). Inputs are passed via `with:` in your workflow.
+SentinelLayer (Omar Gate) is configured entirely via GitHub Action inputs (see [`action.yml`](../action.yml)). Inputs are passed via `with:` in your workflow.
 
-Notes:
+**Notes:**
 - GitHub Actions provides inputs as strings; the action parses booleans (`true`/`false`) and numbers automatically.
-- `openai_api_key` is currently required (even if you intend to run deterministic-only scans).
+- No single API key is "required" — without any key, only deterministic scanning runs (no AI analysis). With at least one key, AI-powered analysis runs using that provider.
+
+---
 
 ## Inputs At A Glance
 
-Authentication
+### Authentication
 
 | Input | Type | Default | Purpose |
 |---|---|---|---|
-| `openai_api_key` | secret string | (required) | OpenAI API key for LLM analysis (BYO). |
-| `github_token` | secret string | `""` | GitHub token for PR comments and Check Runs. |
-| `sentinelayer_token` | secret string | `""` | SentinelLayer token for Tier 2/3 uploads (optional). |
+| `github_token` | secret string | `""` | GitHub token for PR comments, Check Runs, and fetching diffs. Use `${{ secrets.GITHUB_TOKEN }}`. |
+| `openai_api_key` | secret string | `""` | OpenAI API key (for Codex CLI + Responses API). |
+| `anthropic_api_key` | secret string | `""` | Anthropic API key (for Claude models). |
+| `google_api_key` | secret string | `""` | Google AI API key (for Gemini models). |
+| `xai_api_key` | secret string | `""` | xAI API key (for Grok models). |
+| `sentinelayer_token` | secret string | `""` | SentinelLayer JWT for Tier 2/3 dashboard uploads (optional, OIDC preferred). |
 
-Scan Settings
-
-| Input | Type | Default | Purpose |
-|---|---|---|---|
-| `scan_mode` | string | `pr-diff` | `pr-diff`, `deep`, or `nightly`. |
-| `policy_pack` | string | `omar` | Policy pack identifier. |
-| `policy_pack_version` | string | `v1` | Policy pack version identifier. |
-| `model` | string | `gpt-5.2-codex` | Primary OpenAI model. |
-| `model_fallback` | string | `gpt-4.1` | Fallback OpenAI model. |
-| `max_input_tokens` | int | `100000` | Maximum LLM context budget (cost control). |
-| `llm_failure_policy` | string | `block` | `block`, `deterministic_only`, or `allow_with_warning`. |
-
-Gate Control
+### LLM Provider Settings
 
 | Input | Type | Default | Purpose |
 |---|---|---|---|
-| `severity_gate` | string | `P1` | Block threshold: `P0`, `P1`, `P2`, `none`. |
-| `fork_policy` | string | `block` | Fork PR handling: `block`, `limited`, `allow`. |
-| `run_deterministic_fix` | bool | `false` | Reserved (currently no-op). |
-| `run_llm_fix` | bool | `false` | Reserved (currently no-op). |
-| `auto_commit_fixes` | bool | `false` | Reserved (currently no-op). |
+| `llm_provider` | string | `openai` | LLM provider: `openai`, `anthropic`, `google`, `xai`. |
+| `model` | string | `gpt-4.1` | Primary LLM API model (used when Codex CLI is unavailable or disabled). |
+| `model_fallback` | string | `gpt-4o` | Fallback LLM API model (if primary fails or quota exceeded). |
+| `use_codex` | bool | `true` | Enable Codex CLI for deep agentic audit. Falls back to API if Codex fails. |
+| `codex_only` | bool | `false` | Use Codex CLI as the only LLM path. Disables API fallback entirely. |
+| `codex_model` | string | `gpt-5.2-codex` | Model passed to Codex CLI `--model` flag. |
+| `codex_timeout` | int | `300` | Timeout in seconds for Codex CLI execution. |
+| `max_input_tokens` | int | `100000` | Maximum LLM context budget in tokens. Lowering reduces cost; files get truncated or skipped. |
+| `llm_failure_policy` | string | `block` | What happens when LLM fails: `block` (fail-closed), `deterministic_only` (fall back to regex), `allow_with_warning`. |
 
-Cost Control
-
-| Input | Type | Default | Purpose |
-|---|---|---|---|
-| `max_daily_scans` | int | `20` | Rate limit: cap check-run executions per PR head SHA per 24 hours. |
-| `min_scan_interval_minutes` | int | `5` | Rate limit: cooldown between scans per PR head SHA. |
-| `rate_limit_fail_mode` | string | `closed` | On GitHub API errors during rate limit enforcement: `closed` (require approval) or `open` (skip enforcement and proceed). |
-| `require_cost_confirmation` | float | `5.00` | If estimated cost exceeds this USD threshold, require approval. |
-| `approval_mode` | string | `pr_label` | `pr_label`, `workflow_dispatch`, `none`. |
-| `approval_label` | string | `sentinelayer:approved` | PR label that approves high-cost scans (when `approval_mode=pr_label`). |
-
-Telemetry
+### Scan Settings
 
 | Input | Type | Default | Purpose |
 |---|---|---|---|
-| `telemetry_tier` | int | `1` | `0`=off, `1`=aggregate, `2`=metadata, `3`=full artifacts. |
-| `telemetry` | bool | `true` | Enable anonymous telemetry (opt-out). |
+| `scan_mode` | string | `pr-diff` | `pr-diff` (fast, scans changed files), `deep` (full repo), `nightly` (scheduled). |
+| `policy_pack` | string | `omar` | Policy pack identifier (used for fingerprinting and deduplication). |
+| `policy_pack_version` | string | `v1` | Policy pack version (included in finding fingerprints). |
+| `run_harness` | bool | `true` | Run the portable security test harness (dep audit, secret-in-git checks). |
+
+### Gate Control
+
+| Input | Type | Default | Purpose |
+|---|---|---|---|
+| `severity_gate` | string | `P1` | Block threshold: `P0` (only criticals), `P1` (criticals + high), `P2` (medium+), `none` (report only, never blocks). |
+| `fork_policy` | string | `block` | Fork PR handling: `block` (fail closed), `limited` (deterministic only, no LLM), `allow` (full scan). |
+| `run_deterministic_fix` | bool | `false` | Reserved for future autofix (currently no-op). |
+| `run_llm_fix` | bool | `false` | Reserved for future LLM fix patches (currently no-op). |
+| `auto_commit_fixes` | bool | `false` | Reserved for future auto-commit (currently no-op). |
+
+### Cost Control & Rate Limiting
+
+| Input | Type | Default | Purpose |
+|---|---|---|---|
+| `max_daily_scans` | int | `20` | Maximum scans per PR head SHA per 24 hours. `0` = unlimited. |
+| `min_scan_interval_minutes` | int | `2` | Cooldown between scans for the same PR head SHA. `0` = disabled. |
+| `rate_limit_fail_mode` | string | `closed` | On GitHub API errors during rate limit checks: `closed` (require approval) or `open` (skip enforcement). |
+| `require_cost_confirmation` | float | `5.00` | If estimated LLM cost exceeds this USD amount, require approval before scanning. |
+| `approval_mode` | string | `pr_label` | How to approve high-cost scans: `pr_label`, `workflow_dispatch`, `none`. |
+| `approval_label` | string | `sentinelayer:approved` | PR label that approves a high-cost scan (when `approval_mode=pr_label`). |
+
+### Telemetry
+
+| Input | Type | Default | Purpose |
+|---|---|---|---|
+| `telemetry_tier` | int | `1` | `0`=off, `1`=anonymous aggregates, `2`=repo metadata, `3`=full artifact upload. |
+| `telemetry` | bool | `true` | Enable anonymous telemetry (set `false` to opt out). |
 | `share_metadata` | bool | `false` | Explicit opt-in to Tier 2 metadata (overrides `telemetry_tier`). |
-| `share_artifacts` | bool | `false` | Explicit opt-in to Tier 3 artifacts upload (overrides `telemetry_tier`). |
-| `training_opt_in` | bool | `false` | Optional training consent (de-identified). |
+| `share_artifacts` | bool | `false` | Explicit opt-in to Tier 3 artifact upload (overrides `telemetry_tier`). |
+| `training_opt_in` | bool | `false` | Optional training consent. Findings are de-identified; your code is never stored. |
 
-## Authentication
+---
 
-### `openai_api_key` (required)
-
-Used for LLM analysis. The action will send a bounded context (diff + prioritized files) to OpenAI using your API key.
-
-Example:
-
-```yaml
-- uses: mrrCarter/sentinelayer-v1-action@v1
-  with:
-    openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-```
+## Authentication (Detailed)
 
 ### `github_token` (recommended)
 
@@ -80,92 +86,101 @@ Used to:
 - Create a GitHub Check Run with inline annotations (up to 50)
 - Fetch PR diff and changed files for `scan_mode=pr-diff`
 
-If `github_token` is not provided, the action also checks the `GITHUB_TOKEN` environment variable.
+If `github_token` is not provided, the action also checks the `GITHUB_TOKEN` environment variable. Without it, the action cannot fetch PR diffs and will fail in `pr-diff` mode.
 
-Recommended:
+Recommended permissions:
 
 ```yaml
 permissions:
   contents: read
   pull-requests: write
   checks: write
-  issues: write
+  id-token: write    # Required for OIDC telemetry (Tier 2+)
 ```
 
-Example:
+### LLM API Keys
 
+Omar Gate supports multiple LLM providers. Pass the key for your chosen provider:
+
+| Provider | Input | Secret Name | Models |
+|---|---|---|---|
+| OpenAI | `openai_api_key` | `OPENAI_API_KEY` | `gpt-4.1`, `gpt-4.1-mini`, `gpt-4o`, `gpt-5.2-codex` (Codex CLI) |
+| Anthropic | `anthropic_api_key` | `ANTHROPIC_API_KEY` | `claude-opus-4-6`, `claude-sonnet-4-5` |
+| Google | `google_api_key` | `GOOGLE_API_KEY` | `gemini-2.5-pro`, `gemini-2.5-flash` |
+| xAI | `xai_api_key` | `XAI_API_KEY` | `grok-3`, `grok-3-mini` |
+
+**OpenAI example:**
 ```yaml
 - uses: mrrCarter/sentinelayer-v1-action@v1
   with:
+    github_token: ${{ secrets.GITHUB_TOKEN }}
     openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-    github_token: ${{ github.token }}
+```
+
+**Anthropic example:**
+```yaml
+- uses: mrrCarter/sentinelayer-v1-action@v1
+  with:
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    llm_provider: anthropic
+    model: claude-sonnet-4-5
+```
+
+**No API key (deterministic-only):**
+```yaml
+- uses: mrrCarter/sentinelayer-v1-action@v1
+  with:
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    # No LLM key — only deterministic scanners run (secrets, config, CI/CD, EQ rules).
+    # No AI analysis, no Codex CLI. Free and fast.
 ```
 
 ### `sentinelayer_token` (optional)
 
-Enables SentinelLayer dashboard uploads for higher telemetry tiers (especially Tier 3 artifacts).
+JWT from the SentinelLayer OAuth flow (`POST /api/v1/auth/github/callback`). Enables dashboard uploads for Tier 2/3. **Not a GitHub PAT.**
 
-Example:
+For Tier 2+, prefer OIDC (see [Telemetry](#telemetry-detailed)) — it requires no long-lived secret.
 
-```yaml
-- uses: mrrCarter/sentinelayer-v1-action@v1
-  with:
-    openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-    github_token: ${{ github.token }}
-    sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
-    telemetry_tier: 3
-```
+---
 
-## Scan Settings
+## Scan Settings (Detailed)
 
 ### `scan_mode`
 
-- `pr-diff`: includes the PR diff in LLM context (when running on a PR) and prioritizes changed files.
-- `deep`: omits the PR diff and prioritizes hotspots and general source coverage.
-- `nightly`: intended for scheduled runs; behavior is similar to `deep` but may use a different prompt selection strategy as the product evolves.
+| Mode | What It Does | When To Use |
+|---|---|---|
+| `pr-diff` | Includes PR diff in LLM context, prioritizes changed files. | Every PR (default). |
+| `deep` | Full repo scan, prioritizes hotspots and source coverage. | Release gates, audits. |
+| `nightly` | Same as `deep`, may use different prompt strategy as product evolves. | Scheduled nightly crons. |
 
-Example:
+### Codex CLI vs LLM API
 
-```yaml
-with:
-  scan_mode: deep
+Omar Gate has two LLM execution paths:
+
+1. **Codex CLI** (`use_codex: true`, default) — Runs `codex exec` with a structured prompt. The CLI has its own sandbox, conversation memory, and can traverse the codebase. Best for deep agentic audit. Requires `openai_api_key`.
+
+2. **LLM API** (fallback) — Sends a single bounded context (diff + prioritized files + codebase snapshot) to the Responses API or Messages API. Faster, cheaper, works with any provider.
+
+**Flow:**
+```
+use_codex=true → try Codex CLI → success? done : codex_only=true? fail : try API
+use_codex=false → skip Codex → try API
 ```
 
-### `policy_pack` and `policy_pack_version`
-
-Used for:
-- Finding fingerprinting/deduplication stability
-- Reporting and telemetry metadata
-
-Example:
-
-```yaml
-with:
-  policy_pack: omar
-  policy_pack_version: v1
-```
+When `codex_only: true`, the API fallback is disabled. If Codex fails, the `llm_failure_policy` determines the outcome.
 
 ### `model` / `model_fallback`
 
-If the primary model fails, the action retries using the fallback model.
+These control the **LLM API path** (not Codex CLI, which uses `codex_model`).
 
-Example:
-
-```yaml
-with:
-  model: gpt-5.2-codex
-  model_fallback: gpt-4.1
-```
-
-### `max_input_tokens`
-
-Hard cap on the LLM context budget used to build the analysis prompt. Lowering this reduces cost at the expense of coverage (more files will be skipped or truncated in context).
-
-Example:
+- `model`: Primary model. Default `gpt-4.1`. Used when Codex is disabled or unavailable.
+- `model_fallback`: Secondary model. Default `gpt-4o`. Used if the primary model fails, hits rate limits, or exceeds quota.
 
 ```yaml
 with:
-  max_input_tokens: 80000
+  model: gpt-4.1
+  model_fallback: gpt-4.1-mini
 ```
 
 ### `.sentinelayerignore`
@@ -179,163 +194,213 @@ node_modules/**
 dist/**
 **/*.min.js
 vendor/**
+docs/generated/**
 ```
 
-## Gate Control
+---
+
+## Gate Control (Detailed)
 
 ### `severity_gate`
 
-Defines the minimum severity that blocks the workflow:
-- `P0`: block on any P0
-- `P1`: block on any P0/P1
-- `P2`: block on any P0/P1/P2
-- `none`: never block (report-only)
+Defines the minimum severity that blocks the merge:
 
-Example:
-
-```yaml
-with:
-  severity_gate: P0
-```
+| Gate | Blocks On | Use Case |
+|---|---|---|
+| `P0` | Only P0 (critical) | Permissive — only stops catastrophic issues |
+| `P1` | P0 + P1 (critical + high) | **Recommended default** |
+| `P2` | P0 + P1 + P2 (medium+) | Strict — catches more but may increase noise |
+| `none` | Never blocks | Report-only / advisory mode |
 
 ### `fork_policy`
 
 Controls how fork PRs are handled:
-- `block`: do not proceed (intended to fail closed on forks)
-- `limited`: proceed but disable LLM analysis (deterministic-only)
-- `allow`: full scan (use with care)
+- `block` (default): Fail closed — do not proceed.
+- `limited`: Proceed with deterministic scanning only (no LLM, no API keys needed).
+- `allow`: Full scan including LLM (use with care — requires `pull_request_target` with strict safeguards).
 
-Important: GitHub does not provide secrets to workflows triggered from fork PRs under `pull_request`. Since `openai_api_key` is required, the practical options today are:
-- Skip running the action on forks (recommended for open source), or
-- Use `pull_request_target` with strict safeguards (see `docs/EXAMPLES.md`).
+**Important:** GitHub does not provide secrets to workflows triggered from fork PRs under `pull_request`. Options:
+- Skip forks: `if: github.event.pull_request.head.repo.fork == false`
+- Use `pull_request_target` with workflow hardening.
+- Use `fork_policy: limited` for free deterministic scanning on forks.
 
-Example:
+---
 
-```yaml
-with:
-  fork_policy: limited
-```
-
-### Fix options (`run_deterministic_fix`, `run_llm_fix`, `auto_commit_fixes`)
-
-These inputs exist for forward compatibility but are currently no-ops in this repository revision. Do not rely on them for remediation workflows yet.
-
-## Cost Control And Rate Limiting
+## Cost Control & Rate Limiting (Detailed)
 
 ### `max_daily_scans` and `min_scan_interval_minutes`
 
-These limits are enforced using GitHub Check Run history for the PR head SHA. Practical implications:
+Rate limits are enforced using GitHub Check Run history for the PR head SHA:
 - Pushing a new commit (new head SHA) resets the window.
 - The limits apply to the Check Run named `Omar Gate` on that commit.
-
-Examples:
-
-```yaml
-with:
-  max_daily_scans: 10
-  min_scan_interval_minutes: 15
-```
-
-Disable limits:
-
-```yaml
-with:
-  max_daily_scans: 0
-  min_scan_interval_minutes: 0
-```
-
-### `rate_limit_fail_mode`
-
-If the action cannot enforce rate limits due to GitHub API errors, it can either:
-- `closed` (default): require approval (fail-closed)
-- `open`: skip enforcement and proceed (cost-risky)
-
-Example:
-
-```yaml
-with:
-  rate_limit_fail_mode: open
-```
+- `max_daily_scans: 0` disables the daily cap.
+- `min_scan_interval_minutes: 0` disables the cooldown.
 
 ### `require_cost_confirmation`, `approval_mode`, `approval_label`
 
-Before analysis, SentinelLayer estimates LLM cost from PR stats and blocks the run when the estimate exceeds `require_cost_confirmation` unless approved.
+Before running AI analysis, Omar Gate estimates LLM cost from PR stats (file count, diff size, model pricing). If the estimate exceeds `require_cost_confirmation`, the run is blocked until approved.
 
-Approval modes:
-- `pr_label`: requires `approval_label` on the PR (requires `issues: read` permission to check labels)
-- `workflow_dispatch`: only allows runs triggered by `workflow_dispatch`
-- `none`: disables approval checks
+**Approval modes:**
+- `pr_label`: Requires the `approval_label` on the PR (needs `issues: read` permission).
+- `workflow_dispatch`: Only allows runs triggered manually.
+- `none`: Disables cost confirmation entirely.
 
-Example:
+---
 
-```yaml
-with:
-  require_cost_confirmation: 2.50
-  approval_mode: pr_label
-  approval_label: sentinelayer:approved
-```
+## Telemetry (Detailed)
 
-## Telemetry
+Telemetry is best-effort: upload failures **never** block the gate.
 
-Telemetry is best-effort: upload failures do not block the gate.
+### Tiers
 
-### Consent resolution (`telemetry_tier` vs explicit flags)
+| Tier | Data Sent | Auth Required |
+|---|---|---|
+| 0 | Nothing | — |
+| 1 | Anonymous aggregates (counts, timing, exit code) | None |
+| 2 | Tier 1 + repo identity + finding metadata | OIDC or `sentinelayer_token` |
+| 3 | Tier 2 + full artifact upload | Explicit opt-in + auth |
 
-Consent is resolved as follows:
-- If you set `share_metadata` or `share_artifacts`, or you set `telemetry: false`, those explicit flags control upload behavior.
+### Auth priority
+
+1. **OIDC** (preferred for Tier 2+) — Requires `permissions: id-token: write`. No secret to rotate.
+2. **`sentinelayer_token`** — JWT from SentinelLayer OAuth flow. For non-GitHub CI or when OIDC is unavailable.
+3. **No auth** — Tier 1 only. **Never send a Bearer token for Tier 1** (if OIDC verification fails server-side, it causes a spurious 401 even though Tier 1 doesn't need auth).
+
+### Consent resolution
+
+- If you set `share_metadata`, `share_artifacts`, or `telemetry: false`, those explicit flags take priority.
 - Otherwise, `telemetry_tier` controls behavior.
 
-Examples:
+### OIDC configuration
 
-Disable all telemetry:
-
-```yaml
-with:
-  telemetry_tier: 0
-```
-
-Explicitly opt in to metadata:
-
-```yaml
-with:
-  share_metadata: true
-```
-
-Tier 3 artifacts upload (requires `sentinelayer_token`):
-
-```yaml
-with:
-  share_artifacts: true
-  sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
-```
-
-### OIDC authentication (optional)
-
-The action can use GitHub OIDC for telemetry authentication when available.
-
-Workflow permissions:
+Default audience: `sentinelayer`. Override with `SENTINELAYER_OIDC_AUDIENCE` env var.
 
 ```yaml
 permissions:
   id-token: write
 ```
 
-Optional audience override:
-- Set `SENTINELAYER_OIDC_AUDIENCE` as an environment variable in your workflow or runner.
+---
+
+## False Positive Defense
+
+Omar Gate uses three independent layers to minimize false positives. **LLM analysis can never unilaterally block a merge.**
+
+### Layer 1: AST & Syntax-Aware Deterministic Analysis
+
+- **Python `eval()`/`exec()`**: Detected via `ast.parse()` + `ast.walk()`, not regex. Only actual call nodes are flagged — comments, strings, and documentation mentioning "eval()" are ignored.
+- **JS/TS comment & string stripping**: Before regex matching, all comments (`//`, `/* */`) and string literals are blanked (line offsets preserved). Prevents flagging rule descriptions or documentation inside strings.
+- **Entropy-based secret detection**: Multi-stage pipeline:
+  1. **Identifier filter** (`_looks_like_non_secret_identifier`) — Skips `SCREAMING_SNAKE_CASE`, `snake_case` identifiers, file paths (containing `/` or `.`), and tokens with low character-class diversity.
+  2. **Context filter** (`_likely_secret_context`) — Requires nearby secret keywords (`token`, `password`, `api_key`, `bearer`, etc.) unless the candidate has a known secret prefix (`ghp_`, `sk_live_`, `AKIA`, etc.).
+  3. **Strong entropy threshold** — Candidates without secret context need Shannon entropy > 4.7 AND length >= 32 to be flagged, and only at P2 (advisory, non-blocking).
+  4. **With secret context** — Flagged at P1 with confidence 1.0.
+
+### Layer 2: Git-Aware Diff Scoping (Harness Noise Reduction)
+
+- Only **added lines** in the PR diff can produce blocking (P0/P1) findings.
+- **Removed lines** are scanned separately at P3 (advisory only) for manual triage.
+- **Entropy matches in doc files** (`.md`, `.rst`, `.txt`) found in git history are dropped entirely.
+- **Historical entropy findings** in git history are auto-downgraded to P3 with confidence capped at 0.45.
+
+### Layer 3: LLM Guardrails (Corroboration Required)
+
+Implemented in [`orchestrator.py:_apply_llm_guardrails()`](../src/omargate/analyze/orchestrator.py):
+
+- **File validation**: LLM findings pointing to files not in the scanned diff/ingest are dropped.
+- **Line clamping**: Line numbers are clamped to actual file bounds; hallucinated locations are discarded.
+- **Corroboration requirement**: LLM/Codex P0/P1 findings require a **deterministic or harness finding** within 5 lines of the same file and same category. Without corroboration, the finding is **downgraded to P2** (advisory).
+- This means LLM analysis enriches results (adds context, explanations, risk assessment) but cannot independently block a merge.
+
+### What this means in practice
+
+| Finding Source | P0/P1 Blocks Merge? | Notes |
+|---|---|---|
+| Deterministic scanner | Yes | Regex, AST, config rules — high precision |
+| Harness (dep audit, secrets-in-git) | Yes | External tool output (pip-audit, gitleaks) |
+| LLM/Codex with corroboration | Yes | Deterministic finding nearby confirms it |
+| LLM/Codex without corroboration | **No** (downgraded to P2) | Preserved as review hint |
+
+### Handling persistent false positives
+
+1. Check if the deterministic scanner rule needs refinement (open an issue or PR).
+2. For entropy findings, verify whether the identifier filter or context filter should exclude the candidate.
+3. For LLM findings, they should already be P2 by guardrails. If still blocking, check corroboration logic.
+4. Add patterns to `.sentinelayerignore` to exclude known-safe directories.
+5. Add entries to `.gitleaks.toml` allowlist for known test fixtures.
+
+---
 
 ## Outputs
 
-The action sets outputs (see `action.yml`), including:
-- `gate_status`: `passed`, `blocked`, `bypassed`, `needs_approval`, `error`
-- `p0_count` / `p1_count` / `p2_count` / `p3_count`
-- `run_id`
-- `estimated_cost_usd`
-- `idempotency_key`
+The action sets these outputs (use in subsequent workflow steps via `${{ steps.<id>.outputs.<name> }}`):
+
+| Output | Description |
+|---|---|
+| `gate_status` | `passed`, `blocked`, `bypassed`, `needs_approval`, `error` |
+| `p0_count` / `p1_count` / `p2_count` / `p3_count` | Finding counts by severity |
+| `run_id` | Unique run identifier |
+| `estimated_cost_usd` | Estimated LLM cost for this run |
+| `idempotency_key` | Idempotency key used for dedupe |
+| `findings_artifact` | Path to `FINDINGS.jsonl` |
+| `pack_summary_artifact` | Path to `PACK_SUMMARY.json` |
+| `ingest_artifact` | Path to `INGEST.json` (full ingest payload) |
+| `codebase_ingest_artifact` | Path to `CODEBASE_INGEST.json` |
+| `codebase_ingest_summary_artifact` | Path to `CODEBASE_INGEST_SUMMARY.json` |
+| `codebase_ingest_summary_md_artifact` | Path to `CODEBASE_INGEST_SUMMARY.md` |
+| `review_brief_artifact` | Path to `REVIEW_BRIEF.md` (if generated) |
+| `audit_report_artifact` | Path to `AUDIT_REPORT.md` (if generated) |
+
+---
 
 ## Artifact Locations
 
-By default, artifacts are written under:
-- `.sentinelayer/runs/<run_id>/` in your workspace
+Default run directory: `.sentinelayer/runs/<run_id>/`
 
-Environment override:
-- `SENTINELAYER_RUNS_DIR`: sets the base directory for run artifacts.
+Override with environment variable: `SENTINELAYER_RUNS_DIR`
+
+| Artifact | Format | Purpose |
+|---|---|---|
+| `FINDINGS.jsonl` | NDJSON | Machine-readable findings (all severities) |
+| `REVIEW_BRIEF.md` | Markdown | Reviewer summary with priority table |
+| `AUDIT_REPORT.md` | Markdown | Full detailed report |
+| `PACK_SUMMARY.json` | JSON | Counts, checksums, run metadata |
+| `CODEBASE_INGEST_SUMMARY.md` | Markdown | Deterministic codebase snapshot |
+| `CODEBASE_INGEST_SUMMARY.json` | JSON | Same snapshot, machine-readable |
+| `CODEBASE_INGEST.md` | Markdown | Bounded source index |
+| `CODEBASE_INGEST.json` | JSON | Full ingest payload + file inventory |
+| `ARTIFACT_MANIFEST.json` | JSON | SHA-256 hashes of all artifacts (integrity verification) |
+
+### Uploading artifacts
+
+```yaml
+- name: Upload Omar Gate artifacts
+  if: always()
+  uses: actions/upload-artifact@v4
+  with:
+    name: sentinelayer-${{ steps.omar.outputs.run_id }}
+    path: .sentinelayer/runs/${{ steps.omar.outputs.run_id }}
+    if-no-files-found: warn
+```
+
+---
+
+## Docker Action vs Host Runner
+
+Omar Gate can run in two modes:
+
+### Docker Action (default for marketplace consumers)
+
+- Uses `action.yml` with `runs.using: docker`.
+- Runs as **root** inside an ephemeral container. GitHub Actions mounts `/github/workspace` and `/github/file_commands` as host UID; non-root breaks post-step writes (`GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY`).
+- Container is destroyed after the job step.
+- Codex CLI is pre-installed in the image at a pinned version.
+
+### Host Runner (for CI pipelines like `security-review.yml`)
+
+- Runs `python -m omargate.main` directly on the runner.
+- LLM CLIs are installed via npm in a prior step (with caching).
+- Uses the runner's own user context and Python environment.
+- More control over CLI versions and caching strategy.
+
+Choose Docker for simplicity (one `uses:` line). Choose host runner when you need parallel jobs, custom CLI versions, or shared Python environments.

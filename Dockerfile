@@ -43,4 +43,11 @@ COPY entrypoint.sh /app/entrypoint.sh
 
 RUN chmod +x /app/entrypoint.sh
 
+# Run as root. GitHub Actions mounts /github/workspace, /github/file_commands,
+# and other paths owned by the host runner UID. Dropping to a non-root user
+# breaks post-step writes (GITHUB_OUTPUT, GITHUB_STEP_SUMMARY) because the
+# runner process loses access to its own file_commands directory after our step.
+# This is an ephemeral container — it is destroyed after the job step.
+# omargate:allow-root-user
+
 ENTRYPOINT ["/app/entrypoint.sh"]

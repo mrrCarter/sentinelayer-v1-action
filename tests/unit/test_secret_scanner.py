@@ -32,4 +32,41 @@ def test_entropy_scanner_emits_finding() -> None:
     findings = scan_for_secrets(content, "config.ts")
     entropy_findings = [finding for finding in findings if finding.pattern_id == "SEC-ENTROPY"]
     assert entropy_findings
+    assert entropy_findings[0].severity == "P1"
     assert "****" in entropy_findings[0].snippet
+
+
+def test_entropy_scanner_strong_token_without_context_is_advisory() -> None:
+    candidate = "A9mQ2nV5xR7tY9pL3cD6fG1hJ4kN0sW2"
+    content = 'const blob = "' + candidate + '"'
+    findings = scan_for_secrets(content, "config.ts")
+    entropy_findings = [finding for finding in findings if finding.pattern_id == "SEC-ENTROPY"]
+    assert entropy_findings
+    assert entropy_findings[0].severity == "P2"
+
+
+def test_entropy_skips_path_template_constants() -> None:
+    content = (
+        'TEMPLATES = ["docs/templates/ADR_TEMPLATE.md", '
+        '"docs/templates/RUNBOOK_TEMPLATE.md"]\n'
+    )
+    findings = scan_for_secrets(content, "scripts/doc_inventory.py")
+    assert not any(f.pattern_id == "SEC-ENTROPY" for f in findings)
+
+
+def test_entropy_skips_markdown_table_lines() -> None:
+    content = "| Incident ID | |\n| --- | --- |\n"
+    findings = scan_for_secrets(content, "docs/table.md")
+    assert not any(f.pattern_id == "SEC-ENTROPY" for f in findings)
+
+
+def test_entropy_skips_private_constant_identifiers() -> None:
+    content = 'MAX = _VERY_LONG_INTERNAL_CONFIGURATION_CONSTANT_NAME\n'
+    findings = scan_for_secrets(content, "src/module.py")
+    assert not any(f.pattern_id == "SEC-ENTROPY" for f in findings)
+
+
+def test_entropy_skips_identifier_assignment_pairs() -> None:
+    content = "excerpt = _truncate_to_tokens(excerpt, max_tokens=_MAX_TOKENS)\n"
+    findings = scan_for_secrets(content, "src/omargate/ingest/quick_learn.py")
+    assert not any(f.pattern_id == "SEC-ENTROPY" for f in findings)

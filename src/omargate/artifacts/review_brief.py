@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 from .priority_ranker import CATEGORY_SCORE, CATEGORIES, SEVERITY_SCORE, detect_categories, rank_files
-from ..ingest.codebase_snapshot import build_codebase_snapshot
+from ..ingest.codebase_snapshot import build_codebase_snapshot, build_codebase_synopsis
 
 CATEGORY_ACTIONS = {
     "auth": "Review auth and session controls",
@@ -159,6 +159,9 @@ def _format_codebase_snapshot(ingest: dict) -> List[str]:
     lines.append(f"- In-scope files (source): `{in_scope}`")
     lines.append(f"- LOC (source only): `{loc:,}`")
     lines.append(f"- Package manager: `{pm}`")
+    synopsis = build_codebase_synopsis(codebase_snapshot=snapshot)
+    if synopsis:
+        lines.append(f"- Synopsis: {synopsis}")
 
     if languages:
         top = []

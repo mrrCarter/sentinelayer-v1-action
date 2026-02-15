@@ -125,3 +125,25 @@ def test_comment_footer_default_model_none() -> None:
     )
 
     assert "**LLM:** `disabled` (`n/a`)" in body
+
+
+def test_comment_renders_codebase_synopsis() -> None:
+    body = render_pr_comment(
+        result=_gate_result(),
+        run_id="run-abcdef123456",
+        repo_full_name="acme/demo",
+        pr_number=42,
+        dashboard_url=None,
+        artifacts_url=None,
+        estimated_cost_usd=0.01,
+        version="1.2.0",
+        codebase_snapshot={
+            "stats": {"in_scope_files": 10, "source_loc_total": 1000},
+            "languages": [{"language": "python", "files": 8, "loc": 900}],
+            "hotspots": [],
+        },
+        codebase_synopsis="README: Deterministic gate for CI pipelines.",
+    )
+
+    assert "Codebase Synopsis" in body
+    assert "README: Deterministic gate for CI pipelines." in body

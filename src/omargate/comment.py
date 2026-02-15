@@ -9,7 +9,7 @@ from .formatting import (
     humanize_duration_ms,
     truncate,
 )
-from .ingest.codebase_snapshot import render_codebase_snapshot_md
+from .ingest.codebase_snapshot import build_codebase_synopsis, render_codebase_snapshot_md
 from .models import GateResult, GateStatus
 
 MARKER_PREFIX = "<!-- sentinelayer:omar-gate:v1:"
@@ -187,16 +187,9 @@ def _codebase_snapshot_section(codebase_snapshot: Optional[dict]) -> str:
     if len(snapshot_md) > 12_000:
         snapshot_md = snapshot_md[:12_000].rstrip() + "\n\n...(truncated)...\n"
 
-    return "\n".join(
-        [
-            "<details>",
-            "<summary>Codebase Snapshot (Deterministic)</summary>",
-            "",
-            snapshot_md,
-            "",
-            "</details>",
-        ]
-    )
+    lines = ["<details>", "<summary>Codebase Snapshot (Deterministic)</summary>", ""]
+    lines.extend([snapshot_md, "", "</details>"])
+    return "\n".join(lines)
 
 
 def render_pr_comment(
@@ -226,6 +219,7 @@ def render_pr_comment(
     head_sha: Optional[str] = None,
     server_url: str = "https://github.com",
     codebase_snapshot: Optional[dict] = None,
+    codebase_synopsis: Optional[str] = None,
 ) -> str:
     """
     Render the PR comment for Omar Gate.
@@ -326,6 +320,10 @@ def render_pr_comment(
         "",
     ]
 
+    resolved_synopsis = (codebase_synopsis or "").strip()
+    if not resolved_synopsis and codebase_snapshot:
+        resolved_synopsis = build_codebase_synopsis(codebase_snapshot=codebase_snapshot)
+
     if codebase_snapshot:
         stats = codebase_snapshot.get("stats", {}) if isinstance(codebase_snapshot, dict) else {}
         loc = stats.get("source_loc_total")
@@ -338,6 +336,10 @@ def render_pr_comment(
                 5,
                 f"**Codebase:** `{in_scope_str}` in-scope files • `{loc_str}` LOC (source)",
             )
+            if resolved_synopsis:
+                lines.insert(6, f"**Codebase Synopsis:** {resolved_synopsis}")
+        elif resolved_synopsis:
+            lines.insert(5, f"**Codebase Synopsis:** {resolved_synopsis}")
 
     if top_findings_section:
         lines.append(top_findings_section)
@@ -349,6 +351,44 @@ def render_pr_comment(
         lines.append("")
 
     lines.extend(["### Next Steps", "", next_steps, ""])
+
+    # False-positive defense explainer — always shown so users understand trust model.
+    fp_defense = "\n".join(
+        [
+            "<details>",
+            "<summary>False Positive Defense (3 layers)</summary>",
+            "",
+            "Omar Gate uses three independent layers to minimize false positives:",
+            "",
+            "**Layer 1 — AST & Syntax-Aware Deterministic Analysis**",
+            "- Python `eval()`/`exec()` detected via `ast.parse` + `ast.walk`, not regex — "
+            "eliminates self-referential matches in comments, strings, and docs.",
+            "- JS/TS comment and string literals are blanked before pattern matching.",
+            "- Entropy-based secret detection requires context keywords nearby, "
+            "minimum length (32), and high Shannon entropy (>4.7) to flag.",
+            "",
+            "**Layer 2 — Git-Aware Diff Scoping**",
+            "- Only *added* lines can produce blocking (P0/P1) findings.",
+            "- Removed lines are scanned separately at P3 for optional triage.",
+            "- Entropy matches in doc files (`.md`, `.rst`, `.txt`) and historical "
+            "commits are auto-downgraded to P3.",
+            "",
+            "**Layer 3 — LLM Guardrails (Corroboration Required)**",
+            "- LLM-sourced P0/P1 findings are automatically downgraded to P2 "
+            "unless a deterministic finding in the *same file*, *same category*, "
+            "and within *5 lines* corroborates them.",
+            "- Findings referencing files not in the scanned diff are dropped entirely.",
+            "- Line numbers are clamped to valid ranges; hallucinated locations are discarded.",
+            "",
+            "This layered approach ensures that blocking findings are backed by "
+            "deterministic evidence — LLM analysis enriches results but cannot "
+            "unilaterally block a merge.",
+            "",
+            "</details>",
+        ]
+    )
+    lines.append(fp_defense)
+    lines.append("")
 
     if warnings_section:
         lines.append(warnings_section)

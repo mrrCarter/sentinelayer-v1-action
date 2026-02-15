@@ -122,3 +122,72 @@ def test_cost_estimation() -> None:
     cost = client.estimate_cost("gpt-4o", tokens_in=10000, tokens_out=1000)
     expected = (10000 / 1000 * 0.005) + (1000 / 1000 * 0.015)
     assert abs(cost - expected) < 0.001
+
+
+@pytest.mark.anyio
+async def test_managed_proxy_path_is_used_when_enabled() -> None:
+    client = LLMClient(
+        api_key="",
+        llm_provider="openai",
+        managed_llm=True,
+        sentinelayer_token="sl_test_token",
+    )
+
+    managed_success = LLMResponse(
+        content="managed",
+        usage=LLMUsage(
+            model=client.primary_model,
+            tokens_in=42,
+            tokens_out=10,
+            cost_usd=0.01,
+            latency_ms=100,
+            provider="openai",
+        ),
+        success=True,
+    )
+
+    with patch.object(
+        client,
+        "_call_managed_proxy",
+        new=AsyncMock(return_value=managed_success),
+    ) as proxy_mock:
+        result = await client._call_with_retry(client.primary_model, "system", "user", 256)
+
+    assert result.success is True
+    assert result.content == "managed"
+    proxy_mock.assert_awaited()
+
+
+@pytest.mark.anyio
+async def test_managed_proxy_error_propagates() -> None:
+    client = LLMClient(
+        api_key="",
+        llm_provider="openai",
+        managed_llm=True,
+        sentinelayer_token="sl_test_token",
+        max_retries=1,
+    )
+
+    managed_fail = LLMResponse(
+        content="",
+        usage=LLMUsage(
+            model=client.primary_model,
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+            latency_ms=12,
+            provider="openai",
+        ),
+        success=False,
+        error="Free trial expired — add your own API key",
+    )
+
+    with patch.object(
+        client,
+        "_call_managed_proxy",
+        new=AsyncMock(return_value=managed_fail),
+    ):
+        result = await client._call_with_retry(client.primary_model, "system", "user", 256)
+
+    assert result.success is False
+    assert "Free trial expired" in str(result.error)

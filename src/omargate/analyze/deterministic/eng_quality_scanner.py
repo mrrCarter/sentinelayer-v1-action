@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 import re
 from typing import Iterable, Optional
@@ -11,6 +12,11 @@ _JS_EXTS = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
 _PY_EXTS = (".py",)
 _GO_EXTS = (".go",)
 _BACKEND_EXTS = _JS_EXTS + _PY_EXTS + _GO_EXTS
+
+_JS_COMMENTS_AND_STRINGS_RE = re.compile(
+    r"//[^\n]*|/\*[\s\S]*?\*/|'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`",
+    re.MULTILINE,
+)
 
 
 @dataclass(frozen=True)
@@ -46,7 +52,7 @@ class EngQualityScanner:
         return any(any(marker in t for marker in frontend_markers) for t in self.tech_stack)
 
     def _has_backend(self) -> bool:
-        backend_markers = ("node", "express", "django", "fastapi", "go")
+        backend_markers = ("node", "express", "django", "fastapi", "flask", "python", "go")
         return any(any(marker in t for marker in backend_markers) for t in self.tech_stack)
 
     def _scan_frontend(self, files: dict[str, str]) -> list[Finding]:
@@ -72,6 +78,8 @@ class EngQualityScanner:
         findings.extend(self._scan_mutations_without_idempotency(files))
         findings.extend(self._scan_missing_request_id_schema(files))
         findings.extend(self._scan_external_calls_without_fallback(files))
+        findings.extend(self._scan_oidc_verify_aud_disabled(files))
+        findings.extend(self._scan_oauth_callback_missing_state(files))
         return findings
 
     def _scan_infrastructure(self, files: dict[str, str]) -> list[Finding]:
@@ -115,6 +123,34 @@ class EngQualityScanner:
         end = min(line_end, len(lines))
         snippet = "\n".join(lines[start:end])
         return _truncate_snippet(snippet)
+
+    def _blank_non_newlines(self, text: str) -> str:
+        return "".join("\n" if ch == "\n" else " " for ch in text)
+
+    def _strip_js_comments_and_strings(self, content: str) -> str:
+        def _repl(match: re.Match[str]) -> str:
+            return self._blank_non_newlines(match.group(0))
+
+        return _JS_COMMENTS_AND_STRINGS_RE.sub(_repl, content)
+
+    def _python_eval_call_lines(self, content: str) -> set[int]:
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            return set()
+
+        lines: set[int] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Name):
+                if func.id in {"eval", "exec"}:
+                    lines.add(int(getattr(node, "lineno", 1) or 1))
+            elif isinstance(func, ast.Attribute):
+                if func.attr in {"eval", "exec"}:
+                    lines.add(int(getattr(node, "lineno", 1) or 1))
+        return lines
 
     def _make_finding(
         self,
@@ -399,14 +435,47 @@ class EngQualityScanner:
             pattern_id="EQ-008",
             severity="P0",
             category="backend",
-            message="Use of eval() or Function() constructor can enable arbitrary code execution.",
-            recommendation="Remove eval/Function; use safe parsers/validators and explicit logic.",
+            message="Use of eval()/exec() or Function() constructor can enable arbitrary code execution.",
+            recommendation="Remove eval/exec/Function; use safe parsers/validators and explicit logic.",
         )
         findings: list[Finding] = []
-        regex = re.compile(r"\beval\s*\(|\bnew\s+Function\s*\(", re.IGNORECASE)
         for path, content in self._iter_files(files, exts=_BACKEND_EXTS):
             if self._is_test_file(path):
                 continue
+            if path.endswith(_PY_EXTS):
+                for line in sorted(self._python_eval_call_lines(content)):
+                    snippet = self._line_snippet(content, line, line)
+                    findings.append(
+                        self._make_finding(
+                            rule,
+                            file_path=path,
+                            line_start=line,
+                            snippet=snippet,
+                            confidence=0.95,
+                        )
+                    )
+                continue
+
+            # JS/TS: strip strings/comments before regex so we don't flag rule text/docs.
+            if path.endswith(_JS_EXTS):
+                regex = re.compile(r"\beval\s*\(|\bnew\s+Function\s*\(", re.IGNORECASE)
+                scrubbed = self._strip_js_comments_and_strings(content)
+                for m in regex.finditer(scrubbed):
+                    line = self._index_to_line(scrubbed, m.start())
+                    snippet = self._line_snippet(content, line, line)
+                    findings.append(
+                        self._make_finding(
+                            rule,
+                            file_path=path,
+                            line_start=line,
+                            snippet=snippet,
+                            confidence=0.95,
+                        )
+                    )
+                continue
+
+            # Go and other backend files: conservative regex.
+            regex = re.compile(r"\beval\s*\(", re.IGNORECASE)
             for m in regex.finditer(content):
                 line = self._index_to_line(content, m.start())
                 snippet = self._line_snippet(content, line, line)
@@ -416,7 +485,7 @@ class EngQualityScanner:
                         file_path=path,
                         line_start=line,
                         snippet=snippet,
-                        confidence=0.95,
+                        confidence=0.8,
                     )
                 )
         return findings
@@ -827,8 +896,11 @@ class EngQualityScanner:
             recommendation="Add a non-root user and set USER to reduce container blast radius.",
         )
         findings: list[Finding] = []
+        waiver_re = re.compile(r"omargate:\s*allow-root-user", re.IGNORECASE)
         for path, content in self._iter_files(files):
             if path.lower().endswith("/dockerfile") or path.lower() == "dockerfile":
+                if waiver_re.search(content):
+                    continue
                 has_user = any(
                     ln.strip().upper().startswith("USER ")
                     for ln in content.splitlines()
@@ -839,6 +911,78 @@ class EngQualityScanner:
                 findings.append(
                     self._make_finding(rule, file_path=path, line_start=1, snippet="", confidence=0.9)
                 )
+        return findings
+
+    # --------------------
+    # Auth rules
+    # --------------------
+
+    def _scan_oidc_verify_aud_disabled(self, files: dict[str, str]) -> list[Finding]:
+        rule = _Rule(
+            pattern_id="EQ-022",
+            severity="P1",
+            category="auth",
+            message="OIDC token verification appears to disable audience checks (verify_aud: False).",
+            recommendation="Validate token audience explicitly to prevent accepting tokens minted for other audiences.",
+        )
+        findings: list[Finding] = []
+        regex = re.compile(r"[\"']?verify_aud[\"']?\s*[:=]\s*False")
+        for path, content in self._iter_files(files, exts=_PY_EXTS):
+            norm = path.lower()
+            if "/auth/" not in norm and "oidc" not in norm:
+                continue
+            for match in regex.finditer(content):
+                line = self._index_to_line(content, match.start())
+                snippet = self._line_snippet(content, line, line)
+                findings.append(
+                    self._make_finding(
+                        rule,
+                        file_path=path,
+                        line_start=line,
+                        snippet=snippet,
+                        confidence=0.95,
+                    )
+                )
+        return findings
+
+    def _scan_oauth_callback_missing_state(self, files: dict[str, str]) -> list[Finding]:
+        rule = _Rule(
+            pattern_id="EQ-023",
+            severity="P1",
+            category="auth",
+            message="OAuth callback request model appears to miss a state field validation.",
+            recommendation="Require and verify OAuth state to prevent CSRF/login swapping attacks.",
+        )
+        findings: list[Finding] = []
+        class_re = re.compile(r"class\s+OAuthCallbackRequest\s*\(\s*BaseModel\s*\)\s*:")
+        field_code_re = re.compile(r"^\s*code\s*:\s*str\s*$", re.MULTILINE)
+        field_state_re = re.compile(r"^\s*state\s*:\s*str\s*$", re.MULTILINE)
+
+        for path, content in self._iter_files(files, exts=_PY_EXTS):
+            norm = path.lower()
+            if "auth" not in norm:
+                continue
+            if "/auth/github/callback" not in content:
+                continue
+            class_match = class_re.search(content)
+            if not class_match:
+                continue
+            window = content[class_match.start() : class_match.start() + 800]
+            if not field_code_re.search(window):
+                continue
+            if field_state_re.search(window):
+                continue
+            line = self._index_to_line(content, class_match.start())
+            snippet = self._line_snippet(content, line, min(line + 8, line + 8))
+            findings.append(
+                self._make_finding(
+                    rule,
+                    file_path=path,
+                    line_start=line,
+                    snippet=snippet,
+                    confidence=0.9,
+                )
+            )
         return findings
 
     def _scan_terraform_remote_backend(self, files: dict[str, str]) -> list[Finding]:
@@ -893,28 +1037,28 @@ class EngQualityScanner:
             recommendation="Move secrets to GitHub Secrets/OIDC and reference them via ${{ secrets.* }}; rotate exposed keys.",
         )
         findings: list[Finding] = []
-        secret_key_re = re.compile(
-            r"\b(OPENAI_API_KEY|ANTHROPIC_API_KEY|GOOGLE_API_KEY|XAI_API_KEY|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|GITHUB_TOKEN|TOKEN|SECRET|PASSWORD)\b",
-            re.IGNORECASE,
-        )
-        value_re = re.compile(r":\s*(.+)\s*$")
+        secret_key_re = re.compile(r"(?:^|_)(token|secret|password|api[_-]?key)(?:$|_)", re.IGNORECASE)
+        yaml_pair_re = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.+?)\s*$")
         for path, content in self._iter_files(files, exts=(".yml", ".yaml")):
             if not path.lower().startswith(".github/workflows/"):
                 continue
             for idx, line in enumerate(content.splitlines()):
-                if not secret_key_re.search(line):
-                    continue
-                if "${{ secrets." in line.lower():
-                    continue
-                m = value_re.search(line)
+                m = yaml_pair_re.match(line)
                 if not m:
                     continue
-                raw_val = m.group(1).strip().strip("'\"")
+                key = m.group(1).strip()
+                if not secret_key_re.search(key):
+                    continue
+
+                raw_val = m.group(2).strip().strip("'\"")
                 if not raw_val:
                     continue
                 if raw_val.startswith("${{"):
                     continue
                 if raw_val.startswith("$"):
+                    continue
+                lowered = raw_val.lower()
+                if lowered in {"true", "false", "null", "~"}:
                     continue
                 if len(raw_val) < 8:
                     continue
@@ -927,7 +1071,7 @@ class EngQualityScanner:
 
     def _scan_missing_health_endpoint(self, files: dict[str, str]) -> list[Finding]:
         rule = _Rule(
-            pattern_id="EQ-022",
+            pattern_id="EQ-024",
             severity="P2",
             category="infrastructure",
             message="No obvious health check endpoint detected in server code.",
@@ -935,7 +1079,7 @@ class EngQualityScanner:
         )
         # Only enforce if we see likely server code.
         server_signal_re = re.compile(
-            r"\b(FastAPI\s*\(|express\s*\(|@app\.(get|post)|router\.(get|post))\b",
+            r"(FastAPI\s*\(|express\s*\(|@app\.(get|post)\s*\(|router\.(get|post)\s*\()",
             re.IGNORECASE,
         )
         health_re = re.compile(

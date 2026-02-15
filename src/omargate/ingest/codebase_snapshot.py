@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List
 
 from ..utils import json_dumps, sha256_hex
 
@@ -16,6 +17,151 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value)
     except Exception:
         return default
+
+
+def _safe_str(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _strip_markdown(text: str) -> str:
+    if not text:
+        return ""
+    # Keep this intentionally simple and deterministic.
+    out = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    out = re.sub(r"`([^`]*)`", r"\1", out)
+    out = re.sub(r"\*\*([^*]+)\*\*", r"\1", out)
+    out = re.sub(r"\*([^*]+)\*", r"\1", out)
+    out = re.sub(r"_([^_]+)_", r"\1", out)
+    return out
+
+
+def _compact_text(value: Any, *, max_chars: int) -> str:
+    text = " ".join(_strip_markdown(_safe_str(value)).split())
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= 3:
+        return text[:max_chars]
+    return f"{text[: max_chars - 3]}..."
+
+
+def _quick_learn_value(quick_learn: Any, field: str) -> Any:
+    if quick_learn is None:
+        return None
+    if isinstance(quick_learn, dict):
+        return quick_learn.get(field)
+    return getattr(quick_learn, field, None)
+
+
+def _is_readme_source(source_doc: str) -> bool:
+    source = _safe_str(source_doc).lower()
+    return source in {"readme", "readme.md"} or source.endswith("/readme") or source.endswith(
+        "/readme.md"
+    )
+
+
+def _ensure_sentence(text: str) -> str:
+    cleaned = _safe_str(text)
+    if not cleaned:
+        return ""
+    if cleaned[-1] in ".!?":
+        return cleaned
+    return f"{cleaned}."
+
+
+def build_codebase_synopsis(
+    *,
+    codebase_snapshot: dict | None = None,
+    quick_learn: Any = None,
+    max_chars: int = 320,
+) -> str:
+    """
+    Build a short project synopsis for PR comments and step summaries.
+
+    Priority:
+    1) Quick Learn context (README/manifest driven)
+    2) Deterministic codebase snapshot fallback
+    """
+    parts: List[str] = []
+
+    project_name = _compact_text(_quick_learn_value(quick_learn, "project_name"), max_chars=64)
+    description = _compact_text(_quick_learn_value(quick_learn, "description"), max_chars=180)
+    architecture = _compact_text(_quick_learn_value(quick_learn, "architecture"), max_chars=48)
+    source_doc = _safe_str(_quick_learn_value(quick_learn, "source_doc"))
+
+    stack_value = _quick_learn_value(quick_learn, "tech_stack")
+    stack_items = (
+        [str(item).strip() for item in stack_value if str(item).strip()]
+        if isinstance(stack_value, list)
+        else []
+    )
+
+    if description:
+        if source_doc and _is_readme_source(source_doc):
+            parts.append(_ensure_sentence(f"README: {description}"))
+        else:
+            parts.append(_ensure_sentence(description))
+    elif project_name and project_name.lower() != "unknown":
+        parts.append(f"{project_name} repository.")
+
+    if architecture and architecture.lower() != "unknown":
+        parts.append(f"Architecture: {architecture}.")
+
+    if stack_items:
+        parts.append(f"Stack: {', '.join(stack_items[:4])}.")
+
+    entry_points = _quick_learn_value(quick_learn, "entry_points")
+    if isinstance(entry_points, list):
+        entries = [str(item).strip() for item in entry_points if str(item).strip()]
+    else:
+        entries = []
+    if entries:
+        parts.append(f"Entry points: {', '.join(entries[:3])}.")
+
+    if parts:
+        synopsis = " ".join(part.strip() for part in parts if part.strip())
+        return _compact_text(synopsis, max_chars=max_chars)
+
+    snapshot = codebase_snapshot or {}
+    stats = snapshot.get("stats", {}) if isinstance(snapshot, dict) else {}
+    languages = snapshot.get("languages", []) if isinstance(snapshot, dict) else []
+    hotspots = snapshot.get("hotspots", []) if isinstance(snapshot, dict) else []
+
+    in_scope = _safe_int(stats.get("in_scope_files"))
+    loc = _safe_int(stats.get("source_loc_total"))
+    if in_scope > 0:
+        parts.append(f"Inferred: {in_scope} source files, {loc:,} LOC.")
+
+    top_languages: List[str] = []
+    if isinstance(languages, list):
+        for item in languages[:3]:
+            if not isinstance(item, dict):
+                continue
+            lang = _safe_str(item.get("language"))
+            if lang:
+                top_languages.append(lang)
+    if top_languages:
+        parts.append(f"Primary languages: {', '.join(top_languages)}.")
+
+    hotspot_categories: List[str] = []
+    if isinstance(hotspots, list):
+        ranked = sorted(
+            [row for row in hotspots if isinstance(row, dict)],
+            key=lambda row: -_safe_int(row.get("count")),
+        )
+        for row in ranked:
+            if _safe_int(row.get("count")) <= 0:
+                continue
+            category = _safe_str(row.get("category"))
+            if category:
+                hotspot_categories.append(category)
+            if len(hotspot_categories) >= 3:
+                break
+    if hotspot_categories:
+        parts.append(f"Hotspots: {', '.join(hotspot_categories)}.")
+
+    return _compact_text(" ".join(parts).strip(), max_chars=max_chars)
 
 
 def _inventory_hash(ingest_files: Iterable[dict]) -> str:

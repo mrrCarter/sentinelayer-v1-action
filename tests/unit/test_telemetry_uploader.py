@@ -216,6 +216,7 @@ async def test_fetch_oidc_token_success(monkeypatch: pytest.MonkeyPatch) -> None
 
     token = await fetch_oidc_token()
     assert token == "oidc-token"
+    assert "audience=sentinelayer" in client.requests[0]["url"]
 
 
 @pytest.mark.anyio
@@ -226,3 +227,17 @@ async def test_fetch_oidc_token_missing_env(monkeypatch: pytest.MonkeyPatch) -> 
 
     token = await fetch_oidc_token()
     assert token is None
+
+
+@pytest.mark.anyio
+async def test_fetch_oidc_token_honors_custom_audience(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://example.com/oidc")
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "req-token")
+    monkeypatch.setenv("SENTINELAYER_OIDC_AUDIENCE", "custom-audience")
+
+    client = DummyAsyncClient(responses=[DummyResponse(status_code=200, json_data={"value": "oidc-token"})])
+    monkeypatch.setattr("omargate.telemetry.uploader.httpx.AsyncClient", lambda *args, **kwargs: client)
+
+    token = await fetch_oidc_token()
+    assert token == "oidc-token"
+    assert "audience=custom-audience" in client.requests[0]["url"]

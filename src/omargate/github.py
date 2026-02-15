@@ -9,6 +9,7 @@ import requests
 from .context import GitHubContext
 
 GITHUB_API = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+DEFAULT_HTTP_TIMEOUT_SECONDS = float(os.environ.get("OMAR_GITHUB_HTTP_TIMEOUT_SECONDS", "15"))
 
 class GitHubClient:
     def __init__(self, token: str, repo: str):
@@ -25,19 +26,23 @@ class GitHubClient:
     def create_or_update_pr_comment(self, pr_number: int, body: str, marker_prefix: str) -> Optional[str]:
         """Idempotent update: search recent comments for marker prefix; update if found else create."""
         url = f"{GITHUB_API}/repos/{self.repo}/issues/{pr_number}/comments"
-        r = self.session.get(url, params={"per_page": 100})
+        r = self.session.get(url, params={"per_page": 100}, timeout=DEFAULT_HTTP_TIMEOUT_SECONDS)
         r.raise_for_status()
         comments = r.json()
         for c in comments:
             if marker_prefix in (c.get("body") or ""):
                 patch_url = f"{GITHUB_API}/repos/{self.repo}/issues/comments/{c['id']}"
-                pr = self.session.patch(patch_url, json={"body": body})
+                pr = self.session.patch(
+                    patch_url,
+                    json={"body": body},
+                    timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
+                )
                 pr.raise_for_status()
                 try:
                     return (pr.json() or {}).get("html_url")
                 except Exception:
                     return None
-        cr = self.session.post(url, json={"body": body})
+        cr = self.session.post(url, json={"body": body}, timeout=DEFAULT_HTTP_TIMEOUT_SECONDS)
         cr.raise_for_status()
         try:
             return (cr.json() or {}).get("html_url")
@@ -73,7 +78,7 @@ class GitHubClient:
             payload["details_url"] = details_url
         if external_id:
             payload["external_id"] = external_id
-        r = self.session.post(url, json=payload)
+        r = self.session.post(url, json=payload, timeout=DEFAULT_HTTP_TIMEOUT_SECONDS)
         r.raise_for_status()
         try:
             return (r.json() or {}).get("html_url")
@@ -85,7 +90,7 @@ class GitHubClient:
         params: Dict[str, Any] = {"per_page": 100}
         if check_name:
             params["check_name"] = check_name
-        r = self.session.get(url, params=params)
+        r = self.session.get(url, params=params, timeout=DEFAULT_HTTP_TIMEOUT_SECONDS)
         r.raise_for_status()
         return r.json().get("check_runs", [])
 
@@ -97,13 +102,13 @@ class GitHubClient:
 
     def get_pull_request(self, pr_number: int) -> Dict[str, Any]:
         url = f"{GITHUB_API}/repos/{self.repo}/pulls/{pr_number}"
-        r = self.session.get(url)
+        r = self.session.get(url, timeout=DEFAULT_HTTP_TIMEOUT_SECONDS)
         r.raise_for_status()
         return r.json()
 
     def list_issue_labels(self, pr_number: int) -> List[str]:
         url = f"{GITHUB_API}/repos/{self.repo}/issues/{pr_number}/labels"
-        r = self.session.get(url, params={"per_page": 100})
+        r = self.session.get(url, params={"per_page": 100}, timeout=DEFAULT_HTTP_TIMEOUT_SECONDS)
         r.raise_for_status()
         return [label.get("name", "") for label in r.json()]
 
@@ -112,7 +117,7 @@ class GitHubClient:
 
     def get_branch_protection(self, branch: str) -> Optional[Dict[str, Any]]:
         url = f"{GITHUB_API}/repos/{self.repo}/branches/{branch}/protection"
-        r = self.session.get(url)
+        r = self.session.get(url, timeout=DEFAULT_HTTP_TIMEOUT_SECONDS)
         if r.status_code == 404:
             return None
         r.raise_for_status()
@@ -127,8 +132,8 @@ class GitHubClient:
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "omar-gate-action",
         }
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, headers=headers, timeout=30)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=headers)
             if resp.status_code == 200:
                 return resp.text
         return ""
@@ -142,8 +147,8 @@ class GitHubClient:
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "omar-gate-action",
         }
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, headers=headers, timeout=30)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=headers)
             if resp.status_code == 200:
                 files = resp.json()
                 return [f.get("filename", "") for f in files if f.get("filename")]
