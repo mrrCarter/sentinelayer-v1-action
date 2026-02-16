@@ -161,9 +161,9 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           INPUT_GITHUB_TOKEN: ${{ github.token }}
           INPUT_SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
-          INPUT_SENTINELAYER_MANAGED_LLM: ${{ secrets.OPENAI_API_KEY == '' && secrets.SENTINELAYER_TOKEN != '' }}
+          INPUT_SENTINELAYER_MANAGED_LLM: "true"
           INPUT_LLM_PROVIDER: ${{ vars.OMAR_LLM_PROVIDER || 'openai' }}
-          INPUT_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          INPUT_OPENAI_API_KEY: ""
           INPUT_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           INPUT_GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           INPUT_XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
