@@ -108,6 +108,35 @@ def test_llm_findings_for_unknown_files_are_dropped(tmp_path: Path, monkeypatch:
     assert guarded == []
 
 
+def test_system_findings_are_preserved_even_without_repo_file_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orchestrator = _orchestrator(tmp_path, monkeypatch)
+    ingest = {"files": [{"path": "src/known.py", "lines": 10}]}
+    llm_findings = [
+        {
+            "severity": "P0",
+            "category": "LLM Failure",
+            "file_path": "<system>",
+            "line_start": 0,
+            "line_end": 0,
+            "message": "LLM analysis failed and must block merge",
+            "source": "system",
+        }
+    ]
+
+    guarded = orchestrator._apply_llm_guardrails(
+        llm_findings=llm_findings,
+        non_llm_findings=[],
+        ingest=ingest,
+    )
+
+    assert len(guarded) == 1
+    assert guarded[0]["source"] == "system"
+    assert guarded[0]["severity"] == "P0"
+    assert guarded[0]["file_path"] == "<system>"
+
+
 def test_should_run_llm_with_managed_proxy_when_byo_key_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
