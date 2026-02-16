@@ -171,3 +171,31 @@ async def test_codex_only_disables_api_fallback_on_codex_failure(
 
     assert called["llm"] is False
     assert any("codex_only=true" in warning for warning in result.warnings)
+
+
+@pytest.mark.anyio
+async def test_codex_skip_is_silent_in_managed_mode_without_openai_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("INPUT_OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("INPUT_SENTINELAYER_TOKEN", "sl_test_token")
+    monkeypatch.setenv("INPUT_SENTINELAYER_MANAGED_LLM", "true")
+    config = OmarGateConfig()
+    logger = OmarLogger("test-run")
+    orchestrator = AnalysisOrchestrator(
+        config=config,
+        logger=logger,
+        repo_root=tmp_path,
+        allow_llm=True,
+    )
+
+    result = await orchestrator._run_codex_audit(
+        ingest={"hotspots": {}},
+        deterministic_findings=[],
+        quick_learn=None,
+        scan_mode="deep",
+        diff_content=None,
+    )
+
+    assert result.success is False
+    assert result.warning is None

@@ -461,6 +461,14 @@ class AnalysisOrchestrator:
         """
         api_key = self.config.openai_api_key.get_secret_value()
         if not api_key:
+            if self.config.use_managed_llm_proxy():
+                # Expected when using Sentinelayer-managed LLM proxy without BYO OpenAI key.
+                return LLMAnalysisResult(
+                    findings=[],
+                    success=False,
+                    usage=None,
+                    warning=None,
+                )
             return LLMAnalysisResult(
                 findings=[],
                 success=False,
