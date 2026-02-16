@@ -161,19 +161,21 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           INPUT_GITHUB_TOKEN: ${{ github.token }}
           INPUT_SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
-          INPUT_SENTINELAYER_MANAGED_LLM: ${{ secrets.OPENAI_API_KEY == '' && secrets.SENTINELAYER_TOKEN != '' }}
+          INPUT_SENTINELAYER_MANAGED_LLM: "true"
           INPUT_LLM_PROVIDER: ${{ vars.OMAR_LLM_PROVIDER || 'openai' }}
-          INPUT_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          INPUT_OPENAI_API_KEY: ""
           INPUT_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           INPUT_GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           INPUT_XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           INPUT_MODEL: ${{ vars.OMAR_MODEL || 'gpt-4.1' }}
           INPUT_MODEL_FALLBACK: ${{ vars.OMAR_MODEL_FALLBACK || 'gpt-4.1-mini' }}
-          INPUT_USE_CODEX: ${{ secrets.OPENAI_API_KEY != '' && 'true' || 'false' }}
-          INPUT_CODEX_ONLY: ${{ secrets.OPENAI_API_KEY != '' && 'true' || 'false' }}
+          INPUT_USE_CODEX: "false"
+          INPUT_CODEX_ONLY: "false"
           INPUT_CODEX_MODEL: ${{ vars.OMAR_CODEX_MODEL || 'gpt-5.2-codex' }}
           INPUT_SEVERITY_GATE: P1
           INPUT_SCAN_MODE: deep
+          INPUT_MIN_SCAN_INTERVAL_MINUTES: "0"
+          INPUT_MAX_DAILY_SCANS: "0"
         run: python -m omargate.main
 
       - name: Publish Codebase Snapshot Summary
