@@ -155,6 +155,39 @@ jobs:
           claude --version
           gemini --version
 
+      - name: Debug OIDC Claims (managed e2e)
+        if: always()
+        run: |
+          python - <<'PY'
+          import base64
+          import json
+          import os
+          from urllib.request import Request, urlopen
+
+          req_url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+          req_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+          if not req_url or not req_token:
+              print("OIDC debug: request URL/token unavailable")
+              raise SystemExit(0)
+
+          audience = "sentinelayer"
+          sep = "&" if "?" in req_url else "?"
+          token_url = f"{req_url}{sep}audience={audience}"
+          req = Request(token_url, headers={"Authorization": f"Bearer {req_token}", "Accept": "application/json"})
+          payload = json.loads(urlopen(req, timeout=10).read().decode("utf-8"))
+          token = str(payload.get("value") or payload.get("id_token") or "")
+          token_parts = token.split(".")
+          if len(token_parts) < 2:
+              print("OIDC debug: token missing payload section")
+              raise SystemExit(0)
+          body = token_parts[1]
+          body += "=" * ((4 - len(body) % 4) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(body.encode("utf-8")))
+          print("OIDC debug audience:", claims.get("aud"))
+          print("OIDC debug issuer:", claims.get("iss"))
+          print("OIDC debug subject:", claims.get("sub"))
+          PY
+
       - name: Omar Gate (Host Runner)
         id: omar
         env:
