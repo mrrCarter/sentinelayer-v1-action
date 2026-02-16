@@ -5,6 +5,7 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 
@@ -112,8 +113,10 @@ class LLMClient:
 
         audience = (os.environ.get("SENTINELAYER_OIDC_AUDIENCE") or "sentinelayer").strip()
         if audience:
-            separator = "&" if "?" in request_url else "?"
-            request_url = f"{request_url}{separator}audience={audience}"
+            parsed = urlparse(request_url)
+            query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+            query["audience"] = audience
+            request_url = urlunparse(parsed._replace(query=urlencode(query)))
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:

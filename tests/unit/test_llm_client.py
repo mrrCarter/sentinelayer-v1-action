@@ -191,3 +191,52 @@ async def test_managed_proxy_error_propagates() -> None:
 
     assert result.success is False
     assert "Free trial expired" in str(result.error)
+
+
+@pytest.mark.anyio
+async def test_managed_oidc_request_overrides_existing_audience(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="",
+        llm_provider="openai",
+        managed_llm=True,
+        sentinelayer_token="sl_test_token",
+    )
+
+    monkeypatch.setenv(
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "https://token.actions.githubusercontent.com/id?audience=sts.amazonaws.com&foo=bar",
+    )
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "req-token")
+    monkeypatch.setenv("SENTINELAYER_OIDC_AUDIENCE", "sentinelayer")
+
+    requested_urls: list[str] = []
+
+    class _FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict:
+            return {"value": "oidc-jwt"}
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url: str, headers: dict):
+            requested_urls.append(url)
+            return _FakeResponse()
+
+    monkeypatch.setattr("omargate.analyze.llm.llm_client.httpx.AsyncClient", _FakeAsyncClient)
+
+    token = await client._fetch_managed_oidc_token()
+
+    assert token == "oidc-jwt"
+    assert len(requested_urls) == 1
+    assert "audience=sentinelayer" in requested_urls[0]
+    assert "audience=sts.amazonaws.com" not in requested_urls[0]
