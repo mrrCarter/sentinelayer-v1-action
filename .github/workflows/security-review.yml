@@ -163,6 +163,7 @@ jobs:
           import json
           import os
           from urllib.request import Request, urlopen
+          from jose import jwt, JWTError
 
           req_url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "")
           req_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
@@ -186,6 +187,21 @@ jobs:
           print("OIDC debug audience:", claims.get("aud"))
           print("OIDC debug issuer:", claims.get("iss"))
           print("OIDC debug subject:", claims.get("sub"))
+
+          issuer = str(claims.get("iss", "")).rstrip("/")
+          jwks_url = f"{issuer}/.well-known/jwks.json"
+          jwks = json.loads(urlopen(jwks_url, timeout=10).read().decode("utf-8"))
+          header = jwt.get_unverified_header(token)
+          kid = str(header.get("kid", ""))
+          print("OIDC debug kid:", kid)
+          key = next((k for k in jwks.get("keys", []) if str(k.get("kid", "")) == kid), None)
+          print("OIDC debug key_found:", bool(key))
+          for aud in ["sentinelayer", "sts.amazonaws.com"]:
+              try:
+                  jwt.decode(token, key, algorithms=["RS256"], issuer=issuer, audience=aud)
+                  print(f"OIDC debug jose_decode[{aud}]: success")
+              except JWTError as exc:
+                  print(f"OIDC debug jose_decode[{aud}]: {exc}")
           PY
 
       - name: Omar Gate (Host Runner)
