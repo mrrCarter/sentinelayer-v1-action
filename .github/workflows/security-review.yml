@@ -157,7 +157,9 @@ jobs:
 
       - name: Debug OIDC Claims (managed e2e)
         if: always()
+        continue-on-error: true
         run: |
+          python -m pip install --quiet python-jose
           python - <<'PY'
           import base64
           import json
