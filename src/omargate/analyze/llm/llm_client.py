@@ -199,7 +199,12 @@ class LLMClient:
         latency_ms = int((time.time() - start) * 1000)
 
         if response.status_code != 200:
-            error_message = f"Managed LLM proxy failed ({response.status_code})"
+            error_message = f"Managed LLM proxy failed ({response.status_code}) at {endpoint}"
+            if response.status_code == 404:
+                error_message = (
+                    f"Managed LLM proxy endpoint not found at {endpoint}. "
+                    "Deploy API route /api/v1/proxy/llm."
+                )
             try:
                 payload = response.json()
                 if isinstance(payload, dict):

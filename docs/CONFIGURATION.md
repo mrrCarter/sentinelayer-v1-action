@@ -4,7 +4,7 @@ SentinelLayer (Omar Gate) is configured entirely via GitHub Action inputs (see [
 
 **Notes:**
 - GitHub Actions provides inputs as strings; the action parses booleans (`true`/`false`) and numbers automatically.
-- No single API key is "required" — without any key, only deterministic scanning runs (no AI analysis). With at least one key, AI-powered analysis runs using that provider.
+- No single API key is "required" — without any key, only deterministic scanning runs (no AI analysis). AI analysis can run via BYO provider keys or Sentinelayer-managed proxy mode.
 
 ---
 
@@ -19,7 +19,7 @@ SentinelLayer (Omar Gate) is configured entirely via GitHub Action inputs (see [
 | `anthropic_api_key` | secret string | `""` | Anthropic API key (for Claude models). |
 | `google_api_key` | secret string | `""` | Google AI API key (for Gemini models). |
 | `xai_api_key` | secret string | `""` | xAI API key (for Grok models). |
-| `sentinelayer_token` | secret string | `""` | SentinelLayer JWT for Tier 2/3 dashboard uploads (optional, OIDC preferred). |
+| `sentinelayer_token` | secret string | `""` | SentinelLayer token for managed LLM proxy auth and Tier 2/3 dashboard uploads. |
 
 ### LLM Provider Settings
 
@@ -28,6 +28,7 @@ SentinelLayer (Omar Gate) is configured entirely via GitHub Action inputs (see [
 | `llm_provider` | string | `openai` | LLM provider: `openai`, `anthropic`, `google`, `xai`. |
 | `model` | string | `gpt-4.1` | Primary LLM API model (used when Codex CLI is unavailable or disabled). |
 | `model_fallback` | string | `gpt-4o` | Fallback LLM API model (if primary fails or quota exceeded). |
+| `sentinelayer_managed_llm` | bool | `false` | Route OpenAI API path through Sentinelayer-managed proxy. If false, auto-enables when `openai_api_key` is empty and `sentinelayer_token` is set. |
 | `use_codex` | bool | `true` | Enable Codex CLI for deep agentic audit. Falls back to API if Codex fails. |
 | `codex_only` | bool | `false` | Use Codex CLI as the only LLM path. Disables API fallback entirely. |
 | `codex_model` | string | `gpt-5.2-codex` | Model passed to Codex CLI `--model` flag. |
@@ -95,7 +96,7 @@ permissions:
   contents: read
   pull-requests: write
   checks: write
-  id-token: write    # Required for OIDC telemetry (Tier 2+)
+  id-token: write    # Required for managed LLM proxy and OIDC telemetry (Tier 2+)
 ```
 
 ### LLM API Keys
@@ -135,6 +136,24 @@ Omar Gate supports multiple LLM providers. Pass the key for your chosen provider
     # No LLM key — only deterministic scanners run (secrets, config, CI/CD, EQ rules).
     # No AI analysis, no Codex CLI. Free and fast.
 ```
+
+### Sentinelayer-Managed Proxy (server-side key)
+
+Use this when you want scans to run without each repository owner managing an OpenAI key.
+
+```yaml
+- uses: mrrCarter/sentinelayer-v1-action@v1
+  with:
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+    openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+    sentinelayer_managed_llm: ${{ secrets.OPENAI_API_KEY == '' && secrets.SENTINELAYER_TOKEN != '' }}
+```
+
+Requirements:
+- `permissions: id-token: write` in the workflow.
+- Sentinelayer API must expose `POST /api/v1/proxy/llm`.
+- API runtime must have `SENTINELAYER_TOKEN` and `MANAGED_LLM_OPENAI_API_KEY` configured.
 
 ### `sentinelayer_token` (optional)
 
