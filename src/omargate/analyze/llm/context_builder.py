@@ -302,6 +302,18 @@ class ContextBuilder:
                 if rel_path not in priority:
                     priority.append(rel_path)
 
+        cicd_paths = sorted(
+            (
+                path
+                for path in ingest_paths
+                if isinstance(path, str) and self._is_cicd_file(path)
+            ),
+            key=self._cicd_priority_key,
+        )
+        for rel_path in cicd_paths:
+            if rel_path not in priority:
+                priority.append(rel_path)
+
         for files in ingest.get("hotspots", {}).values():
             for rel_path in files:
                 if rel_path not in priority:
@@ -318,3 +330,41 @@ class ContextBuilder:
             priority.append(rel_path)
 
         return priority
+
+    def _is_cicd_file(self, rel_path: str) -> bool:
+        p = rel_path.replace("\\", "/").lower()
+        name = p.rsplit("/", 1)[-1]
+        if p.startswith(".github/workflows/") and (p.endswith(".yml") or p.endswith(".yaml")):
+            return True
+        if name == "dockerfile" or name.startswith("dockerfile."):
+            return True
+        if "docker-compose" in name and (name.endswith(".yml") or name.endswith(".yaml")):
+            return True
+        if name in {"vercel.json", "netlify.toml", "render.yaml", "render.yml"}:
+            return True
+        if name in {"makefile", "taskfile.yml", "taskfile.yaml"}:
+            return True
+        if "/scripts/" in f"/{p}" and ("deploy" in name or "release" in name):
+            return True
+        if name in {"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "poetry.lock", "pipfile.lock"}:
+            return True
+        if "/terraform/" in f"/{p}" or "/pulumi/" in f"/{p}" or "/cdk/" in f"/{p}":
+            return True
+        if "/k8s/" in f"/{p}" or "/kubernetes/" in f"/{p}" or "/helm/" in f"/{p}":
+            return True
+        if name.startswith(".releaserc") or "/.changeset/" in f"/{p}" or "/changesets/" in f"/{p}":
+            return True
+        return False
+
+    def _cicd_priority_key(self, rel_path: str) -> tuple[int, str]:
+        p = rel_path.replace("\\", "/").lower()
+        name = p.rsplit("/", 1)[-1]
+        if p.startswith(".github/workflows/"):
+            return (0, p)
+        if name == "dockerfile" or name.startswith("dockerfile.") or "docker-compose" in name:
+            return (1, p)
+        if "/terraform/" in f"/{p}" or "/pulumi/" in f"/{p}" or "/cdk/" in f"/{p}" or "/k8s/" in f"/{p}" or "/kubernetes/" in f"/{p}" or "/helm/" in f"/{p}":
+            return (2, p)
+        if name in {"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "poetry.lock", "pipfile.lock"}:
+            return (3, p)
+        return (4, p)
