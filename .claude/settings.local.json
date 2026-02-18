@@ -16,7 +16,10 @@
       "Bash(k6 version:*)",
       "Bash(docker version:*)",
       "Bash(gh api:*)",
-      "Bash(git ls-tree:*)"
+      "Bash(git ls-tree:*)",
+      "Bash(PYTHONPATH=src python -m pytest:*)",
+      "Bash(pip show:*)",
+      "Bash(pip install:*)"
     ]
   }
 }
