@@ -31,6 +31,7 @@ def test_react_project_gets_frontend_checks(tmp_path: Path) -> None:
     )
     assert "dangerouslySetInnerHTML" in built.prompt
     assert "useEffect" in built.prompt
+    assert "CI/CD & Release Engineering Audit" in built.prompt
 
 
 def test_python_project_gets_backend_checks(tmp_path: Path) -> None:
@@ -80,6 +81,53 @@ def test_deep_mode_includes_hotspot_files(tmp_path: Path) -> None:
     assert "Code to Review (Hotspot Files)" in built.prompt
     assert "File: src/server.py" in built.prompt
     assert "print('hi')" in built.prompt
+
+
+def test_deep_mode_prioritizes_cicd_files(tmp_path: Path) -> None:
+    (tmp_path / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".github" / "workflows" / "deploy.yml").write_text("name: deploy\n", encoding="utf-8")
+    (tmp_path / "src" / "server.py").write_text("print('hi')\n", encoding="utf-8")
+
+    builder = CodexPromptBuilder(max_tokens=2000)
+    built = builder.build_prompt(
+        repo_root=tmp_path,
+        quick_learn=_ql(["Python"]),
+        deterministic_findings=[],
+        tech_stack=["Python"],
+        scan_mode="deep",
+        diff_content=None,
+        hotspot_files=["src/server.py"],
+        ingest={
+            "files": [
+                {"path": ".github/workflows/deploy.yml", "category": "config"},
+                {"path": "src/server.py", "category": "source"},
+            ]
+        },
+    )
+
+    assert ".github/workflows/deploy.yml" in built.files_included
+    assert "src/server.py" in built.files_included
+    assert built.files_included.index(".github/workflows/deploy.yml") < built.files_included.index("src/server.py")
+
+
+def test_output_contract_is_retained_under_tight_budget(tmp_path: Path) -> None:
+    diff = "B" * 30000
+    builder = CodexPromptBuilder(max_tokens=220)
+    built = builder.build_prompt(
+        repo_root=tmp_path,
+        quick_learn=_ql(["Node.js"]),
+        deterministic_findings=[],
+        tech_stack=["Node.js"],
+        scan_mode="pr-diff",
+        diff_content=diff,
+        hotspot_files=[],
+    )
+
+    assert "## Output Format" in built.prompt
+    assert "\"evidence_snippet\"" in built.prompt
+    assert "\"provenance_tag\"" in built.prompt
+    assert builder.estimate_tokens(built.prompt) <= 220
 
 
 def test_token_budget_respected(tmp_path: Path) -> None:

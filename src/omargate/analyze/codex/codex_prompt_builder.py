@@ -97,6 +97,10 @@ class CodexPromptBuilder:
         repo_root = repo_root.resolve()
         deterministic_findings = deterministic_findings or []
         tech_stack = tech_stack or []
+        output_contract = self._build_output_contract()
+        output_contract_tokens = self.estimate_tokens(output_contract)
+        # Always reserve budget for the output contract so downstream parsing remains deterministic.
+        body_budget = max(self.max_tokens - output_contract_tokens, 0)
 
         parts: List[str] = []
         used_tokens = 0
@@ -107,7 +111,7 @@ class CodexPromptBuilder:
             nonlocal used_tokens
             if not text:
                 return
-            remaining = self.max_tokens - used_tokens
+            remaining = body_budget - used_tokens
             if remaining <= 0:
                 return
             tokens = self.estimate_tokens(text)
@@ -136,7 +140,7 @@ class CodexPromptBuilder:
             add("## Code to Review (PR Diff)\n", allow_truncate=False)
             add(f"{diff_content.strip()}\n\n", allow_truncate=True)
         else:
-            selected = self._select_hotspot_files(hotspot_files or [])
+            selected = self._select_review_files(hotspot_files or [], ingest)
             if selected:
                 add("## Code to Review (Hotspot Files)\n")
                 for rel_path in selected:
@@ -160,7 +164,8 @@ class CodexPromptBuilder:
                     if content.endswith(TRUNCATION_MARKER):
                         files_truncated.append(rel_path)
 
-        add(self._build_output_contract())
+        parts.append(output_contract)
+        used_tokens += output_contract_tokens
 
         prompt = "".join(parts)
         token_count = min(self.max_tokens, used_tokens)
@@ -212,7 +217,7 @@ class CodexPromptBuilder:
         return (
             "# System\n"
             f"{_PERSONA_SYSTEM_PROMPT.strip()}\n\n"
-            "# Security & Engineering Audit\n\n"
+            "# CI/CD & Release Engineering Audit\n\n"
         )
 
     def _build_project_context(self, quick_learn: Optional[QuickLearnSummary]) -> str:
@@ -261,12 +266,26 @@ class CodexPromptBuilder:
         stack = ", ".join(tech_stack) if tech_stack else "unknown"
         return (
             "## Your Task\n"
-            "Review the code for:\n"
-            "1. Security vulnerabilities (P0-P3)\n"
-            "2. Deployment and release safety (can this be safely shipped?)\n"
-            "3. Backend reliability (timeouts, idempotency, error handling, rate limits)\n"
-            "4. Logic errors, race conditions, and architectural issues\n"
-            "5. Missing input validation and edge cases at system boundaries\n\n"
+            "Review this repository as a CI/CD & release engineer first, then as a security reviewer.\n"
+            "You MUST inspect `.github/workflows/*` first when present.\n\n"
+            "1. Deployment and release safety (can this be safely shipped repeatedly?)\n"
+            "2. CI/CD workflow integrity (gates, approvals, artifact flow, rollback readiness)\n"
+            "3. Security vulnerabilities (P0-P3)\n"
+            "4. Backend reliability (timeouts, idempotency, error handling, rate limits)\n"
+            "5. Logic errors, race conditions, and architectural issues\n\n"
+            "## CI/CD First-Pass Checklist (Mandatory)\n"
+            "- Workflow graph is complete: lint -> test -> security -> build -> deploy\n"
+            "- Production deploy requires protected environment + human approval for critical services\n"
+            "- No prod deploy path can run when tests fail\n"
+            "- Artifact is built once and promoted; provenance/signing/attestation gaps are flagged\n"
+            "- Cloud access uses OIDC/workload identity (no long-lived static cloud keys)\n"
+            "- Rollback runbook/procedure exists and is tested; absence is high severity\n"
+            "- Canary/feature-flag/blue-green strategy exists, or explicit risk is documented\n"
+            "- Concurrency controls avoid overlapping prod deploys\n"
+            "- Actions/dependencies are pinned to deterministic versions\n\n"
+            "## Commands You Should Reference In Findings\n"
+            "- `analyze .github/workflows`\n"
+            "- `build reproducibility checks`\n\n"
             "## Severity Scale\n"
             "- P0: Critical\n"
             "- P1: High\n"
@@ -319,27 +338,95 @@ class CodexPromptBuilder:
         return (
             "## Output Format\n"
             "Output ONLY valid JSONL (one JSON object per line). Use this schema:\n"
-            '{"severity":"P1","category":"auth","file_path":"src/auth.ts","line_start":42,'
-            '"line_end":45,"message":"...","recommendation":"...","confidence":0.85}\n'
+            '{"severity":"P1","category":"cicd","file_path":".github/workflows/deploy.yml",'
+            '"line_start":42,"line_end":68,"message":"...","evidence_snippet":"...",'
+            '"impact":"...","verification":"...","recommendation":"...",'
+            '"confidence":0.90,"source_agent":"OmarPack",'
+            '"provenance_tag":"cicd_release_engineering_v1"}\n'
             "\nIf no findings, output exactly:\n"
             '{"no_findings": true}\n'
             "\nDo not include markdown fences or commentary.\n"
         )
 
-    def _select_hotspot_files(self, hotspot_files: List[str]) -> List[str]:
+    def _select_review_files(self, hotspot_files: List[str], ingest: Optional[dict]) -> List[str]:
         seen: set[str] = set()
         selected: List[str] = []
+        ingest_paths: List[str] = []
+        if isinstance(ingest, dict):
+            for file_info in ingest.get("files", []) or []:
+                if not isinstance(file_info, dict):
+                    continue
+                rel_path = str(file_info.get("path") or "").replace("\\", "/")
+                if rel_path:
+                    ingest_paths.append(rel_path)
+
+        cicd_paths = [path for path in ingest_paths if self._is_cicd_file(path)]
+        cicd_paths.sort(key=self._cicd_priority_key)
+
+        for rel_path in cicd_paths:
+            if rel_path in seen:
+                continue
+            if self._is_excluded_path(rel_path):
+                continue
+            seen.add(rel_path)
+            selected.append(rel_path)
+            if len(selected) >= 16:
+                return selected
+
         for rel_path in hotspot_files:
             if not rel_path or rel_path in seen:
                 continue
             normalized = rel_path.replace("\\", "/")
             if self._is_excluded_path(normalized):
                 continue
-            seen.add(rel_path)
-            selected.append(rel_path)
-            if len(selected) >= 12:
+            seen.add(normalized)
+            selected.append(normalized)
+            if len(selected) >= 16:
                 break
         return selected
+
+    def _is_cicd_file(self, rel_path: str) -> bool:
+        p = rel_path.replace("\\", "/").lower()
+        name = p.rsplit("/", 1)[-1]
+
+        if p.startswith(".github/workflows/") and (p.endswith(".yml") or p.endswith(".yaml")):
+            return True
+        if name == "dockerfile" or name.startswith("dockerfile."):
+            return True
+        if "docker-compose" in name and (name.endswith(".yml") or name.endswith(".yaml")):
+            return True
+        if name in {"vercel.json", "netlify.toml", "render.yaml", "render.yml"}:
+            return True
+        if name in {"makefile", "taskfile.yml", "taskfile.yaml"}:
+            return True
+        if "/scripts/" in f"/{p}" and ("deploy" in name or "release" in name):
+            return True
+        if name in {"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "poetry.lock", "pipfile.lock"}:
+            return True
+        if "/terraform/" in f"/{p}" or "/pulumi/" in f"/{p}" or "/cdk/" in f"/{p}":
+            return True
+        if "/k8s/" in f"/{p}" or "/kubernetes/" in f"/{p}" or "/helm/" in f"/{p}":
+            return True
+        if name.startswith(".releaserc") or "/.changeset/" in f"/{p}" or "/changesets/" in f"/{p}":
+            return True
+        return False
+
+    def _cicd_priority_key(self, rel_path: str) -> tuple[int, str]:
+        p = rel_path.replace("\\", "/").lower()
+        name = p.rsplit("/", 1)[-1]
+        if p.startswith(".github/workflows/"):
+            return (0, p)
+        if name == "dockerfile" or name.startswith("dockerfile.") or "docker-compose" in name:
+            return (1, p)
+        if name in {"vercel.json", "netlify.toml", "render.yaml", "render.yml"}:
+            return (2, p)
+        if "/terraform/" in f"/{p}" or "/pulumi/" in f"/{p}" or "/cdk/" in f"/{p}" or "/k8s/" in f"/{p}" or "/kubernetes/" in f"/{p}" or "/helm/" in f"/{p}":
+            return (3, p)
+        if name in {"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "poetry.lock", "pipfile.lock"}:
+            return (4, p)
+        if name.startswith(".releaserc") or "/.changeset/" in f"/{p}" or "/changesets/" in f"/{p}":
+            return (5, p)
+        return (6, p)
 
     def _is_excluded_path(self, rel_path: str) -> bool:
         p = rel_path.lower()
@@ -353,7 +440,7 @@ class CodexPromptBuilder:
             return True
         return False
 
-    def _read_file_bounded(self, file_path: Path, max_lines: int = 350, max_bytes: int = 250_000) -> str:
+    def _read_file_bounded(self, file_path: Path, max_lines: int = 350, max_bytes: int = 1_000_000) -> str:
         try:
             if file_path.stat().st_size > max_bytes:
                 return ""

@@ -5,14 +5,22 @@ from pathlib import Path
 from omargate.analyze.llm.context_builder import ContextBuilder
 
 
-def _make_ingest(files: list[str], hotspots: dict) -> dict:
+def _make_ingest(files: list[str], hotspots: dict, categories: dict[str, str] | None = None) -> dict:
+    categories = categories or {}
     return {
         "stats": {
             "total_files": len(files),
             "in_scope_files": len(files),
             "total_lines": 0,
         },
-        "files": [{"path": path, "category": "source", "language": "python"} for path in files],
+        "files": [
+            {
+                "path": path,
+                "category": categories.get(path, "source"),
+                "language": "python",
+            }
+            for path in files
+        ],
         "hotspots": hotspots,
         "dependencies": {"package_manager": "pip"},
     }
@@ -53,6 +61,28 @@ def test_context_prioritizes_hotspots(tmp_path: Path) -> None:
 
     assert result.files_included
     assert result.files_included[0] == "hot.py"
+
+
+def test_context_prioritizes_cicd_files_before_hotspots(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+    workflow_file = repo_root / ".github" / "workflows" / "deploy.yml"
+    hot_file = repo_root / "hot.py"
+    workflow_file.write_text("name: deploy\n", encoding="utf-8")
+    hot_file.write_text("print('hot')\n", encoding="utf-8")
+
+    ingest = _make_ingest(
+        [".github/workflows/deploy.yml", "hot.py"],
+        hotspots={"auth": ["hot.py"]},
+        categories={".github/workflows/deploy.yml": "config"},
+    )
+    builder = ContextBuilder(max_tokens=2000, chars_per_token=1.0)
+
+    result = builder.build_context(ingest, [], repo_root, scan_mode="deep")
+
+    assert result.files_included
+    assert result.files_included[0] == ".github/workflows/deploy.yml"
 
 
 def test_context_includes_deterministic_findings(tmp_path: Path) -> None:
