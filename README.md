@@ -71,7 +71,7 @@ jobs:
 Commit the workflow file, push it to a branch, and open a PR. Omar Gate runs automatically and will:
 
 1. Scan your codebase for secrets, vulnerabilities, and misconfigurations (free, ~10s)
-2. Send high-risk files to GPT-4.1 for deep AI analysis (~30s, uses your API key)
+2. Send high-risk files for deep AI analysis (~30s, uses your API key)
 3. Post a detailed security report as a PR comment
 4. Block the merge if P0 (critical) or P1 (high) issues are found
 5. Upload full audit artifacts you can download from the Actions tab
@@ -83,7 +83,7 @@ Commit the workflow file, push it to a branch, and open a PR. Omar Gate runs aut
 ## Setup Options
 
 ### Option A: Minimal (Quick Start above)
-Just `github_token` + `openai_api_key`. Uses GPT-4.1 for AI analysis. Works on any repo, any language.
+Just `github_token` + your LLM API key. Works on any repo, any language.
 
 ### Option B: Use a Different LLM Provider
 
@@ -195,7 +195,7 @@ Omar Gate runs a two-phase analysis pipeline:
 
 | Layer | Engine | Time | What It Catches |
 |:-----:|--------|:----:|-----------------|
-| 5 | GPT-4.1 / Claude / Gemini | ~30-120s | RCE, SQLi, auth bypass, business logic flaws, broken references |
+| 5 | AI deep analysis | ~30-120s | RCE, SQLi, auth bypass, business logic flaws, broken references |
 | 6 | LLM guardrails | ~1s | Validates AI findings against deterministic evidence |
 | 7 | Fail-closed gate | ~1s | Blocks merge if P0/P1 found, posts findings to PR |
 
@@ -410,7 +410,7 @@ No. Analysis runs entirely in your GitHub runner. Anonymous telemetry (Tier 1) s
 Omar Gate has a 3-layer defense. LLM-only findings without deterministic corroboration are automatically downgraded to advisory P2 — they can't block your merge. See [False Positive Defense](#false-positive-defense).
 
 **How much does it cost?**
-The action itself is free. You pay your LLM provider for API usage. A typical PR scan on a medium repo costs $0.10-$0.50 with GPT-4.1. Use `gpt-4.1-mini` for ~5x cheaper scans.
+The action itself is free. You pay your LLM provider for API usage. A typical PR scan on a medium repo costs $0.10-$0.50. See the [Choose Your LLM](#choose-your-llm) table for cost tiers.
 
 **What languages does it support?**
 All of them. Deterministic scanners have rules for Python, JavaScript/TypeScript, Go, Java, Ruby, PHP, C#, and more. The AI analysis works on any language your LLM understands.
