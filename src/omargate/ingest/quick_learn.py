@@ -10,6 +10,42 @@ from typing import Any, Optional
 _CHARS_PER_TOKEN = 4.0
 _MAX_TOKENS = 600
 
+# Scaffold/template phrases that indicate the README is boilerplate rather than describing
+# what the project actually does. When matched, LLM synopsis synthesis is triggered.
+_BOILERPLATE_PHRASES: tuple[str, ...] = (
+    "this template provides a minimal setup",
+    "minimal setup to get react working in vite",
+    "currently, two official plugins are available",
+    "edit src/app.tsx",
+    "learn react",
+    "this project was bootstrapped with create react app",
+    "this project was bootstrapped with vite",
+    "getting started with create react app",
+    "you can learn more in the create react app documentation",
+    "eject at any time by running npm run eject",
+)
+
+
+def is_boilerplate_description(desc: str) -> bool:
+    """Return True if the description looks like scaffold/template boilerplate."""
+    if not desc:
+        return False
+    lower = desc.lower()
+    return any(phrase in lower for phrase in _BOILERPLATE_PHRASES)
+
+
+def build_llm_synopsis_prompt(quick_learn: "QuickLearnSummary", largest_files: list[str]) -> str:
+    """Build a concise prompt for LLM to synthesize a project synopsis from repo structure."""
+    stack = ", ".join(quick_learn.tech_stack) if quick_learn.tech_stack else "undetected"
+    file_lines = "\n".join(f"  {f}" for f in largest_files[:10])
+    return (
+        f"Repository name: {quick_learn.project_name}\n"
+        f"Tech stack: {stack}\n"
+        f"Largest source files:\n{file_lines}\n\n"
+        f"Write ONE sentence (max 100 characters) describing what this project does. "
+        f"Describe the product purpose, not the tech setup or how to run it."
+    )
+
 
 @dataclass
 class QuickLearnSummary:

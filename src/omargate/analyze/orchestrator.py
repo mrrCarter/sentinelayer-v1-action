@@ -8,7 +8,13 @@ from typing import List, Optional
 
 from ..artifacts import generate_review_brief
 from ..config import OmarGateConfig
-from ..ingest import QuickLearnSummary, extract_quick_learn_summary, run_ingest
+from ..ingest import (
+    QuickLearnSummary,
+    build_llm_synopsis_prompt,
+    extract_quick_learn_summary,
+    is_boilerplate_description,
+    run_ingest,
+)
 from ..harness import HarnessRunner
 from ..logging import OmarLogger
 from ..package.fingerprint import add_fingerprints_to_findings
@@ -124,6 +130,51 @@ class AnalysisOrchestrator:
                 total_files=stats.get("total_files"),
                 in_scope=stats.get("in_scope_files"),
             )
+
+        # Step 1.5: LLM synopsis synthesis — triggered when the README description is
+        # scaffold boilerplate (e.g. Vite/CRA default text) and contributes nothing useful.
+        # Makes a tiny, cheap LLM call to form a real one-sentence project opinion.
+        _has_llm_key = bool(
+            self.config.use_managed_llm_proxy()
+            or self.config.openai_api_key.get_secret_value()
+            or self.config.anthropic_api_key.get_secret_value()
+            or self.config.google_api_key.get_secret_value()
+        )
+        if quick_learn and self.allow_llm and _has_llm_key and is_boilerplate_description(quick_learn.description):
+            with self.logger.stage("synopsis_synthesis"):
+                try:
+                    ingest_files = ingest.get("files", []) if isinstance(ingest, dict) else []
+                    largest_files = sorted(
+                        [f for f in ingest_files if isinstance(f, dict) and f.get("path")],
+                        key=lambda f: -int(f.get("lines") or 0),
+                    )[:10]
+                    largest_paths = [str(f["path"]) for f in largest_files]
+                    synopsis_client = LLMClient(
+                        api_key=self.config.openai_api_key.get_secret_value(),
+                        primary_model=self.config.model,
+                        fallback_model=self.config.model_fallback,
+                        llm_provider=self.config.llm_provider,
+                        anthropic_api_key=self.config.anthropic_api_key.get_secret_value(),
+                        google_api_key=self.config.google_api_key.get_secret_value(),
+                        xai_api_key=self.config.xai_api_key.get_secret_value(),
+                        managed_llm=self.config.use_managed_llm_proxy(),
+                        sentinelayer_token=self.config.sentinelayer_token.get_secret_value(),
+                        managed_api_url=os.environ.get(
+                            "SENTINELAYER_API_URL", "https://api.sentinelayer.com"
+                        ),
+                    )
+                    synopsis_response = await synopsis_client.analyze(
+                        system_prompt="You are a technical writer. Reply with exactly one sentence.",
+                        user_content=build_llm_synopsis_prompt(quick_learn, largest_paths),
+                        max_tokens=80,
+                    )
+                    if synopsis_response.success and synopsis_response.content.strip():
+                        synthesized = synopsis_response.content.strip().strip('"').strip()
+                        quick_learn.description = synthesized[:120]
+                        self._quick_learn = quick_learn
+                        self.logger.info("Synopsis synthesized", synopsis=quick_learn.description)
+                except Exception as exc:
+                    self.logger.warning("Synopsis synthesis skipped", error=str(exc))
 
         # Step 2: Harness (portable suites)
         harness_findings: List[dict] = []
