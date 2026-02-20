@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+from ..fix_plan import ensure_fix_plan
 from ..formatting import humanize_duration_ms
 from ..ingest.codebase_snapshot import build_codebase_snapshot
 
@@ -205,6 +206,12 @@ def generate_audit_report(
 
             line_start = finding.get("line_start", 0)
             line_end = finding.get("line_end", line_start)
+            recommendation = str(finding.get("recommendation", "") or "").strip()
+            fix_plan = ensure_fix_plan(
+                fix_plan=finding.get("fix_plan", ""),
+                recommendation=recommendation,
+                message=finding.get("message", ""),
+            )
 
             lines.extend(
                 [
@@ -238,8 +245,9 @@ def generate_audit_report(
                 )
 
             # Recommendation
-            if finding.get("recommendation"):
-                lines.extend([f"**Recommendation:** {finding.get('recommendation')}", ""])
+            lines.extend([f"**Fix Plan:** {fix_plan}", "**Apply Fix:** Coming soon.", ""])
+            if recommendation and recommendation != fix_plan:
+                lines.extend([f"**Recommendation:** {recommendation}", ""])
 
             lines.append("---")
             lines.append("")

@@ -39,6 +39,7 @@ def _sample_findings() -> list[dict]:
             "line_end": 12,
             "message": "Session check missing",
             "recommendation": "Add session validation",
+            "fix_plan": "Pseudo-code: enforce session validation middleware before protected handlers.",
         }
     ]
 
@@ -61,6 +62,8 @@ def test_review_brief_generates_markdown(tmp_path: Path) -> None:
     assert out_path.name == "REVIEW_BRIEF.md"
     assert "# 🛡️ Omar Gate Review Brief" in content
     assert "## Summary" in content
+    assert "## Findings and Fix Plans" in content
+    assert "Apply Fix" in content
     assert run_id in content
 
 

@@ -24,6 +24,7 @@ Rules:
 - Be concrete and actionable; cite file paths and line numbers from the provided context.
 - Prefer high-signal findings; avoid noisy style nitpicks unless they hide real risk.
 - If something is suspicious but unproven from context, mark as lower confidence and explain.
+- Suppress false positives: do not emit findings without clear line-level evidence.
 
 Severity:
 - P0: Critical exploit or production-breaking risk
@@ -34,9 +35,10 @@ Severity:
 Output requirements (STRICT):
 - Output ONLY valid JSONL (one JSON object per line).
 - No markdown, no commentary, no code fences.
-- Each finding MUST include: severity, category, file_path, line_start, message.
+- Each finding MUST include: severity, category, file_path, line_start, message, fix_plan.
+- fix_plan rules: 1-3 sentences, actionable, code-specific, pseudo-code style, no fluff.
 - If no findings: output exactly {"no_findings": true}
 
 Schema:
-{"severity":"P1","category":"security|infrastructure|auth|database|supply_chain|reliability","file_path":"path/to/file","line_start":1,"line_end":1,"message":"Issue + impact (deploy/rollback lens).","recommendation":"Fix steps.","confidence":0.8}
+{"severity":"P1","category":"security|infrastructure|auth|database|supply_chain|reliability","file_path":"path/to/file","line_start":1,"line_end":1,"message":"Issue + impact (deploy/rollback lens).","recommendation":"Fix steps.","fix_plan":"Pseudo-code: replace the unsafe code path with a validated/parameterized path, then add a regression test and verify in CI.","confidence":0.8}
 

@@ -100,6 +100,9 @@ class PromptLoader:
             "Output findings as JSONL (one JSON object per line):\n"
             "{\"severity\": \"P0|P1|P2|P3\", \"category\": \"string\", \"file_path\": \"string\", "
             "\"line_start\": int, \"line_end\": int, \"message\": \"string\", "
-            "\"recommendation\": \"string\", \"confidence\": float}\n\n"
+            "\"recommendation\": \"string\", "
+            "\"fix_plan\": \"1-3 sentence actionable pseudo-code\", "
+            "\"confidence\": float}\n"
+            "The fix_plan must be code-specific and concise (no fluff).\n\n"
             "If no issues found, output: {\"no_findings\": true}\n"
         )

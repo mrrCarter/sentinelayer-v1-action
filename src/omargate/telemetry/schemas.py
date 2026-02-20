@@ -209,7 +209,7 @@ def findings_to_summary(findings: List[dict]) -> List[dict]:
     """
     Strip findings to Tier 2-safe summary.
 
-    Removes: snippet, message, recommendation (could contain code)
+    Removes: snippet, message, recommendation, fix_plan (could contain code)
     Keeps: id, severity, category, file_path, line_start/end, fingerprint, confidence, source
     """
     return [

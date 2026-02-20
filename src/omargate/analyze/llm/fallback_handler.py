@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Literal, Optional
 
+from ...fix_plan import ensure_fix_plan
 from .llm_client import LLMResponse
 from .response_parser import ParsedFinding
 
@@ -44,6 +45,11 @@ def handle_llm_failure(
             line_end=finding.get("line_end", finding["line_start"]),
             message=finding["message"],
             recommendation=finding.get("recommendation", ""),
+            fix_plan=ensure_fix_plan(
+                fix_plan=finding.get("fix_plan", ""),
+                recommendation=finding.get("recommendation", ""),
+                message=finding.get("message", ""),
+            ),
             confidence=1.0,
             source="deterministic",
         )
@@ -62,6 +68,10 @@ def handle_llm_failure(
                 f"{llm_response.error}. Blocking merge per fail-closed policy."
             ),
             recommendation="Retry the scan or investigate the LLM error.",
+            fix_plan=(
+                "Pseudo-code: inspect LLM logs and credentials, retry the scan, and keep gate "
+                "in fail-closed mode until the analysis pipeline is healthy."
+            ),
             confidence=1.0,
             source="system",
         )

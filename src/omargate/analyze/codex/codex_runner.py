@@ -11,6 +11,8 @@ import tempfile
 import time
 from typing import Any, Optional
 
+from ...fix_plan import ensure_fix_plan
+
 
 _VALID_SEVERITIES = {"P0", "P1", "P2", "P3"}
 _REQUIRED_FIELDS = {"severity", "category", "file_path", "line_start", "message"}
@@ -54,6 +56,11 @@ def _normalize_obj(obj: dict[str, Any]) -> dict[str, Any]:
     category = str(obj.get("category") or "unknown")
     message = str(obj.get("message") or "").strip()
     recommendation = str(obj.get("recommendation") or "")
+    fix_plan = ensure_fix_plan(
+        fix_plan=obj.get("fix_plan", ""),
+        recommendation=recommendation,
+        message=message,
+    )
     confidence_raw = obj.get("confidence", 0.8)
     try:
         confidence = float(confidence_raw)
@@ -69,6 +76,7 @@ def _normalize_obj(obj: dict[str, Any]) -> dict[str, Any]:
         "snippet": "",
         "message": message,
         "recommendation": recommendation,
+        "fix_plan": fix_plan,
         "confidence": confidence,
         "source": "codex",
     }

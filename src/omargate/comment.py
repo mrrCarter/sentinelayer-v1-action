@@ -9,6 +9,7 @@ from .formatting import (
     humanize_duration_ms,
     truncate,
 )
+from .fix_plan import ensure_fix_plan
 from .ingest.codebase_snapshot import build_codebase_synopsis, render_codebase_snapshot_md
 from .models import GateResult, GateStatus
 
@@ -151,6 +152,14 @@ def _top_findings_section(
         line_start = finding.get("line_start")
         category = str(finding.get("category") or "Issue")
         message = truncate(str(finding.get("message") or "No description").strip(), 220)
+        fix_plan = truncate(
+            ensure_fix_plan(
+                fix_plan=finding.get("fix_plan", ""),
+                recommendation=finding.get("recommendation", ""),
+                message=finding.get("message", ""),
+            ),
+            320,
+        )
 
         loc = f"{file_path}:{line_start}" if line_start else file_path
         link = None
@@ -168,6 +177,8 @@ def _top_findings_section(
             loc_md = f"`{loc}`"
 
         lines.append(f"{idx}. **{severity}** {loc_md} · **{category}**: {message}")
+        lines.append(f"   > **Fix:** {fix_plan}")
+        lines.append("   > **Apply Fix:** Coming soon.")
 
     return "\n".join(lines)
 

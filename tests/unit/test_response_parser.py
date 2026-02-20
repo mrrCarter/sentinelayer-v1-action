@@ -7,12 +7,15 @@ def test_parser_valid_jsonl() -> None:
     """Parses valid JSONL response."""
     parser = ResponseParser()
     response = (
-        '{"severity": "P1", "category": "XSS", "file_path": "src/app.tsx", "line_start": 42, "message": "Potential XSS"}\n'
+        '{"severity": "P1", "category": "XSS", "file_path": "src/app.tsx", "line_start": 42, '
+        '"message": "Potential XSS", "fix_plan": "Pseudo-code: sanitize HTML before render and add an XSS regression test."}\n'
         '{"severity": "P2", "category": "Quality", "file_path": "src/utils.ts", "line_start": 10, "message": "TODO marker"}'
     )
     result = parser.parse(response)
     assert len(result.findings) == 2
     assert result.findings[0].severity == "P1"
+    assert "sanitize HTML" in result.findings[0].fix_plan
+    assert result.findings[1].fix_plan.startswith("Pseudo-code:")
 
 
 def test_parser_handles_markdown_block() -> None:
@@ -24,6 +27,7 @@ def test_parser_handles_markdown_block() -> None:
 ```"""
     result = parser.parse(response)
     assert len(result.findings) == 1
+    assert result.findings[0].fix_plan.startswith("Pseudo-code:")
 
 
 def test_parser_handles_no_findings() -> None:

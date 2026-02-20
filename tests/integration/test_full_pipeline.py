@@ -96,6 +96,7 @@ async def test_full_pipeline_detects_vulnerabilities(test_repo, mock_config):
         None,
     )
     assert api_key_finding is not None
+    assert all(str(f.get("fix_plan") or "").strip() for f in result.findings)
 
 
 @pytest.mark.anyio

@@ -11,7 +11,8 @@ from omargate.analyze.codex.codex_runner import CodexRunner, parse_codex_finding
 def test_jsonl_parsing_valid() -> None:
     text = '\n'.join(
         [
-            '{"severity":"P1","category":"auth","file_path":"src/a.py","line_start":3,"message":"x"}',
+            '{"severity":"P1","category":"auth","file_path":"src/a.py","line_start":3,"message":"x",'
+            '"fix_plan":"Pseudo-code: enforce auth guard in this handler and add authorization tests."}',
             '{"no_findings": true}',
         ]
     )
@@ -20,6 +21,7 @@ def test_jsonl_parsing_valid() -> None:
     assert errors == []
     assert no_findings is True
     assert findings[0]["source"] == "codex"
+    assert "auth guard" in findings[0]["fix_plan"]
 
 
 def test_jsonl_parsing_malformed_lines() -> None:
@@ -34,6 +36,7 @@ def test_jsonl_parsing_malformed_lines() -> None:
     assert len(findings) == 1
     assert no_findings is False
     assert len(errors) >= 2
+    assert findings[0]["fix_plan"].startswith("Pseudo-code:")
 
 
 def test_jsonl_parsing_empty() -> None:

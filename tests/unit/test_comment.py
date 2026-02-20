@@ -31,6 +31,7 @@ def test_comment_contains_marker() -> None:
                 "line_start": 10,
                 "category": "XSS",
                 "message": "Unsafe output",
+                "fix_plan": "Pseudo-code: escape untrusted output before rendering and add an XSS regression test.",
             }
         ],
         warnings=["Sample warning"],
@@ -52,6 +53,8 @@ def test_comment_contains_marker() -> None:
     assert MARKER_PREFIX in body
     assert "<!-- sentinelayer:omar-gate:v1:acme/demo:42 -->" in body
     assert "Cost (est.):** `$0.0032`" in body
+    assert "**Fix:**" in body
+    assert "Apply Fix:** Coming soon." in body
 
 
 def test_comment_contains_all_sections() -> None:
@@ -71,6 +74,7 @@ def test_comment_contains_all_sections() -> None:
                 "line_start": 10,
                 "category": "XSS",
                 "message": "Unsafe output",
+                "fix_plan": "Pseudo-code: escape untrusted output before rendering.",
             }
         ],
         warnings=None,
@@ -87,6 +91,7 @@ def test_comment_contains_all_sections() -> None:
     assert "| Severity | Count | Blocks Merge? |" in body
     assert "### Next Steps" in body
     assert "Top Findings" in body
+    assert "**Fix:**" in body
     assert "run_id=run-abcd" in body
     assert "Artifacts & Full Report" in body
 

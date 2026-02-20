@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 from .priority_ranker import CATEGORY_SCORE, CATEGORIES, SEVERITY_SCORE, detect_categories, rank_files
+from ..fix_plan import ensure_fix_plan
 from ..ingest.codebase_snapshot import build_codebase_snapshot, build_codebase_synopsis
 
 CATEGORY_ACTIONS = {
@@ -15,6 +16,8 @@ CATEGORY_ACTIONS = {
     "crypto": "Validate key handling and cryptography usage",
     "infrastructure": "Review CI/CD and infrastructure configs",
 }
+
+_SEVERITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
 
 def generate_review_brief(
@@ -60,6 +63,7 @@ def render_review_brief(
 
     ranked_files = rank_files(findings, ingest, top_n=10)
     risk_table = _format_risk_table(ranked_files)
+    fix_plan_lines = _format_fix_plan_section(findings)
     review_order = _format_review_order(findings, ingest, ranked_files)
     quick_commands = _format_quick_commands(detected_categories)
 
@@ -104,6 +108,12 @@ def render_review_brief(
     lines.append("")
     lines.append("---")
     lines.append("")
+    lines.append("## Findings and Fix Plans")
+    lines.append("")
+    lines.extend(fix_plan_lines)
+    lines.append("")
+    lines.append("---")
+    lines.append("")
     lines.append("## Suggested Review Order")
     lines.append("")
     lines.append("Based on detected categories and finding density:")
@@ -138,6 +148,50 @@ def render_review_brief(
     lines.append("")
 
     return "\n".join(lines)
+
+
+def _format_fix_plan_section(findings: List[dict]) -> List[str]:
+    if not findings:
+        return ["No findings."]
+
+    sorted_findings = sorted(
+        (f for f in findings if isinstance(f, dict)),
+        key=lambda f: (
+            _SEVERITY_ORDER.get(str(f.get("severity", "")).upper(), 99),
+            str(f.get("file_path") or ""),
+            int(f.get("line_start") or 0),
+        ),
+    )
+
+    lines: List[str] = []
+    for idx, finding in enumerate(sorted_findings, start=1):
+        severity = str(finding.get("severity") or "P3").upper()
+        category = str(finding.get("category") or "issue")
+        path = str(finding.get("file_path") or "unknown").replace("\\", "/")
+        line = int(finding.get("line_start") or 1)
+        message = _truncate_message(str(finding.get("message") or "No description"), 220)
+        fix_plan = ensure_fix_plan(
+            fix_plan=finding.get("fix_plan", ""),
+            recommendation=finding.get("recommendation", ""),
+            message=finding.get("message", ""),
+        )
+        lines.append(
+            f"{idx}. **{severity}** `{path}:{line}` · **{category}**: {message}"
+        )
+        lines.append(f"   > **Fix:** {fix_plan}")
+        lines.append("   > **Apply Fix:** Coming soon.")
+
+    return lines
+
+
+def _truncate_message(text: str, max_chars: int = 220) -> str:
+    normalized = " ".join(str(text or "").strip().split())
+    if len(normalized) <= max_chars:
+        return normalized
+    if max_chars <= 3:
+        return normalized[:max_chars]
+    return f"{normalized[: max_chars - 3]}..."
+
 
 def _format_codebase_snapshot(ingest: dict) -> List[str]:
     """Return a small, deterministic codebase summary for the review brief."""

@@ -5,6 +5,8 @@ import json
 import re
 from typing import List
 
+from ...fix_plan import ensure_fix_plan
+
 
 @dataclass
 class ParsedFinding:
@@ -15,6 +17,7 @@ class ParsedFinding:
     line_end: int
     message: str
     recommendation: str
+    fix_plan: str
     confidence: float
     source: str = "llm"
 
@@ -132,6 +135,7 @@ class ResponseParser:
 
     def _normalize_finding(self, obj: dict) -> ParsedFinding:
         """Convert dict to ParsedFinding with defaults."""
+        recommendation = obj.get("recommendation", "")
         return ParsedFinding(
             severity=obj["severity"],
             category=obj["category"],
@@ -139,7 +143,12 @@ class ResponseParser:
             line_start=obj["line_start"],
             line_end=obj.get("line_end", obj["line_start"]),
             message=obj["message"],
-            recommendation=obj.get("recommendation", ""),
+            recommendation=recommendation,
+            fix_plan=ensure_fix_plan(
+                fix_plan=obj.get("fix_plan", ""),
+                recommendation=recommendation,
+                message=obj.get("message", ""),
+            ),
             confidence=float(obj.get("confidence", 0.8)),
             source="llm",
         )

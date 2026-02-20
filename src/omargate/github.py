@@ -7,6 +7,7 @@ import httpx
 import requests
 
 from .context import GitHubContext
+from .fix_plan import ensure_fix_plan
 
 GITHUB_API = os.environ.get("GITHUB_API_URL", "https://api.github.com")
 DEFAULT_HTTP_TIMEOUT_SECONDS = float(os.environ.get("OMAR_GITHUB_HTTP_TIMEOUT_SECONDS", "15"))
@@ -186,7 +187,11 @@ def findings_to_annotations(findings: List[Dict[str, Any]], max_annotations: int
                 "annotation_level": severity_to_level.get(severity, "notice"),
                 "title": f"{severity}: {finding.get('category', 'Issue')}",
                 "message": finding.get("message", "No description"),
-                "raw_details": finding.get("recommendation", ""),
+                "raw_details": ensure_fix_plan(
+                    fix_plan=finding.get("fix_plan", ""),
+                    recommendation=finding.get("recommendation", ""),
+                    message=finding.get("message", ""),
+                ),
             }
         )
     return annotations

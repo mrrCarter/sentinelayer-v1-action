@@ -341,8 +341,10 @@ class CodexPromptBuilder:
             '{"severity":"P1","category":"cicd","file_path":".github/workflows/deploy.yml",'
             '"line_start":42,"line_end":68,"message":"...","evidence_snippet":"...",'
             '"impact":"...","verification":"...","recommendation":"...",'
+            '"fix_plan":"1-3 sentence actionable pseudo-code plan for this exact code path",'
             '"confidence":0.90,"source_agent":"OmarPack",'
             '"provenance_tag":"cicd_release_engineering_v1"}\n'
+            "\n`fix_plan` must be code-specific, actionable, and concise (1-3 sentences, no fluff).\n"
             "\nIf no findings, output exactly:\n"
             '{"no_findings": true}\n'
             "\nDo not include markdown fences or commentary.\n"

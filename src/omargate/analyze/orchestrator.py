@@ -18,6 +18,7 @@ from ..ingest import (
 from ..harness import HarnessRunner
 from ..logging import OmarLogger
 from ..package.fingerprint import add_fingerprints_to_findings
+from ..fix_plan import ensure_fix_plan
 from .codex import CodexPromptBuilder, CodexRunner
 from .deterministic import ConfigScanner, EngQualityScanner, PatternScanner, scan_for_secrets
 from .llm import ContextBuilder, LLMClient, PromptLoader, ResponseParser, handle_llm_failure
@@ -684,6 +685,11 @@ class AnalysisOrchestrator:
                 except (TypeError, ValueError):
                     fixed["line_end"] = fixed["line_start"]
                 fixed["severity"] = str(finding.get("severity") or "P0")
+                fixed["fix_plan"] = ensure_fix_plan(
+                    fix_plan=finding.get("fix_plan", ""),
+                    recommendation=finding.get("recommendation", ""),
+                    message=finding.get("message", ""),
+                )
                 normalized.append(fixed)
                 continue
             path = path_raw.replace("\\", "/")
@@ -727,6 +733,11 @@ class AnalysisOrchestrator:
             fixed["severity"] = severity
             fixed["confidence"] = confidence
             fixed["message"] = message
+            fixed["fix_plan"] = ensure_fix_plan(
+                fix_plan=finding.get("fix_plan", ""),
+                recommendation=finding.get("recommendation", ""),
+                message=message,
+            )
             normalized.append(fixed)
 
         return normalized
@@ -783,6 +794,7 @@ class AnalysisOrchestrator:
 
     def _finding_to_dict(self, finding) -> dict:
         """Convert Finding dataclass to dict."""
+        recommendation = finding.recommendation
         return {
             "id": finding.id,
             "severity": finding.severity,
@@ -792,13 +804,19 @@ class AnalysisOrchestrator:
             "line_end": finding.line_end,
             "snippet": finding.snippet,
             "message": finding.message,
-            "recommendation": finding.recommendation,
+            "recommendation": recommendation,
+            "fix_plan": ensure_fix_plan(
+                fix_plan=getattr(finding, "fix_plan", ""),
+                recommendation=recommendation,
+                message=finding.message,
+            ),
             "confidence": finding.confidence,
             "source": finding.source,
         }
 
     def _parsed_finding_to_dict(self, finding: ParsedFinding) -> dict:
         """Convert ParsedFinding to dict."""
+        recommendation = finding.recommendation
         return {
             "id": f"{finding.category}-{finding.file_path}-{finding.line_start}",
             "severity": finding.severity,
@@ -808,7 +826,12 @@ class AnalysisOrchestrator:
             "line_end": finding.line_end,
             "snippet": "",
             "message": finding.message,
-            "recommendation": finding.recommendation,
+            "recommendation": recommendation,
+            "fix_plan": ensure_fix_plan(
+                fix_plan=finding.fix_plan,
+                recommendation=recommendation,
+                message=finding.message,
+            ),
             "confidence": finding.confidence,
             "source": finding.source,
         }

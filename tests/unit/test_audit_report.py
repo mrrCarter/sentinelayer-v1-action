@@ -26,6 +26,7 @@ def sample_data():
                 "line_end": 50,
                 "message": "Missing authentication check",
                 "recommendation": "Add auth middleware",
+                "fix_plan": "Pseudo-code: enforce auth middleware in the route chain and add unauthorized-access tests.",
                 "snippet": "if (user) { ... }",
                 "confidence": 0.9,
                 "source": "llm",
@@ -55,6 +56,8 @@ def test_report_contains_findings(sample_data):
     assert "Auth Bypass" in report
     assert "src/auth.ts" in report
     assert "Missing authentication check" in report
+    assert "Fix Plan" in report
+    assert "Apply Fix" in report
 
 
 def test_report_contains_metadata(sample_data):
