@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import re
+from pathlib import Path
+
 from pydantic import Field, SecretStr, conint, confloat, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -65,6 +69,10 @@ class OmarGateConfig(BaseSettings):
 
     # Sentinelayer integration (optional)
     sentinelayer_token: SecretStr = Field(default="", description="Sentinelayer API token")
+    sentinelayer_spec_id: str = Field(
+        default="",
+        description="Sentinelayer spec hash for spec-aware reviews",
+    )
     sentinelayer_managed_llm: bool = Field(
         default=False,
         description=(
@@ -135,6 +143,13 @@ class OmarGateConfig(BaseSettings):
             return trimmed.upper()
         return value
 
+    @field_validator("sentinelayer_spec_id", mode="before")
+    @classmethod
+    def _normalize_spec_hash(cls, value: str) -> str:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
     @field_validator(
         "scan_mode",
         "llm_failure_policy",
@@ -178,6 +193,30 @@ class OmarGateConfig(BaseSettings):
                     "sentinelayer_token is required when sentinelayer_managed_llm=true"
                 )
 
+        return self
+
+    @model_validator(mode="after")
+    def _auto_detect_sentinelayer_spec_id(self) -> "OmarGateConfig":
+        if self.sentinelayer_spec_id:
+            return self
+
+        workspace = os.environ.get("GITHUB_WORKSPACE", ".")
+        candidates = [
+            Path(workspace) / ".github" / "workflows" / "omar-gate.yml",
+            Path(workspace) / ".github" / "workflows" / "omar-gate.yaml",
+        ]
+        pattern = re.compile(r"sentinelayer_spec_id:\s*([0-9a-fA-F]{64})")
+        for path in candidates:
+            try:
+                if not path.is_file():
+                    continue
+                content = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            match = pattern.search(content)
+            if match:
+                object.__setattr__(self, "sentinelayer_spec_id", match.group(1).lower())
+                break
         return self
 
     def use_managed_llm_proxy(self) -> bool:

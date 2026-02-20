@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .collector import TelemetryCollector
+
+
+@dataclass
+class SpecComplianceTelemetry:
+    spec_hash: str
+    sections_checked: List[str]
+    sections_violated: List[str]
 
 
 def build_tier1_payload(collector: "TelemetryCollector") -> dict:
@@ -83,6 +91,7 @@ def build_tier2_payload(
     findings_summary: List[dict],
     idempotency_key: str,
     severity_threshold: str = "P1",
+    spec_compliance: Optional[SpecComplianceTelemetry] = None,
 ) -> dict:
     """
     Build Tier 2 (identified) telemetry payload.
@@ -162,6 +171,7 @@ def build_tier2_payload(
             "telemetry_tier": 2,
             "idempotency_key": idempotency_key,
         },
+        "spec_compliance": asdict(spec_compliance) if spec_compliance else None,
         "errors": collector.errors,
     }
 

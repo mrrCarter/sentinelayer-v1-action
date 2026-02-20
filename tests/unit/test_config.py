@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -64,3 +66,34 @@ def test_managed_llm_explicit_requires_sentinelayer_token(
     monkeypatch.setenv("INPUT_SENTINELAYER_MANAGED_LLM", "true")
     with pytest.raises(ValidationError):
         OmarGateConfig()
+
+
+def test_config_normalizes_sentinelayer_spec_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INPUT_OPENAI_API_KEY", "sk_test_dummy")
+    monkeypatch.setenv("INPUT_SENTINELAYER_SPEC_ID", "A" * 64)
+    cfg = OmarGateConfig()
+    assert cfg.sentinelayer_spec_id == "a" * 64
+
+
+def test_config_auto_detects_sentinelayer_spec_id_from_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workflow_dir = tmp_path / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True, exist_ok=True)
+    (workflow_dir / "omar-gate.yml").write_text(
+        "jobs:\n"
+        "  gate:\n"
+        "    with:\n"
+        "      sentinelayer_spec_id: " + ("b" * 64) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv("INPUT_OPENAI_API_KEY", "sk_test_dummy")
+    monkeypatch.delenv("INPUT_SENTINELAYER_SPEC_ID", raising=False)
+
+    cfg = OmarGateConfig()
+    assert cfg.sentinelayer_spec_id == "b" * 64
