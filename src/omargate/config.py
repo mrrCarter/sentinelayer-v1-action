@@ -105,13 +105,13 @@ class OmarGateConfig(BaseSettings):
     # Model settings
     # Primary model for LLM API fallback path (when Codex CLI is unavailable).
     # Codex CLI model is configured separately via codex_model.
-    model: str = Field(default="gpt-4.1")
-    model_fallback: str = Field(default="gpt-4.1-mini")
+    model: str = Field(default="gpt-5.2-codex")
+    model_fallback: str = Field(default="gpt-5.2-codex")
     llm_failure_policy: LLMFailurePolicy = Field(default="block")
 
     # Rate limiting / cost control
     max_daily_scans: conint(ge=0) = Field(default=20)
-    min_scan_interval_minutes: conint(ge=0) = Field(default=2)
+    min_scan_interval_minutes: conint(ge=0) = Field(default=0)
     rate_limit_fail_mode: RateLimitFailMode = Field(
         default="closed",
         description="On GitHub API errors during rate limit enforcement: open or closed",

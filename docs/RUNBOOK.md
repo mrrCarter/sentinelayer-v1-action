@@ -411,7 +411,7 @@ If a new release introduces regressions:
 
 ```bash
 # Point the floating tag back to the previous release
-git tag -f v1 v1.2.2   # Replace v1.2.2 with the last known good version
+git tag -f v1 v1.3.2   # Replace v1.3.2 with the last known good version
 git push -f origin v1
 ```
 

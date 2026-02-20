@@ -2,7 +2,7 @@
 
 **AI-powered security gate that blocks P0/P1 vulnerabilities before merge.**
 
-[![Action Version](https://img.shields.io/badge/action-v1.3.0-blue)](https://github.com/mrrCarter/sentinelayer-v1-action)
+[![Action Version](https://img.shields.io/badge/action-v1.3.2-blue)](https://github.com/mrrCarter/sentinelayer-v1-action)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests: 219 passing](https://img.shields.io/badge/tests-219%20passing-brightgreen)](https://github.com/mrrCarter/sentinelayer-v1-action/actions/workflows/quality-gates.yml)
 
@@ -149,8 +149,8 @@ This mode forwards bounded LLM context through `POST /api/v1/proxy/llm`. The API
     scan_mode: pr-diff        # pr-diff = changed files only (fast, default), deep = full repo
 
     # Which model?
-    model: gpt-4.1            # gpt-4.1 (default), gpt-4.1-mini (budget), gpt-5.2-codex (deepest)
-    model_fallback: gpt-4.1-mini  # fallback if primary fails
+    model: gpt-5.2-codex      # default primary model
+    model_fallback: gpt-5.2-codex  # default fallback model
 ```
 
 ---
@@ -267,8 +267,8 @@ Use these in subsequent workflow steps:
 | Input | Default | Description |
 |-------|---------|-------------|
 | `llm_provider` | `openai` | `openai`, `anthropic`, `google`, `xai` |
-| `model` | `gpt-4.1` | Primary LLM model |
-| `model_fallback` | `gpt-4.1-mini` | Fallback if primary fails |
+| `model` | `gpt-5.2-codex` | Primary LLM model |
+| `model_fallback` | `gpt-5.2-codex` | Fallback if primary fails |
 | `sentinelayer_managed_llm` | `false` | Route OpenAI calls through Sentinelayer-managed proxy. If false, auto-enables when `openai_api_key` is empty and `sentinelayer_token` exists. |
 | `use_codex` | `true` | Use Codex CLI for deep agentic audit (OpenAI only, requires host runner) |
 | `codex_model` | `gpt-5.2-codex` | Model for Codex CLI |
@@ -278,7 +278,7 @@ Use these in subsequent workflow steps:
 | Input | Default | Description |
 |-------|---------|-------------|
 | `max_daily_scans` | `20` | Max scans per repo per day |
-| `min_scan_interval_minutes` | `2` | Cooldown between scans |
+| `min_scan_interval_minutes` | `0` | Cooldown between scans |
 
 ### Security
 
@@ -321,16 +321,17 @@ See [action.yml](action.yml) for all 30+ options. See [docs/CONFIGURATION.md](do
     severity_gate: none
 ```
 
-### Budget Mode
+### Throughput Mode
 ```yaml
 - name: Omar Gate
   uses: mrrCarter/sentinelayer-v1-action@v1
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-    model: gpt-4.1-mini
-    model_fallback: gpt-4.1-mini
+    model: gpt-5.2-codex
+    model_fallback: gpt-5.2-codex
     use_codex: false
+    max_input_tokens: 40000
 ```
 
 ### Nightly Deep Scan

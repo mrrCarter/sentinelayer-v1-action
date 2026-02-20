@@ -26,8 +26,8 @@ SentinelLayer (Omar Gate) is configured entirely via GitHub Action inputs (see [
 | Input | Type | Default | Purpose |
 |---|---|---|---|
 | `llm_provider` | string | `openai` | LLM provider: `openai`, `anthropic`, `google`, `xai`. |
-| `model` | string | `gpt-4.1` | Primary LLM API model (used when Codex CLI is unavailable or disabled). |
-| `model_fallback` | string | `gpt-4o` | Fallback LLM API model (if primary fails or quota exceeded). |
+| `model` | string | `gpt-5.2-codex` | Primary LLM API model (used when Codex CLI is unavailable or disabled). |
+| `model_fallback` | string | `gpt-5.2-codex` | Fallback LLM API model (if primary fails or quota exceeded). |
 | `sentinelayer_managed_llm` | bool | `false` | Route OpenAI API path through Sentinelayer-managed proxy. If false, auto-enables when `openai_api_key` is empty and `sentinelayer_token` is set. |
 | `use_codex` | bool | `true` | Enable Codex CLI for deep agentic audit. Falls back to API if Codex fails. |
 | `codex_only` | bool | `false` | Use Codex CLI as the only LLM path. Disables API fallback entirely. |
@@ -60,7 +60,7 @@ SentinelLayer (Omar Gate) is configured entirely via GitHub Action inputs (see [
 | Input | Type | Default | Purpose |
 |---|---|---|---|
 | `max_daily_scans` | int | `20` | Maximum scans per PR head SHA per 24 hours. `0` = unlimited. |
-| `min_scan_interval_minutes` | int | `2` | Cooldown between scans for the same PR head SHA. `0` = disabled. |
+| `min_scan_interval_minutes` | int | `0` | Cooldown between scans for the same PR head SHA. `0` = disabled. |
 | `rate_limit_fail_mode` | string | `closed` | On GitHub API errors during rate limit checks: `closed` (require approval) or `open` (skip enforcement). |
 | `require_cost_confirmation` | float | `5.00` | If estimated LLM cost exceeds this USD amount, require approval before scanning. |
 | `approval_mode` | string | `pr_label` | How to approve high-cost scans: `pr_label`, `workflow_dispatch`, `none`. |
@@ -193,13 +193,13 @@ When `codex_only: true`, the API fallback is disabled. If Codex fails, the `llm_
 
 These control the **LLM API path** (not Codex CLI, which uses `codex_model`).
 
-- `model`: Primary model. Default `gpt-4.1`. Used when Codex is disabled or unavailable.
-- `model_fallback`: Secondary model. Default `gpt-4o`. Used if the primary model fails, hits rate limits, or exceeds quota.
+- `model`: Primary model. Default `gpt-5.2-codex`. Used when Codex is disabled or unavailable.
+- `model_fallback`: Secondary model. Default `gpt-5.2-codex`. Used if the primary model fails, hits rate limits, or exceeds quota.
 
 ```yaml
 with:
-  model: gpt-4.1
-  model_fallback: gpt-4.1-mini
+  model: gpt-5.2-codex
+  model_fallback: gpt-5.2-codex
 ```
 
 ### `.sentinelayerignore`
