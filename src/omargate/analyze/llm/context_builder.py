@@ -47,6 +47,7 @@ class ContextBuilder:
         deterministic_findings: List[dict],
         repo_root: Path,
         quick_learn: Optional[QuickLearnSummary] = None,
+        spec_context: Optional[dict] = None,
         scan_mode: str = "pr-diff",
         diff_content: Optional[str] = None,
         changed_files: Optional[List[str]] = None,
@@ -94,6 +95,10 @@ class ContextBuilder:
 
         quick_learn_context = self._build_quick_learn_context(quick_learn)
         add_with_budget(quick_learn_context, allow_truncate=True)
+
+        if spec_context:
+            spec_context_section = self._build_spec_context_section(spec_context)
+            add_with_budget(spec_context_section, allow_truncate=True)
 
         system_context = self._build_system_context(ingest)
         add_with_budget(system_context)
@@ -176,6 +181,30 @@ class ContextBuilder:
             f"- Architecture: {quick_learn.architecture or 'unknown'}\n"
             f"- Entry points: {entry_points}\n"
             f"{excerpt}"
+        )
+
+    def _build_spec_context_section(self, spec_context: dict) -> str:
+        tech_stack = spec_context.get("tech_stack", [])
+        if not isinstance(tech_stack, list):
+            tech_stack = []
+        tech_stack_label = ", ".join(str(item) for item in tech_stack) if tech_stack else "N/A"
+        return (
+            "## SENTINELAYER SPEC CONTEXT\n"
+            "This repository has a Sentinelayer-generated project spec. "
+            "Use this context to make your review spec-aware.\n\n"
+            f"**Project:** {spec_context.get('project_name', 'Unknown')}\n"
+            f"**Synopsis:** {spec_context.get('synopsis', '')}\n"
+            f"**Tech Stack:** {tech_stack_label}\n"
+            f"**Mode:** {spec_context.get('mode', 'quick')}\n\n"
+            "### Security Rules (from spec)\n"
+            f"{spec_context.get('security_rules', 'N/A')}\n\n"
+            "### Quality Gates (from spec)\n"
+            f"{spec_context.get('quality_gates', 'N/A')}\n\n"
+            "### Domain-Specific Rules\n"
+            f"{spec_context.get('domain_rules', 'N/A')}\n\n"
+            "When reporting findings, reference the relevant spec section "
+            "(e.g., 'Per spec Section 5.1: ...'). "
+            "This helps the developer understand WHY the rule exists.\n"
         )
 
     def _build_system_context(self, ingest: dict) -> str:

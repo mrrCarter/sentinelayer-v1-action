@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from omargate.main import (
+    _build_spec_compliance_from_findings,
     _counts_from_check_run_output,
     _exit_code_from_gate_result,
     _gate_result_from_check_run,
     _latest_completed_check_run,
+    _map_category_to_spec_sections,
 )
 from omargate.models import GateStatus
 from omargate.utils import parse_iso8601
@@ -72,4 +74,28 @@ def test_exit_code_from_gate_result_needs_approval_is_13() -> None:
     result = _gate_result_from_check_run(run, fallback_reason="Fallback", extra_note="")
     assert result.status == GateStatus.NEEDS_APPROVAL
     assert _exit_code_from_gate_result(result) == 13
+
+
+def test_map_category_to_spec_sections() -> None:
+    assert _map_category_to_spec_sections("security.xss") == {"5"}
+    assert _map_category_to_spec_sections("quality.lint") == {"7"}
+
+
+def test_build_spec_compliance_from_findings() -> None:
+    payload = _build_spec_compliance_from_findings(
+        spec_context={
+            "spec_hash": "a" * 64,
+            "security_rules": "-",
+            "quality_gates": "-",
+            "domain_rules": "",
+        },
+        findings=[
+            {"category": "security.auth", "severity": "P1"},
+            {"category": "quality.lint", "severity": "P2"},
+        ],
+    )
+    assert payload is not None
+    assert payload.spec_hash == "a" * 64
+    assert payload.sections_checked == ["5", "7"]
+    assert payload.sections_violated == ["5", "7"]
 

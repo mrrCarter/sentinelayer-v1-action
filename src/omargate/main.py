@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from .analyze import AnalysisOrchestrator
+from .analyze.spec_context import fetch_spec_context
 from .comment import marker, marker_prefix, render_pr_comment
 from .config import OmarGateConfig
 from .context import GitHubContext
@@ -45,11 +46,16 @@ from .telemetry import (
     should_upload_tier,
     validate_payload_tier,
 )
-from .telemetry.schemas import build_tier1_payload, build_tier2_payload, findings_to_summary
+from .telemetry.schemas import (
+    SpecComplianceTelemetry,
+    build_tier1_payload,
+    build_tier2_payload,
+    findings_to_summary,
+)
 from .telemetry.uploader import upload_artifacts, upload_telemetry
 from .utils import ensure_writable_dir, json_dumps, parse_iso8601
 
-ACTION_VERSION = "1.2.2"
+ACTION_VERSION = "1.3.2"
 ACTION_MAJOR_VERSION = "1"
 CHECK_NAME = "Omar Gate"
 
@@ -412,6 +418,85 @@ def _write_preflight_artifacts(
     return findings_path, pack_summary_path
 
 
+def _map_category_to_spec_sections(category: str) -> set[str]:
+    value = str(category or "").strip().lower()
+    if not value:
+        return set()
+
+    security_tokens = {
+        "security",
+        "auth",
+        "secret",
+        "permission",
+        "crypto",
+        "xss",
+        "sqli",
+        "sql",
+        "csrf",
+        "injection",
+        "dependency",
+        "supply",
+        "vuln",
+        "cve",
+    }
+    quality_tokens = {
+        "quality",
+        "lint",
+        "style",
+        "complexity",
+        "performance",
+        "type",
+        "typing",
+        "test",
+    }
+    domain_tokens = {"domain", "business", "logic"}
+
+    sections: set[str] = set()
+    if any(token in value for token in security_tokens):
+        sections.add("5")
+    if any(token in value for token in quality_tokens):
+        sections.add("7")
+    if any(token in value for token in domain_tokens):
+        sections.add("6")
+    return sections
+
+
+def _build_spec_compliance_from_findings(
+    *,
+    spec_context: Optional[dict],
+    findings: list[dict],
+) -> Optional[SpecComplianceTelemetry]:
+    if not spec_context:
+        return None
+
+    spec_hash = str(spec_context.get("spec_hash") or "").strip().lower()
+    if not spec_hash:
+        return None
+
+    sections_checked: set[str] = set()
+    sections_violated: set[str] = set()
+
+    if spec_context.get("security_rules"):
+        sections_checked.add("5")
+    if spec_context.get("quality_gates"):
+        sections_checked.add("7")
+    if spec_context.get("domain_rules"):
+        sections_checked.add("6")
+
+    for finding in findings or []:
+        sections = _map_category_to_spec_sections(str(finding.get("category") or ""))
+        if not sections:
+            continue
+        sections_checked.update(sections)
+        sections_violated.update(sections)
+
+    return SpecComplianceTelemetry(
+        spec_hash=spec_hash,
+        sections_checked=sorted(sections_checked),
+        sections_violated=sorted(sections_violated),
+    )
+
+
 def main() -> int:
     """Main entry point."""
     return asyncio.run(async_main())
@@ -455,6 +540,8 @@ async def async_main() -> int:
     analysis = None
     codebase_snapshot: Optional[dict] = None
     codebase_synopsis = ""
+    spec_context: Optional[dict] = None
+    spec_compliance: Optional[SpecComplianceTelemetry] = None
     gate_result: Optional[GateResult] = None
     findings_path: Optional[Path] = None
     pack_summary_path: Optional[Path] = None
@@ -514,6 +601,19 @@ async def async_main() -> int:
 
         token = config.github_token.get_secret_value() or os.environ.get("GITHUB_TOKEN", "")
         gh = GitHubClient(token=token, repo=ctx.repo_full_name)
+
+        oidc_token = await fetch_oidc_token(logger=logger)
+        if config.sentinelayer_spec_id:
+            spec_context = await fetch_spec_context(
+                spec_hash=config.sentinelayer_spec_id,
+                sentinelayer_token=config.sentinelayer_token.get_secret_value(),
+                oidc_token=oidc_token or "",
+            )
+            if spec_context:
+                logger.info(
+                    "Loaded Sentinelayer spec context",
+                    spec_hash=str(spec_context.get("spec_hash", ""))[:12],
+                )
 
         estimated_cost = _estimate_cost(ctx, gh, config)
 
@@ -715,6 +815,7 @@ async def async_main() -> int:
                 scan_mode=config.scan_mode,
                 diff_content=diff_content,
                 changed_files=changed_files,
+                spec_context=spec_context,
                 run_dir=run_dir,
                 run_id=run_id,
                 version=ACTION_VERSION,
@@ -909,6 +1010,12 @@ async def async_main() -> int:
             block_merge=gate_result.block_merge,
             counts=analysis.counts,
         )
+
+        if spec_context:
+            spec_compliance = _build_spec_compliance_from_findings(
+                spec_context=spec_context,
+                findings=analysis.findings,
+            )
 
         # === PUBLISHING ===
         publish_success = True
@@ -1127,6 +1234,7 @@ async def async_main() -> int:
                 idem_key=idem_key,
                 analysis=analysis,
                 gate_result=gate_result,
+                spec_compliance=spec_compliance,
                 ctx=ctx,
                 run_dir=run_dir,
                 collector=collector,
@@ -1142,6 +1250,7 @@ async def _upload_telemetry(
     idem_key: str,
     analysis,
     gate_result,
+    spec_compliance: Optional[SpecComplianceTelemetry],
     ctx: GitHubContext,
     run_dir: Path,
     collector: TelemetryCollector,
@@ -1182,6 +1291,7 @@ async def _upload_telemetry(
                 findings_summary=findings_to_summary(analysis.findings),
                 idempotency_key=idem_key,
                 severity_threshold=config.severity_gate,
+                spec_compliance=spec_compliance,
             )
             if validate_payload_tier(tier2_payload, consent):
                 await upload_telemetry(
@@ -1275,6 +1385,7 @@ async def _upload_telemetry_always(
     idem_key: str,
     analysis,
     gate_result,
+    spec_compliance: Optional[SpecComplianceTelemetry],
     ctx: Optional[GitHubContext],
     run_dir: Path,
     collector: TelemetryCollector,
@@ -1304,6 +1415,7 @@ async def _upload_telemetry_always(
                         idem_key=idem_key,
                         analysis=analysis,
                         gate_result=gate_result,
+                        spec_compliance=spec_compliance,
                         ctx=ctx,
                         run_dir=run_dir,
                         collector=collector,
@@ -1352,6 +1464,7 @@ async def _upload_telemetry_always(
                                 findings_summary=[],
                                 idempotency_key=idem_key,
                                 severity_threshold=config.severity_gate,
+                                spec_compliance=None,
                             )
                             if validate_payload_tier(tier2_payload, consent):
                                 await upload_telemetry(

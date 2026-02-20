@@ -43,7 +43,7 @@ class LLMClient:
         self,
         api_key: str,
         primary_model: str = "gpt-5.2-codex",  # TODO: bump to gpt-5.3-codex when available
-        fallback_model: str = "gpt-4.1",
+        fallback_model: str = "gpt-5.2-codex",
         llm_provider: str = "openai",
         anthropic_api_key: str = "",
         google_api_key: str = "",

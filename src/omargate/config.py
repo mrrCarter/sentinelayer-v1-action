@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import re
+from pathlib import Path
+
 from pydantic import Field, SecretStr, conint, confloat, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -65,6 +69,10 @@ class OmarGateConfig(BaseSettings):
 
     # Sentinelayer integration (optional)
     sentinelayer_token: SecretStr = Field(default="", description="Sentinelayer API token")
+    sentinelayer_spec_id: str = Field(
+        default="",
+        description="Sentinelayer spec hash for spec-aware reviews",
+    )
     sentinelayer_managed_llm: bool = Field(
         default=False,
         description=(
@@ -97,13 +105,13 @@ class OmarGateConfig(BaseSettings):
     # Model settings
     # Primary model for LLM API fallback path (when Codex CLI is unavailable).
     # Codex CLI model is configured separately via codex_model.
-    model: str = Field(default="gpt-4.1")
-    model_fallback: str = Field(default="gpt-4.1-mini")
+    model: str = Field(default="gpt-5.2-codex")
+    model_fallback: str = Field(default="gpt-5.2-codex")
     llm_failure_policy: LLMFailurePolicy = Field(default="block")
 
     # Rate limiting / cost control
     max_daily_scans: conint(ge=0) = Field(default=20)
-    min_scan_interval_minutes: conint(ge=0) = Field(default=2)
+    min_scan_interval_minutes: conint(ge=0) = Field(default=0)
     rate_limit_fail_mode: RateLimitFailMode = Field(
         default="closed",
         description="On GitHub API errors during rate limit enforcement: open or closed",
@@ -133,6 +141,13 @@ class OmarGateConfig(BaseSettings):
             if trimmed.lower() == "none":
                 return "none"
             return trimmed.upper()
+        return value
+
+    @field_validator("sentinelayer_spec_id", mode="before")
+    @classmethod
+    def _normalize_spec_hash(cls, value: str) -> str:
+        if isinstance(value, str):
+            return value.strip().lower()
         return value
 
     @field_validator(
@@ -178,6 +193,30 @@ class OmarGateConfig(BaseSettings):
                     "sentinelayer_token is required when sentinelayer_managed_llm=true"
                 )
 
+        return self
+
+    @model_validator(mode="after")
+    def _auto_detect_sentinelayer_spec_id(self) -> "OmarGateConfig":
+        if self.sentinelayer_spec_id:
+            return self
+
+        workspace = os.environ.get("GITHUB_WORKSPACE", ".")
+        candidates = [
+            Path(workspace) / ".github" / "workflows" / "omar-gate.yml",
+            Path(workspace) / ".github" / "workflows" / "omar-gate.yaml",
+        ]
+        pattern = re.compile(r"sentinelayer_spec_id:\s*([0-9a-fA-F]{64})")
+        for path in candidates:
+            try:
+                if not path.is_file():
+                    continue
+                content = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            match = pattern.search(content)
+            if match:
+                object.__setattr__(self, "sentinelayer_spec_id", match.group(1).lower())
+                break
         return self
 
     def use_managed_llm_proxy(self) -> bool:

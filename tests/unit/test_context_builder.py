@@ -147,3 +147,37 @@ def test_context_handles_empty_ingest(tmp_path: Path) -> None:
 
     assert "Repository Overview" in result.content
     assert result.token_count >= 0
+
+
+def test_context_includes_spec_context_before_pr_diff(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "changed.py").write_text("print('changed')\n", encoding="utf-8")
+
+    ingest = _make_ingest(["changed.py"], hotspots={})
+    builder = ContextBuilder(max_tokens=4000, chars_per_token=1.0)
+
+    result = builder.build_context(
+        ingest=ingest,
+        deterministic_findings=[],
+        repo_root=repo_root,
+        spec_context={
+            "spec_hash": "a" * 64,
+            "project_name": "Spec Aware App",
+            "synopsis": "Sample synopsis",
+            "tech_stack": ["Python", "FastAPI"],
+            "security_rules": "- Validate inputs",
+            "quality_gates": "- tests required",
+            "domain_rules": "- enforce workflow state machine",
+            "mode": "quick",
+        },
+        scan_mode="pr-diff",
+        diff_content="diff --git a/changed.py b/changed.py",
+        changed_files=["changed.py"],
+    )
+
+    spec_idx = result.content.find("## SENTINELAYER SPEC CONTEXT")
+    diff_idx = result.content.find("## PR Diff")
+    assert spec_idx != -1
+    assert diff_idx != -1
+    assert spec_idx < diff_idx
