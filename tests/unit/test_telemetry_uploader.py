@@ -104,8 +104,10 @@ async def test_upload_uses_oidc_over_token(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.anyio
-async def test_tier1_does_not_send_auth_header(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Tier 1 is anonymous — no auth header even when tokens are available."""
+async def test_tier1_uses_oidc_auth_header_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tier 1 prefers OIDC when available for actor attribution."""
     client = DummyAsyncClient(responses=[DummyResponse(status_code=200)])
     monkeypatch.setattr("omargate.telemetry.uploader.httpx.AsyncClient", lambda *args, **kwargs: client)
 
@@ -113,6 +115,24 @@ async def test_tier1_does_not_send_auth_header(monkeypatch: pytest.MonkeyPatch) 
         {"tier": 1},
         sentinelayer_token="sentinelayer-token",
         oidc_token="oidc-token",
+    )
+
+    request = client.requests[0]
+    assert request["headers"]["Authorization"] == "Bearer oidc-token"
+
+
+@pytest.mark.anyio
+async def test_tier1_without_oidc_omits_static_token_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tier 1 should not send long-lived Sentinelayer token by itself."""
+    client = DummyAsyncClient(responses=[DummyResponse(status_code=200)])
+    monkeypatch.setattr("omargate.telemetry.uploader.httpx.AsyncClient", lambda *args, **kwargs: client)
+
+    await upload_telemetry(
+        {"tier": 1},
+        sentinelayer_token="sentinelayer-token",
+        oidc_token=None,
     )
 
     request = client.requests[0]

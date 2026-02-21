@@ -35,14 +35,13 @@ async def upload_telemetry(
 
     tier = payload.get("tier", 1)
 
-    # Tier 1 is anonymous — no auth header needed.
-    # Only send credentials for Tier 2+ to avoid spurious 401s when
-    # OIDC verification fails on the server side.
-    if tier >= 2:
-        if oidc_token:
-            headers["Authorization"] = f"Bearer {oidc_token}"
-        elif sentinelayer_token:
-            headers["Authorization"] = f"Bearer {sentinelayer_token}"
+    # Prefer ephemeral OIDC for all tiers when available so server-side
+    # telemetry can attribute runs to the authenticated actor without
+    # requiring Tier 2 metadata.
+    if oidc_token:
+        headers["Authorization"] = f"Bearer {oidc_token}"
+    elif tier >= 2 and sentinelayer_token:
+        headers["Authorization"] = f"Bearer {sentinelayer_token}"
     endpoint = f"{SENTINELAYER_API_URL}/api/v1/telemetry"
 
     for attempt in range(MAX_RETRIES):
