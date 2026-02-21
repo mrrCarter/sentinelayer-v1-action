@@ -55,7 +55,7 @@ from .telemetry.schemas import (
 from .telemetry.uploader import upload_artifacts, upload_telemetry
 from .utils import ensure_writable_dir, json_dumps, parse_iso8601
 
-ACTION_VERSION = "1.3.2"
+ACTION_VERSION = "1.3.4"
 ACTION_MAJOR_VERSION = "1"
 CHECK_NAME = "Omar Gate"
 
