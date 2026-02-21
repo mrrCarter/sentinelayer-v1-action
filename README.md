@@ -424,6 +424,18 @@ All of them. Deterministic scanners have rules for Python, JavaScript/TypeScript
 
 ---
 
+## New to AI-driven development?
+
+If you want to build the right way from day one — start at **[sentinelayer.com](https://sentinelayer.com)**.
+
+Describe your project idea and Sentinelayer generates a FAANG-grade spec sheet: database schema, API design, security checklist, and a phase-by-phase build plan. Then we wire Omar Gate directly into your repo so every pull request is reviewed against your spec automatically.
+
+**You get the spec. We set up Omar. Your team ships with a security gate already in place.**
+
+→ [Get your spec at sentinelayer.com](https://sentinelayer.com)
+
+---
+
 ## License
 
 MIT License — Copyright (c) 2026 PlexAura Inc.
