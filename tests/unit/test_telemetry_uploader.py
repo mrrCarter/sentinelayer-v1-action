@@ -122,10 +122,10 @@ async def test_tier1_uses_oidc_auth_header_when_available(
 
 
 @pytest.mark.anyio
-async def test_tier1_without_oidc_omits_static_token_auth(
+async def test_tier1_without_oidc_uses_sentinelayer_token_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Tier 1 should not send long-lived Sentinelayer token by itself."""
+    """Tier 1 should use sentinelayer_token as auth fallback when OIDC is unavailable."""
     client = DummyAsyncClient(responses=[DummyResponse(status_code=200)])
     monkeypatch.setattr("omargate.telemetry.uploader.httpx.AsyncClient", lambda *args, **kwargs: client)
 
@@ -136,7 +136,7 @@ async def test_tier1_without_oidc_omits_static_token_auth(
     )
 
     request = client.requests[0]
-    assert "Authorization" not in request["headers"]
+    assert request["headers"]["Authorization"] == "Bearer sentinelayer-token"
 
 
 @pytest.mark.anyio
