@@ -168,7 +168,7 @@ jobs:
           INPUT_GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           INPUT_XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           INPUT_MODEL: ${{ vars.OMAR_MODEL || 'gpt-5.2-codex' }}
-          INPUT_MODEL_FALLBACK: ${{ vars.OMAR_MODEL_FALLBACK || 'gpt-5.2-codex' }}
+          INPUT_MODEL_FALLBACK: ${{ vars.OMAR_MODEL_FALLBACK || 'gpt-4.1-mini' }}
           INPUT_USE_CODEX: ${{ secrets.OPENAI_API_KEY != '' && 'true' || 'false' }}
           INPUT_CODEX_ONLY: ${{ secrets.OPENAI_API_KEY != '' && 'true' || 'false' }}
           INPUT_CODEX_MODEL: ${{ vars.OMAR_CODEX_MODEL || 'gpt-5.2-codex' }}

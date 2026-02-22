@@ -106,7 +106,7 @@ class OmarGateConfig(BaseSettings):
     # Primary model for LLM API fallback path (when Codex CLI is unavailable).
     # Codex CLI model is configured separately via codex_model.
     model: str = Field(default="gpt-5.2-codex")
-    model_fallback: str = Field(default="gpt-5.2-codex")
+    model_fallback: str = Field(default="gpt-4.1-mini")
     llm_failure_policy: LLMFailurePolicy = Field(default="block")
 
     # Rate limiting / cost control

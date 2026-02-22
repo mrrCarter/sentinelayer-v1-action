@@ -1,22 +1,45 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, Optional, List
 
 import httpx
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from .context import GitHubContext
 from .fix_plan import ensure_fix_plan
 
 GITHUB_API = os.environ.get("GITHUB_API_URL", "https://api.github.com")
 DEFAULT_HTTP_TIMEOUT_SECONDS = float(os.environ.get("OMAR_GITHUB_HTTP_TIMEOUT_SECONDS", "15"))
+logger = logging.getLogger(__name__)
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except Exception:
+        return default
+
+
+MAX_PR_DIFF_BYTES = _int_env("OMAR_MAX_PR_DIFF_BYTES", 10 * 1024 * 1024)
+MAX_PR_FILES_PAGES = _int_env("OMAR_PR_FILES_MAX_PAGES", 10)
+MAX_PR_FILES_WARN_THRESHOLD = _int_env("OMAR_PR_FILES_WARN_THRESHOLD", 1000)
 
 class GitHubClient:
     def __init__(self, token: str, repo: str):
         self.token = token
         self.repo = repo
         self.session = requests.Session()
+        retry = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        )
+        self.session.mount("https://", HTTPAdapter(max_retries=retry))
         self.session.headers.update({
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
@@ -135,9 +158,31 @@ class GitHubClient:
         }
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(url, headers=headers)
-            if resp.status_code == 200:
-                return resp.text
-        return ""
+            if resp.status_code != 200:
+                logger.warning("Failed to fetch PR diff: status=%d", resp.status_code)
+                raise RuntimeError(f"Failed to fetch PR diff: status={resp.status_code}")
+
+            content_length = 0
+            try:
+                content_length = int(resp.headers.get("Content-Length", "0"))
+            except (TypeError, ValueError):
+                content_length = 0
+            if content_length > MAX_PR_DIFF_BYTES:
+                logger.warning(
+                    "PR diff payload exceeds cap (content_length=%d, cap=%d). Truncating.",
+                    content_length,
+                    MAX_PR_DIFF_BYTES,
+                )
+
+            text = resp.text
+            text_bytes = text.encode("utf-8", errors="ignore")
+            if len(text_bytes) > MAX_PR_DIFF_BYTES:
+                logger.warning(
+                    "PR diff exceeds %d bytes. Truncating to cap.",
+                    MAX_PR_DIFF_BYTES,
+                )
+                text = text_bytes[:MAX_PR_DIFF_BYTES].decode("utf-8", errors="ignore")
+            return text
 
     async def get_pr_changed_files(self, pr_number: int) -> List[str]:
         """Get list of changed file paths in PR."""
@@ -148,12 +193,39 @@ class GitHubClient:
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "omar-gate-action",
         }
+        changed_files: List[str] = []
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, headers=headers)
-            if resp.status_code == 200:
+            for page in range(1, MAX_PR_FILES_PAGES + 1):
+                resp = await client.get(
+                    url,
+                    headers=headers,
+                    params={"per_page": 100, "page": page},
+                )
+                if resp.status_code != 200:
+                    raise RuntimeError(
+                        f"Failed to fetch PR changed files: status={resp.status_code}, page={page}"
+                    )
+
                 files = resp.json()
-                return [f.get("filename", "") for f in files if f.get("filename")]
-        return []
+                page_files = [f.get("filename", "") for f in files if f.get("filename")]
+                changed_files.extend(page_files)
+
+                if len(files) < 100:
+                    break
+            else:
+                logger.warning(
+                    "PR changed files pagination hit page cap (%d pages). Some files may be missing.",
+                    MAX_PR_FILES_PAGES,
+                )
+
+        if len(changed_files) > MAX_PR_FILES_WARN_THRESHOLD:
+            logger.warning(
+                "PR has %d changed files (threshold=%d).",
+                len(changed_files),
+                MAX_PR_FILES_WARN_THRESHOLD,
+            )
+
+        return changed_files
 
 
 def load_context() -> GitHubContext:
