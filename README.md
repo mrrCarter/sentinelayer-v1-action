@@ -2,7 +2,7 @@
 
 **AI-powered security gate that blocks P0/P1 vulnerabilities before merge.**
 
-[![Action Version](https://img.shields.io/badge/action-v1.3.2-blue)](https://github.com/mrrCarter/sentinelayer-v1-action)
+[![Action Version](https://img.shields.io/badge/action-v1.3.4-blue)](https://github.com/mrrCarter/sentinelayer-v1-action)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests: 219 passing](https://img.shields.io/badge/tests-219%20passing-brightgreen)](https://github.com/mrrCarter/sentinelayer-v1-action/actions/workflows/quality-gates.yml)
 
@@ -150,7 +150,7 @@ This mode forwards bounded LLM context through `POST /api/v1/proxy/llm`. The API
 
     # Which model?
     model: gpt-5.2-codex      # default primary model
-    model_fallback: gpt-5.2-codex  # default fallback model
+    model_fallback: gpt-4.1-mini  # default fallback model
 ```
 
 ---
@@ -258,7 +258,7 @@ Use these in subsequent workflow steps:
 | Input | Default | Description |
 |-------|---------|-------------|
 | `severity_gate` | `P1` | Block threshold: `P0`, `P1`, `P2`, or `none` (report only) |
-| `scan_mode` | `pr-diff` | `pr-diff` (changed files), `deep` (full repo) |
+| `scan_mode` | `pr-diff` | `pr-diff` (changed files), `deep` (full repo), `nightly` (alias of `deep`) |
 | `llm_failure_policy` | `block` | If LLM fails: `block`, `deterministic_only`, `allow_with_warning` |
 | `run_harness` | `true` | Run dep audit (pip-audit, npm-audit) and security harness |
 
@@ -268,7 +268,7 @@ Use these in subsequent workflow steps:
 |-------|---------|-------------|
 | `llm_provider` | `openai` | `openai`, `anthropic`, `google`, `xai` |
 | `model` | `gpt-5.2-codex` | Primary LLM model |
-| `model_fallback` | `gpt-5.2-codex` | Fallback if primary fails |
+| `model_fallback` | `gpt-4.1-mini` | Fallback if primary fails |
 | `sentinelayer_managed_llm` | `false` | Route OpenAI calls through Sentinelayer-managed proxy. If false, auto-enables when `openai_api_key` is empty and `sentinelayer_token` exists. |
 | `use_codex` | `true` | Use Codex CLI for deep agentic audit (OpenAI only, requires host runner) |
 | `codex_model` | `gpt-5.2-codex` | Model for Codex CLI |
@@ -294,6 +294,8 @@ Use these in subsequent workflow steps:
 | `telemetry_tier` | `1` | `0` = off, `1` = anonymous, `2` = repo metadata, `3` = findings |
 
 See [action.yml](action.yml) for all 30+ options. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed explanations.
+
+`policy_pack` and `policy_pack_version` are currently metadata-only tags. They are recorded in outputs/artifacts but do not switch policy engines yet.
 
 ---
 
@@ -329,7 +331,7 @@ See [action.yml](action.yml) for all 30+ options. See [docs/CONFIGURATION.md](do
     github_token: ${{ secrets.GITHUB_TOKEN }}
     openai_api_key: ${{ secrets.OPENAI_API_KEY }}
     model: gpt-5.2-codex
-    model_fallback: gpt-5.2-codex
+    model_fallback: gpt-4.1-mini
     use_codex: false
     max_input_tokens: 40000
 ```
