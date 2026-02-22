@@ -8,7 +8,16 @@ fi
 # Map GitHub Actions inputs (INPUT_*) to expected environment variables
 # Inputs come in as INPUT_OPENAI_API_KEY, INPUT_GITHUB_TOKEN, etc.
 export OPENAI_API_KEY="${INPUT_OPENAI_API_KEY:-${OPENAI_API_KEY:-}}"
+export ANTHROPIC_API_KEY="${INPUT_ANTHROPIC_API_KEY:-${ANTHROPIC_API_KEY:-}}"
+export GOOGLE_API_KEY="${INPUT_GOOGLE_API_KEY:-${GOOGLE_API_KEY:-}}"
+export XAI_API_KEY="${INPUT_XAI_API_KEY:-${XAI_API_KEY:-}}"
 export SENTINELAYER_TOKEN="${INPUT_SENTINELAYER_TOKEN:-${SENTINELAYER_TOKEN:-}}"
+
+[ -n "${OPENAI_API_KEY:-}" ] && echo "::add-mask::$OPENAI_API_KEY"
+[ -n "${ANTHROPIC_API_KEY:-}" ] && echo "::add-mask::$ANTHROPIC_API_KEY"
+[ -n "${GOOGLE_API_KEY:-}" ] && echo "::add-mask::$GOOGLE_API_KEY"
+[ -n "${XAI_API_KEY:-}" ] && echo "::add-mask::$XAI_API_KEY"
+[ -n "${SENTINELAYER_TOKEN:-}" ] && echo "::add-mask::$SENTINELAYER_TOKEN"
 
 # GITHUB_TOKEN can come from env or input
 if [ -z "${GITHUB_TOKEN:-}" ] && [ -n "${INPUT_GITHUB_TOKEN:-}" ]; then

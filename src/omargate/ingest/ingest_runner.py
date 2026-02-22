@@ -184,10 +184,13 @@ def _run_node_mapper(repo_root: Path, max_files: int, max_file_size_bytes: int) 
             capture_output=True,
             text=True,
             check=False,
+            timeout=120,
         )
     except (FileNotFoundError, OSError):
         # Node isn't guaranteed in all environments (eg local dev/test); fall back to a
         # pure-Python mapper so ingest can still function.
+        return _run_python_mapper(repo_root, max_files, max_file_size_bytes)
+    except subprocess.TimeoutExpired:
         return _run_python_mapper(repo_root, max_files, max_file_size_bytes)
     if result.returncode != 0:
         stderr = result.stderr.strip() or "unknown error"

@@ -546,6 +546,7 @@ async def async_main() -> int:
 
     config: Optional[OmarGateConfig] = None
     ctx: Optional[GitHubContext] = None
+    effective_scan_mode = "pr-diff"
     repo_root = Path(os.environ.get("GITHUB_WORKSPACE", "."))
 
     dashboard_url: Optional[str] = None
@@ -574,6 +575,10 @@ async def async_main() -> int:
         collector.scan_mode = config.scan_mode
         collector.llm_provider = config.llm_provider
         collector.model_used = config.model
+        effective_scan_mode = config.scan_mode
+        if config.scan_mode == "nightly":
+            effective_scan_mode = "deep"
+            collector.scan_mode = effective_scan_mode
 
         try:
             ctx = GitHubContext.from_environment()
@@ -591,6 +596,19 @@ async def async_main() -> int:
             head_sha=ctx.head_sha,
             scan_mode=config.scan_mode,
         )
+        if config.scan_mode == "nightly":
+            logger.info("nightly mode: running full deep scan")
+
+        for flag_name, enabled in (
+            ("auto_commit_fixes", config.auto_commit_fixes),
+            ("run_llm_fix", config.run_llm_fix),
+            ("run_deterministic_fix", config.run_deterministic_fix),
+        ):
+            if enabled:
+                logger.warning(
+                    f"{flag_name} is not yet implemented - flag ignored",
+                    flag=flag_name,
+                )
 
         github_run_id = os.environ.get("GITHUB_RUN_ID")
         workflow_run_url = (
@@ -805,7 +823,7 @@ async def async_main() -> int:
 
         diff_content: Optional[str] = None
         changed_files: Optional[list[str]] = None
-        if config.scan_mode == "pr-diff" and ctx.pr_number:
+        if effective_scan_mode == "pr-diff" and ctx.pr_number:
             collector.stage_start("fetch_diff")
             try:
                 with logger.stage("fetch_diff"):
@@ -818,6 +836,55 @@ async def async_main() -> int:
             else:
                 collector.stage_end("fetch_diff", success=True)
 
+        if (
+            effective_scan_mode == "pr-diff"
+            and ctx.pr_number
+            and not (diff_content or "").strip()
+            and not (changed_files or [])
+        ):
+            reason_msg = "No files changed - nothing to scan"
+            logger.info("Skipping analysis: no changed files in PR")
+            gate_result = GateResult(
+                status=GateStatus.PASSED,
+                reason=reason_msg,
+                block_merge=False,
+                counts=Counts(),
+                dedupe_key=idem_key,
+            )
+            if gh.token:
+                try:
+                    gh.create_check_run(
+                        name=CHECK_NAME,
+                        head_sha=ctx.head_sha,
+                        conclusion="success",
+                        summary=reason_msg,
+                        title="Omar Gate: PASSED",
+                        text=reason_msg,
+                        details_url=workflow_run_url or dashboard_url,
+                        external_id=idem_key,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to create no-op check run", error=str(exc))
+
+            status_value = (
+                gate_result.status.value
+                if hasattr(gate_result.status, "value")
+                else str(gate_result.status)
+            )
+            collector.record_gate_result(status_value, gate_result.reason)
+            exit_code = _short_circuit_with_gate_result(
+                run_dir=run_dir,
+                run_id=run_id,
+                gate_result=gate_result,
+                config=config,
+                idem_key=idem_key,
+                skip_label="no_files_changed",
+                link_url=workflow_run_url or dashboard_url,
+                estimated_cost_usd=0.0,
+            )
+            collector.record_preflight_exit(reason="no_files_changed", exit_code=exit_code)
+            return exit_code
+
         if limited_mode:
             logger.info("Running in limited mode (deterministic only)")
 
@@ -825,7 +892,7 @@ async def async_main() -> int:
         collector.stage_start("analysis")
         try:
             analysis = await orchestrator.run(
-                scan_mode=config.scan_mode,
+                scan_mode=effective_scan_mode,
                 diff_content=diff_content,
                 changed_files=changed_files,
                 spec_context=spec_context,
