@@ -42,6 +42,11 @@ def write_pack_summary(
     dedupe_key: str | None = None,
     policy_pack: str | None = None,
     policy_pack_version: str | None = None,
+    scan_mode: str | None = None,
+    llm_provider: str | None = None,
+    model_used: str | None = None,
+    model_fallback: str | None = None,
+    model_fallback_used: bool | None = None,
     duration_ms: int | None = None,
 ) -> Path:
     errors_list = list(errors or [])
@@ -78,6 +83,16 @@ def write_pack_summary(
         summary["policy_pack"] = policy_pack
     if policy_pack_version is not None:
         summary["policy_pack_version"] = policy_pack_version
+    if scan_mode is not None:
+        summary["scan_mode"] = str(scan_mode)
+    if llm_provider is not None:
+        summary["llm_provider"] = str(llm_provider)
+    if model_used is not None:
+        summary["model_used"] = str(model_used)
+    if model_fallback is not None:
+        summary["model_fallback"] = str(model_fallback)
+    if model_fallback_used is not None:
+        summary["model_fallback_used"] = bool(model_fallback_used)
 
     out = run_dir / "PACK_SUMMARY.json"
     out.write_text(json_dumps(summary), encoding="utf-8")

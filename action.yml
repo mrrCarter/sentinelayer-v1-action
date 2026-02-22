@@ -232,6 +232,22 @@ outputs:
     description: 'Estimated LLM cost for this run'
   idempotency_key:
     description: 'Idempotency key used for dedupe'
+  scan_mode:
+    description: 'Configured scan mode for this run'
+  severity_gate:
+    description: 'Configured severity gate threshold for this run'
+  llm_provider:
+    description: 'Configured LLM provider for this run'
+  model:
+    description: 'Configured primary LLM model for this run'
+  model_fallback:
+    description: 'Configured fallback LLM model for this run'
+  model_fallback_used:
+    description: 'Whether fallback model was used during this run'
+  policy_pack:
+    description: 'Configured policy pack id for this run'
+  policy_pack_version:
+    description: 'Configured policy pack version for this run'
 
 runs:
   using: 'docker'
