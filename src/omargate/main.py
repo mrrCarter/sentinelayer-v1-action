@@ -274,6 +274,14 @@ def _short_circuit_with_gate_result(
         findings_path=findings_path,
         pack_summary_path=pack_summary_path,
         estimated_cost_usd=estimated_cost_usd,
+        scan_mode=config.scan_mode,
+        severity_gate=config.severity_gate,
+        llm_provider=config.llm_provider,
+        model=config.model,
+        model_fallback=config.model_fallback,
+        model_fallback_used=False,
+        policy_pack=config.policy_pack,
+        policy_pack_version=config.policy_pack_version,
     )
 
     try:
@@ -405,6 +413,11 @@ def _write_preflight_artifacts(
         dedupe_key=idem_key,
         policy_pack=config.policy_pack,
         policy_pack_version=config.policy_pack_version,
+        scan_mode=config.scan_mode,
+        llm_provider=config.llm_provider,
+        model_used=config.model,
+        model_fallback=config.model_fallback,
+        model_fallback_used=False,
         duration_ms=0,
     )
 
@@ -922,6 +935,11 @@ async def async_main() -> int:
                     dedupe_key=idem_key,
                     policy_pack=config.policy_pack,
                     policy_pack_version=config.policy_pack_version,
+                    scan_mode=config.scan_mode,
+                    llm_provider=(collector.llm_provider or config.llm_provider),
+                    model_used=(collector.model_used or config.model),
+                    model_fallback=config.model_fallback,
+                    model_fallback_used=collector.model_fallback_used,
                     error=None,
                     duration_ms=scan_duration_ms,
                 )
@@ -1197,6 +1215,14 @@ async def async_main() -> int:
                 estimated_cost_usd=estimated_cost_usd,
                 review_brief_path=analysis.review_brief_path,
                 audit_report_path=audit_report_path if audit_report_path.exists() else None,
+                scan_mode=config.scan_mode,
+                severity_gate=config.severity_gate,
+                llm_provider=(collector.llm_provider or config.llm_provider),
+                model=(collector.model_used or config.model),
+                model_fallback=config.model_fallback,
+                model_fallback_used=collector.model_fallback_used,
+                policy_pack=config.policy_pack,
+                policy_pack_version=config.policy_pack_version,
             )
         except OSError as exc:
             logger.warning("GitHub outputs write failed", error=str(exc))
@@ -1491,6 +1517,14 @@ def _write_github_outputs(
     *,
     review_brief_path: Optional[Path] = None,
     audit_report_path: Optional[Path] = None,
+    scan_mode: Optional[str] = None,
+    severity_gate: Optional[str] = None,
+    llm_provider: Optional[str] = None,
+    model: Optional[str] = None,
+    model_fallback: Optional[str] = None,
+    model_fallback_used: Optional[bool] = None,
+    policy_pack: Optional[str] = None,
+    policy_pack_version: Optional[str] = None,
 ) -> None:
     """Write GitHub Actions outputs."""
     output_path = os.environ.get("GITHUB_OUTPUT")
@@ -1539,6 +1573,22 @@ def _write_github_outputs(
             )
         f.write(f"idempotency_key={idem_key}\n")
         f.write(f"estimated_cost_usd={estimated_cost_usd:.4f}\n")
+        if scan_mode is not None:
+            f.write(f"scan_mode={scan_mode}\n")
+        if severity_gate is not None:
+            f.write(f"severity_gate={severity_gate}\n")
+        if llm_provider is not None:
+            f.write(f"llm_provider={llm_provider}\n")
+        if model is not None:
+            f.write(f"model={model}\n")
+        if model_fallback is not None:
+            f.write(f"model_fallback={model_fallback}\n")
+        if model_fallback_used is not None:
+            f.write(f"model_fallback_used={'true' if model_fallback_used else 'false'}\n")
+        if policy_pack is not None:
+            f.write(f"policy_pack={policy_pack}\n")
+        if policy_pack_version is not None:
+            f.write(f"policy_pack_version={policy_pack_version}\n")
 
 
 def _load_event() -> dict:
