@@ -37,10 +37,12 @@ async def upload_telemetry(
 
     # Prefer ephemeral OIDC for all tiers when available so server-side
     # telemetry can attribute runs to the authenticated actor without
-    # requiring Tier 2 metadata.
+    # requiring Tier 2 metadata.  Fall back to sentinelayer_token for
+    # any tier so the API can still attribute the run when OIDC is
+    # unavailable.
     if oidc_token:
         headers["Authorization"] = f"Bearer {oidc_token}"
-    elif tier >= 2 and sentinelayer_token:
+    elif sentinelayer_token:
         headers["Authorization"] = f"Bearer {sentinelayer_token}"
     endpoint = f"{SENTINELAYER_API_URL}/api/v1/telemetry"
 
