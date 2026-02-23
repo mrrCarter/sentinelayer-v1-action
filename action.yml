@@ -340,6 +340,7 @@ runs:
         INPUT_CODEX_MODEL: ${{ inputs.codex_model }}
         INPUT_CODEX_TIMEOUT: ${{ inputs.codex_timeout }}
         INPUT_RUN_HARNESS: ${{ inputs.run_harness }}
+        INPUT_PIP_AUDIT_IGNORE_IDS: ${{ inputs.pip_audit_ignore_ids }}
         INPUT_MAX_DAILY_SCANS: ${{ inputs.max_daily_scans }}
         INPUT_MIN_SCAN_INTERVAL_MINUTES: ${{ inputs.min_scan_interval_minutes }}
         INPUT_RATE_LIMIT_FAIL_MODE: ${{ inputs.rate_limit_fail_mode }}
