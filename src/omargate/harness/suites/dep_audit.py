@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -61,9 +62,26 @@ def _parse_npm_critical_count(payload: dict[str, Any]) -> int:
     return 0
 
 
+def _parse_ignore_ids(raw: str) -> list[str]:
+    if not raw:
+        return []
+    seen: set[str] = set()
+    ids: list[str] = []
+    for token in re.split(r"[,\s;]+", raw):
+        value = token.strip()
+        if not value:
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        ids.append(value)
+    return ids
+
+
 @dataclass
 class DepAuditSuite(SecuritySuite):
     tech_stack: list[str]
+    pip_audit_ignore_ids: str = ""
 
     @property
     def name(self) -> str:
@@ -114,8 +132,12 @@ class DepAuditSuite(SecuritySuite):
         if not (root / "requirements.txt").is_file():
             return None
 
+        command = ["pip-audit", "-r", "requirements.txt", "-f", "json"]
+        for vuln_id in _parse_ignore_ids(self.pip_audit_ignore_ids):
+            command.extend(["--ignore-vuln", vuln_id])
+
         res = await run_command(
-            ["pip-audit", "-r", "requirements.txt", "-f", "json"],
+            command,
             cwd=root,
             timeout_s=50,
         )

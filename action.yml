@@ -130,6 +130,11 @@ inputs:
     required: false
     default: 'true'
 
+  pip_audit_ignore_ids:
+    description: 'Comma-separated vulnerability IDs to ignore in pip-audit (example: CVE-2024-23342,GHSA-xxxx-xxxx-xxxx)'
+    required: false
+    default: ''
+
   # Rate limiting / cost control
   max_daily_scans:
     description: 'Maximum scans per repo per day (0 = unlimited)'

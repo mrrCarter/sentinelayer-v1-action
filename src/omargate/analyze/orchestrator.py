@@ -185,6 +185,7 @@ class AnalysisOrchestrator:
                     runner = HarnessRunner(
                         project_root=str(self.repo_root),
                         tech_stack=quick_learn.tech_stack if quick_learn else [],
+                        pip_audit_ignore_ids=self.config.pip_audit_ignore_ids,
                     )
                     harness_results = await runner.run()
                     harness_findings = [self._finding_to_dict(f) for f in harness_results]
