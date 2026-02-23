@@ -202,53 +202,153 @@ inputs:
 outputs:
   gate_status:
     description: 'Gate result: passed, blocked, bypassed, error'
+    value: ${{ steps.omar.outputs.gate_status }}
   p0_count:
     description: 'Number of P0 findings'
+    value: ${{ steps.omar.outputs.p0_count }}
   p1_count:
     description: 'Number of P1 findings'
+    value: ${{ steps.omar.outputs.p1_count }}
   p2_count:
     description: 'Number of P2 findings'
+    value: ${{ steps.omar.outputs.p2_count }}
   p3_count:
     description: 'Number of P3 findings'
+    value: ${{ steps.omar.outputs.p3_count }}
   run_id:
     description: 'Unique run identifier'
+    value: ${{ steps.omar.outputs.run_id }}
   findings_artifact:
     description: 'Path to findings JSONL artifact'
+    value: ${{ steps.omar.outputs.findings_artifact }}
   pack_summary_artifact:
     description: 'Path to PACK_SUMMARY.json'
+    value: ${{ steps.omar.outputs.pack_summary_artifact }}
   ingest_artifact:
     description: 'Path to INGEST.json (full ingest payload)'
+    value: ${{ steps.omar.outputs.ingest_artifact }}
   codebase_ingest_artifact:
     description: 'Path to CODEBASE_INGEST.json (alias of INGEST.json)'
+    value: ${{ steps.omar.outputs.codebase_ingest_artifact }}
   codebase_ingest_summary_artifact:
     description: 'Path to CODEBASE_INGEST_SUMMARY.json (codebase snapshot)'
+    value: ${{ steps.omar.outputs.codebase_ingest_summary_artifact }}
   codebase_ingest_summary_md_artifact:
     description: 'Path to CODEBASE_INGEST_SUMMARY.md (human-readable snapshot)'
+    value: ${{ steps.omar.outputs.codebase_ingest_summary_md_artifact }}
   review_brief_artifact:
     description: 'Path to REVIEW_BRIEF.md'
+    value: ${{ steps.omar.outputs.review_brief_artifact }}
   audit_report_artifact:
     description: 'Path to AUDIT_REPORT.md'
+    value: ${{ steps.omar.outputs.audit_report_artifact }}
   estimated_cost_usd:
     description: 'Estimated LLM cost for this run'
+    value: ${{ steps.omar.outputs.estimated_cost_usd }}
   idempotency_key:
     description: 'Idempotency key used for dedupe'
+    value: ${{ steps.omar.outputs.idempotency_key }}
   scan_mode:
     description: 'Configured scan mode for this run'
+    value: ${{ steps.omar.outputs.scan_mode }}
   severity_gate:
     description: 'Configured severity gate threshold for this run'
+    value: ${{ steps.omar.outputs.severity_gate }}
   llm_provider:
     description: 'Configured LLM provider for this run'
+    value: ${{ steps.omar.outputs.llm_provider }}
   model:
     description: 'Configured primary LLM model for this run'
+    value: ${{ steps.omar.outputs.model }}
   model_fallback:
     description: 'Configured fallback LLM model for this run'
+    value: ${{ steps.omar.outputs.model_fallback }}
   model_fallback_used:
     description: 'Whether fallback model was used during this run'
+    value: ${{ steps.omar.outputs.model_fallback_used }}
   policy_pack:
     description: 'Configured policy pack id for this run'
+    value: ${{ steps.omar.outputs.policy_pack }}
   policy_pack_version:
     description: 'Configured policy pack version for this run'
+    value: ${{ steps.omar.outputs.policy_pack_version }}
 
 runs:
-  using: 'docker'
-  image: 'Dockerfile'
+  using: 'composite'
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install Omar Gate dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        python -m pip install --upgrade pip
+        python -m pip install --no-cache-dir -r "${GITHUB_ACTION_PATH}/requirements.txt"
+
+    - name: Install Codex CLI
+      shell: bash
+      run: |
+        set -euo pipefail
+        npm install -g @openai/codex@0.98.0
+        codex --version
+
+    - name: Execute Omar Gate
+      id: omar
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        OPENAI_API_KEY: ${{ inputs.openai_api_key }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        GOOGLE_API_KEY: ${{ inputs.google_api_key }}
+        XAI_API_KEY: ${{ inputs.xai_api_key }}
+        SENTINELAYER_TOKEN: ${{ inputs.sentinelayer_token }}
+        GITHUB_TOKEN: ${{ inputs.github_token || github.token }}
+        INPUT_OPENAI_API_KEY: ${{ inputs.openai_api_key }}
+        INPUT_LLM_PROVIDER: ${{ inputs.llm_provider }}
+        INPUT_ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        INPUT_GOOGLE_API_KEY: ${{ inputs.google_api_key }}
+        INPUT_XAI_API_KEY: ${{ inputs.xai_api_key }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github_token || github.token }}
+        INPUT_SENTINELAYER_TOKEN: ${{ inputs.sentinelayer_token }}
+        INPUT_SENTINELAYER_SPEC_ID: ${{ inputs.sentinelayer_spec_id }}
+        INPUT_SENTINELAYER_MANAGED_LLM: ${{ inputs.sentinelayer_managed_llm }}
+        INPUT_TELEMETRY_TIER: ${{ inputs.telemetry_tier }}
+        INPUT_TELEMETRY: ${{ inputs.telemetry }}
+        INPUT_SHARE_METADATA: ${{ inputs.share_metadata }}
+        INPUT_SHARE_ARTIFACTS: ${{ inputs.share_artifacts }}
+        INPUT_TRAINING_OPT_IN: ${{ inputs.training_opt_in }}
+        INPUT_SCAN_MODE: ${{ inputs.scan_mode }}
+        INPUT_SEVERITY_GATE: ${{ inputs.severity_gate }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_MODEL_FALLBACK: ${{ inputs.model_fallback }}
+        INPUT_LLM_FAILURE_POLICY: ${{ inputs.llm_failure_policy }}
+        INPUT_USE_CODEX: ${{ inputs.use_codex }}
+        INPUT_CODEX_ONLY: ${{ inputs.codex_only }}
+        INPUT_CODEX_MODEL: ${{ inputs.codex_model }}
+        INPUT_CODEX_TIMEOUT: ${{ inputs.codex_timeout }}
+        INPUT_RUN_HARNESS: ${{ inputs.run_harness }}
+        INPUT_MAX_DAILY_SCANS: ${{ inputs.max_daily_scans }}
+        INPUT_MIN_SCAN_INTERVAL_MINUTES: ${{ inputs.min_scan_interval_minutes }}
+        INPUT_RATE_LIMIT_FAIL_MODE: ${{ inputs.rate_limit_fail_mode }}
+        INPUT_MAX_INPUT_TOKENS: ${{ inputs.max_input_tokens }}
+        INPUT_REQUIRE_COST_CONFIRMATION: ${{ inputs.require_cost_confirmation }}
+        INPUT_APPROVAL_MODE: ${{ inputs.approval_mode }}
+        INPUT_APPROVAL_LABEL: ${{ inputs.approval_label }}
+        INPUT_FORK_POLICY: ${{ inputs.fork_policy }}
+        INPUT_RUN_DETERMINISTIC_FIX: ${{ inputs.run_deterministic_fix }}
+        INPUT_RUN_LLM_FIX: ${{ inputs.run_llm_fix }}
+        INPUT_AUTO_COMMIT_FIXES: ${{ inputs.auto_commit_fixes }}
+        INPUT_POLICY_PACK: ${{ inputs.policy_pack }}
+        INPUT_POLICY_PACK_VERSION: ${{ inputs.policy_pack_version }}
+      run: |
+        set -euo pipefail
+        export PYTHONPATH="${GITHUB_ACTION_PATH}/src:${PYTHONPATH:-}"
+        python -m omargate.main
