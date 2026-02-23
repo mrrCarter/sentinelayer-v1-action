@@ -63,6 +63,10 @@ class OmarGateConfig(BaseSettings):
         default=300, description="Codex timeout in seconds for Codex execution"
     )
     run_harness: bool = Field(default=True, description="Run security test harness")
+    pip_audit_ignore_ids: str = Field(
+        default="",
+        description="Comma-separated vulnerability IDs to ignore in pip-audit",
+    )
 
     # GitHub integration (recommended)
     github_token: SecretStr = Field(default="", description="GitHub token used for API calls")

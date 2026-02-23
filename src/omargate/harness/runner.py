@@ -76,11 +76,13 @@ class HarnessRunner:
         project_root: str,
         tech_stack: list[str],
         *,
+        pip_audit_ignore_ids: str = "",
         per_suite_timeout_s: int = 60,
         total_timeout_s: int = 180,
     ) -> None:
         self.project_root = project_root
         self.tech_stack = tech_stack or []
+        self.pip_audit_ignore_ids = pip_audit_ignore_ids
         self.per_suite_timeout_s = int(per_suite_timeout_s)
         self.total_timeout_s = int(total_timeout_s)
 
@@ -100,7 +102,12 @@ class HarnessRunner:
         suites: list[SecuritySuite] = [SecretsInGitSuite(tech_stack=self.tech_stack)]
 
         if facts.is_node or facts.is_python or facts.is_rust:
-            suites.append(DepAuditSuite(tech_stack=self.tech_stack))
+            suites.append(
+                DepAuditSuite(
+                    tech_stack=self.tech_stack,
+                    pip_audit_ignore_ids=self.pip_audit_ignore_ids,
+                )
+            )
 
         if (
             facts.is_node
