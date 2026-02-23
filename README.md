@@ -78,6 +78,14 @@ Commit the workflow file, push it to a branch, and open a PR. Omar Gate runs aut
 
 **That's it. Four steps.**
 
+### Runtime Model (Important)
+
+Omar Gate runs directly on the GitHub-hosted runner (composite action mode), not in a Docker action container.
+
+- Installs Python dependencies on the runner
+- Installs Codex CLI on the runner (`@openai/codex`)
+- Executes analysis against the checked-out repository at `$GITHUB_WORKSPACE`
+
 ---
 
 ## Setup Options
