@@ -16,6 +16,7 @@ jobs:
     env:
       PYTHONPATH: src
       RUFF_VERSION: "0.15.0"
+      PYTEST_VERSION: "8.4.2"
     steps:
       - uses: actions/checkout@v4
 
@@ -29,7 +30,7 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --require-hashes -r requirements.lock.txt
-          python -m pip install --disable-pip-version-check ruff==${RUFF_VERSION}
+          python -m pip install --disable-pip-version-check ruff==${RUFF_VERSION} pytest==${PYTEST_VERSION}
 
       - name: Lint
         run: ruff check src tests
