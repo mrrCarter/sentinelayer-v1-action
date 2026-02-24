@@ -1,10 +1,16 @@
 from __future__ import annotations
 
-import ast
 from dataclasses import dataclass
 import re
 from typing import Iterable, Optional
 
+from .eng_quality_helpers import (
+    index_to_line,
+    is_test_file,
+    line_snippet,
+    python_eval_call_lines,
+    strip_js_comments_and_strings,
+)
 from .pattern_scanner import Finding, _truncate_snippet
 
 
@@ -91,10 +97,6 @@ class EngQualityScanner:
         findings.extend(self._scan_missing_health_endpoint(files))
         return findings
 
-    # --------------------
-    # Helpers
-    # --------------------
-
     def _iter_files(
         self, files: dict[str, str], *, exts: Optional[tuple[str, ...]] = None
     ) -> Iterable[tuple[str, str]]:
@@ -105,52 +107,19 @@ class EngQualityScanner:
             yield norm, content or ""
 
     def _is_test_file(self, path: str) -> bool:
-        p = path.replace("\\", "/").lower()
-        if "/tests/" in p or "/test/" in p or "__tests__" in p:
-            return True
-        return bool(re.search(r"\.(test|spec)\.[a-z0-9]+$", p))
+        return is_test_file(path)
 
     def _index_to_line(self, content: str, idx: int) -> int:
-        if idx <= 0:
-            return 1
-        return content.count("\n", 0, idx) + 1
+        return index_to_line(content, idx)
 
     def _line_snippet(self, content: str, line_start: int, line_end: int) -> str:
-        if not content:
-            return ""
-        lines = content.splitlines()
-        start = max(line_start - 1, 0)
-        end = min(line_end, len(lines))
-        snippet = "\n".join(lines[start:end])
-        return _truncate_snippet(snippet)
-
-    def _blank_non_newlines(self, text: str) -> str:
-        return "".join("\n" if ch == "\n" else " " for ch in text)
+        return line_snippet(content, line_start, line_end)
 
     def _strip_js_comments_and_strings(self, content: str) -> str:
-        def _repl(match: re.Match[str]) -> str:
-            return self._blank_non_newlines(match.group(0))
-
-        return _JS_COMMENTS_AND_STRINGS_RE.sub(_repl, content)
+        return strip_js_comments_and_strings(content, _JS_COMMENTS_AND_STRINGS_RE)
 
     def _python_eval_call_lines(self, content: str) -> set[int]:
-        try:
-            tree = ast.parse(content)
-        except SyntaxError:
-            return set()
-
-        lines: set[int] = set()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            if isinstance(func, ast.Name):
-                if func.id in {"eval", "exec"}:
-                    lines.add(int(getattr(node, "lineno", 1) or 1))
-            elif isinstance(func, ast.Attribute):
-                if func.attr in {"eval", "exec"}:
-                    lines.add(int(getattr(node, "lineno", 1) or 1))
-        return lines
+        return python_eval_call_lines(content)
 
     def _make_finding(
         self,
@@ -177,10 +146,6 @@ class EngQualityScanner:
             confidence=confidence,
             source="deterministic",
         )
-
-    # --------------------
-    # Frontend rules
-    # --------------------
 
     def _scan_state_updates_in_loops(self, files: dict[str, str]) -> list[Finding]:
         rule = _Rule(
@@ -884,9 +849,6 @@ class EngQualityScanner:
         return findings
 
     # --------------------
-    # Infrastructure rules
-    # --------------------
-
     def _scan_dockerfile_user(self, files: dict[str, str]) -> list[Finding]:
         rule = _Rule(
             pattern_id="EQ-018",
@@ -912,10 +874,6 @@ class EngQualityScanner:
                     self._make_finding(rule, file_path=path, line_start=1, snippet="", confidence=0.9)
                 )
         return findings
-
-    # --------------------
-    # Auth rules
-    # --------------------
 
     def _scan_oidc_verify_aud_disabled(self, files: dict[str, str]) -> list[Finding]:
         rule = _Rule(

@@ -12,16 +12,16 @@ permissions:
 jobs:
   quality-gates:
     name: Quality Gates
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     env:
       PYTHONPATH: src
       RUFF_VERSION: "0.15.0"
       PYTEST_VERSION: "8.4.2"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"
           cache: "pip"
@@ -38,11 +38,75 @@ jobs:
       - name: Unit + Integration Tests
         run: python -m pytest tests/unit tests/integration -q
 
+  build-provenance:
+    name: Build + Provenance
+    needs: [quality-gates]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Set deterministic build timestamp
+        id: source_date
+        run: echo "source_date_epoch=$(git log -1 --pretty=%ct)" >> "$GITHUB_OUTPUT"
+
+      - name: Build source bundle
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="${{ steps.source_date.outputs.source_date_epoch }}"
+          mkdir -p dist
+          tar --sort=name --owner=0 --group=0 --numeric-owner \
+            --mtime="@${SOURCE_DATE_EPOCH}" --clamp-mtime \
+            -czf dist/omargate-action-src.tgz \
+            action.yml Dockerfile entrypoint.sh requirements.lock.txt src prompts
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - name: Build Docker image with SBOM + provenance
+        id: docker_build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          push: false
+          tags: omargate-local:${{ github.sha }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Capture image metadata
+        run: |
+          set -euo pipefail
+          echo "image_digest=${{ steps.docker_build.outputs.digest }}" > dist/build-metadata.txt
+
+      - name: Attest source bundle provenance
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with:
+          subject-path: dist/omargate-action-src.tgz
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          (
+            cd dist
+            sha256sum * > SHA256SUMS
+          )
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: build-provenance-${{ github.run_id }}
+          path: dist
+          if-no-files-found: error
+
   secret-scanning:
     name: Secret Scanning
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Install gitleaks
         run: |
@@ -62,7 +126,7 @@ jobs:
 
       - name: Upload secret scan artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: gitleaks-${{ github.run_id }}
           path: gitleaks-report.json
@@ -70,8 +134,8 @@ jobs:
 
   omar-review:
     name: Omar Review
-    needs: [quality-gates, secret-scanning]
-    runs-on: ubuntu-latest
+    needs: [quality-gates, build-provenance, secret-scanning]
+    runs-on: ubuntu-22.04
     env:
       PYTHONPATH: src
       CODEX_CLI_VERSION: "0.98.0"
@@ -83,10 +147,22 @@ jobs:
       id-token: write
       checks: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: build-provenance-${{ github.run_id }}
+          path: .build-provenance
+
+      - name: Verify build artifact checksums
+        run: |
+          set -euo pipefail
+          cd .build-provenance
+          sha256sum --check SHA256SUMS
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"
           cache: "pip"
@@ -97,7 +173,7 @@ jobs:
           python -m pip install --require-hashes -r requirements.lock.txt
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "20"
 
@@ -108,7 +184,7 @@ jobs:
           echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
 
       - name: Cache LLM CLI packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             ~/.npm
@@ -121,6 +197,35 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          verify_and_install_cli() {
+            local package="$1"
+            local version="$2"
+            local expected_shasum=""
+            local tmpdir=""
+            local tarball=""
+            local actual_shasum=""
+
+            expected_shasum="$(npm view "${package}@${version}" dist.shasum --json | tr -d '"')"
+            if [[ -z "${expected_shasum}" ]]; then
+              echo "Unable to resolve shasum for ${package}@${version}" >&2
+              return 1
+            fi
+
+            tmpdir="$(mktemp -d)"
+            npm pack "${package}@${version}" --pack-destination "${tmpdir}" >/dev/null
+            tarball="$(ls "${tmpdir}"/*.tgz)"
+            actual_shasum="$(sha1sum "${tarball}" | awk '{print $1}')"
+
+            if [[ "${actual_shasum}" != "${expected_shasum}" ]]; then
+              echo "Integrity mismatch for ${package}@${version}" >&2
+              echo "expected=${expected_shasum} actual=${actual_shasum}" >&2
+              return 1
+            fi
+
+            npm install -g "${tarball}"
+            rm -rf "${tmpdir}"
+          }
 
           install_pinned_cli() {
             local binary="$1"
@@ -137,8 +242,8 @@ jobs:
               return 0
             fi
 
-            echo "Installing ${package}@${version}"
-            npm install -g "${package}@${version}"
+            echo "Installing ${package}@${version} with integrity verification"
+            verify_and_install_cli "${package}" "${version}"
           }
 
           install_pinned_cli codex @openai/codex "${CODEX_CLI_VERSION}"
@@ -190,8 +295,61 @@ jobs:
 
       - name: Upload Omar Gate artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: sentinelayer-${{ steps.omar.outputs.run_id }}
           path: .sentinelayer/runs/${{ steps.omar.outputs.run_id }}
           if-no-files-found: warn
+
+  deploy:
+    name: Deploy Artifact
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [quality-gates, build-provenance, secret-scanning, omar-review]
+    runs-on: ubuntu-22.04
+    environment:
+      name: production
+    permissions:
+      contents: read
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: build-provenance-${{ github.run_id }}
+          path: .build-provenance
+
+      - name: Verify promoted artifact integrity
+        run: |
+          set -euo pipefail
+          cd .build-provenance
+          sha256sum --check SHA256SUMS
+          test -s build-metadata.txt
+          echo "Promotable artifact verified."
+
+  rollback-readiness:
+    name: Rollback Readiness
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [deploy]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Verify rollback runbook checksum
+        run: |
+          set -euo pipefail
+          cd docs
+          sha256sum --check rollback-runbook.sha256
+
+  release-gate:
+    name: Release Gate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [deploy, rollback-readiness]
+    runs-on: ubuntu-22.04
+    environment:
+      name: production
+    permissions:
+      contents: read
+    steps:
+      - name: Confirm release protection gates
+        run: echo "All pre-release gates passed."
