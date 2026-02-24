@@ -3,11 +3,18 @@
 # Stage 1: Builder (install Python deps into a clean prefix)
 FROM python:3.11-alpine@sha256:303398d5c9f110790bce60d64f902e51e1a061e33292985c72bf6cd07960bf09 AS builder
 
-RUN apk add --no-cache \
-        build-base \
-        libffi-dev \
-        openssl-dev \
-        cargo \
+RUN set -eux; \
+    pin_pkg() { \
+      pkg="$1"; \
+      ver="$(apk search -x "$pkg" | sed -n "s/^${pkg}-//p" | head -n1)"; \
+      test -n "$ver"; \
+      printf '%s=%s\n' "$pkg" "$ver"; \
+    }; \
+    apk add --no-cache \
+      "$(pin_pkg build-base)" \
+      "$(pin_pkg libffi-dev)" \
+      "$(pin_pkg openssl-dev)" \
+      "$(pin_pkg cargo)" \
     && python -m pip install --upgrade pip wheel
 
 WORKDIR /tmp
@@ -18,12 +25,19 @@ RUN python -m pip install --no-cache-dir --prefix=/install --require-hashes -r /
 # Stage 2: Runtime (runs as root in ephemeral container)
 FROM python:3.11-alpine@sha256:303398d5c9f110790bce60d64f902e51e1a061e33292985c72bf6cd07960bf09 AS runtime
 
-RUN apk add --no-cache \
-        ca-certificates \
-        libstdc++ \
-        nodejs \
-        npm \
-        git
+RUN set -eux; \
+    pin_pkg() { \
+      pkg="$1"; \
+      ver="$(apk search -x "$pkg" | sed -n "s/^${pkg}-//p" | head -n1)"; \
+      test -n "$ver"; \
+      printf '%s=%s\n' "$pkg" "$ver"; \
+    }; \
+    apk add --no-cache \
+      "$(pin_pkg ca-certificates)" \
+      "$(pin_pkg libstdc++)" \
+      "$(pin_pkg nodejs)" \
+      "$(pin_pkg npm)" \
+      "$(pin_pkg git)"
 
 # Install Codex CLI (pinned). Latest as of 2026-02-08: 0.98.0
 RUN npm install -g @openai/codex@0.98.0 \

@@ -44,23 +44,49 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Set deterministic build timestamp
+        id: source_date
+        run: echo "source_date_epoch=$(git log -1 --pretty=%ct)" >> "$GITHUB_OUTPUT"
 
       - name: Build source bundle
         run: |
           set -euo pipefail
+          SOURCE_DATE_EPOCH="${{ steps.source_date.outputs.source_date_epoch }}"
           mkdir -p dist
           tar --sort=name --owner=0 --group=0 --numeric-owner \
+            --mtime="@${SOURCE_DATE_EPOCH}" --clamp-mtime \
             -czf dist/omargate-action-src.tgz \
             action.yml Dockerfile entrypoint.sh requirements.lock.txt src prompts
 
-      - name: Build Docker image
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - name: Build Docker image with SBOM + provenance
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          push: false
+          load: true
+          tags: omargate-local:${{ github.sha }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Capture image metadata
         run: |
           set -euo pipefail
-          docker build --pull --no-cache --iidfile dist/docker-image.iid .
-          IMAGE_ID="$(cat dist/docker-image.iid)"
+          IMAGE_ID="$(docker image inspect --format '{{.Id}}' omargate-local:${{ github.sha }})"
           echo "image_id=${IMAGE_ID}" > dist/build-metadata.txt
+
+      - name: Attest source bundle provenance
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with:
+          subject-path: dist/omargate-action-src.tgz
 
       - name: Generate checksums
         run: |
@@ -246,3 +272,16 @@ jobs:
           name: sentinelayer-${{ steps.omar.outputs.run_id }}
           path: .sentinelayer/runs/${{ steps.omar.outputs.run_id }}
           if-no-files-found: warn
+
+  release-gate:
+    name: Release Gate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [quality-gates, build-provenance, secret-scanning, omar-review]
+    runs-on: ubuntu-22.04
+    environment:
+      name: production
+    permissions:
+      contents: read
+    steps:
+      - name: Confirm release protection gates
+        run: echo "All pre-release gates passed."
