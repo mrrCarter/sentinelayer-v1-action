@@ -4,6 +4,7 @@
 FROM python:3.11-alpine@sha256:303398d5c9f110790bce60d64f902e51e1a061e33292985c72bf6cd07960bf09 AS builder
 
 RUN set -eux; \
+    apk update; \
     pin_pkg() { \
       pkg="$1"; \
       ver="$(apk search -x "$pkg" | sed -n "s/^${pkg}-//p" | head -n1)"; \
@@ -26,6 +27,7 @@ RUN python -m pip install --no-cache-dir --prefix=/install --require-hashes -r /
 FROM python:3.11-alpine@sha256:303398d5c9f110790bce60d64f902e51e1a061e33292985c72bf6cd07960bf09 AS runtime
 
 RUN set -eux; \
+    apk update; \
     pin_pkg() { \
       pkg="$1"; \
       ver="$(apk search -x "$pkg" | sed -n "s/^${pkg}-//p" | head -n1)"; \
