@@ -75,6 +75,7 @@ class GeminiProvider(LLMProvider):
 
     def estimate_cost(self, model: str, tokens_in: int, tokens_out: int) -> float:
         pricing_per_million = {
+            "gemini-3.1-pro-preview": {"input": 1.25, "output": 10.0},
             "gemini-2.5-pro": {"input": 1.25, "output": 10.0},
             "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
         }
