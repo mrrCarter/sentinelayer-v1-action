@@ -25,7 +25,9 @@ async def check_rate_limits(
     - rate_limit_fail_mode=open: skip enforcement and allow the scan to proceed (cost-risky, but avoids blocking).
     - rate_limit_fail_mode=closed: require approval (fail-closed) when enforcement cannot be performed.
 
-    Missing token is treated as unenforceable: enforcement is skipped (with a warning).
+    Missing token follows the configured fail mode:
+    - open: allow scan (skip limits)
+    - closed: require approval (fail-closed)
     """
     if config.max_daily_scans == 0 and config.min_scan_interval_minutes == 0:
         return True, "limits_disabled"
@@ -34,8 +36,10 @@ async def check_rate_limits(
         return True, "not_pr"
 
     if not getattr(gh, "token", ""):
-        logger.warning("rate_limit_skip", reason="missing_github_token")
-        return True, "missing_github_token_skip_limits"
+        logger.warning("rate_limit_missing_token", mode=config.rate_limit_fail_mode)
+        if config.rate_limit_fail_mode == "open":
+            return True, "missing_github_token_skip_limits"
+        return False, "missing_github_token_require_approval"
 
     def _on_api_error(reason: str, error: Optional[str] = None) -> Tuple[bool, str]:
         logger.warning("rate_limit_api_error", reason=reason, error=error or "")

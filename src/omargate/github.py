@@ -37,7 +37,8 @@ class GitHubClient:
             total=3,
             backoff_factor=1,
             status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            # Restrict retries to idempotent methods to avoid duplicate side effects.
+            allowed_methods=["HEAD", "GET", "OPTIONS"],
         )
         self.session.mount("https://", HTTPAdapter(max_retries=retry))
         self.session.headers.update({

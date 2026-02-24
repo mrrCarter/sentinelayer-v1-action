@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Stage 1: Builder (install Python deps into a clean prefix)
-FROM python:3.11-alpine AS builder
+FROM python:3.11-alpine@sha256:303398d5c9f110790bce60d64f902e51e1a061e33292985c72bf6cd07960bf09 AS builder
 
 RUN apk add --no-cache \
         build-base \
@@ -11,12 +11,12 @@ RUN apk add --no-cache \
     && python -m pip install --upgrade pip wheel
 
 WORKDIR /tmp
-COPY requirements.txt /tmp/requirements.txt
+COPY requirements.lock.txt /tmp/requirements.lock.txt
 
-RUN python -m pip install --no-cache-dir --prefix=/install -r /tmp/requirements.txt
+RUN python -m pip install --no-cache-dir --prefix=/install --require-hashes -r /tmp/requirements.lock.txt
 
 # Stage 2: Runtime (runs as root in ephemeral container)
-FROM python:3.11-alpine AS runtime
+FROM python:3.11-alpine@sha256:303398d5c9f110790bce60d64f902e51e1a061e33292985c72bf6cd07960bf09 AS runtime
 
 RUN apk add --no-cache \
         ca-certificates \
