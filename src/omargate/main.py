@@ -3,11 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import sys
 import time
 import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -30,206 +28,53 @@ from .artifacts import write_audit_report
 from .packaging import get_run_dir, write_findings_jsonl, write_pack_summary
 from .publish import prepare_artifacts_for_upload, write_step_summary
 from .package import write_artifact_manifest
+from .runtime_helpers import (
+    _build_spec_compliance_from_findings,
+    _counts_from_check_run_output,
+    _emit_gate_annotation,
+    _exit_code_from_gate_result,
+    _gate_result_from_check_run,
+    _latest_completed_check_run,
+    _map_category_to_spec_sections,
+    _select_check_run_for_dedupe,
+    _select_check_run_for_mirror,
+    _write_preflight_artifacts,
+)
+from .telemetry_runtime import (
+    _estimate_cost,
+    _upload_telemetry_always,
+    _write_github_outputs,
+)
 from .preflight import (
     check_branch_protection,
     check_cost_approval,
     check_dedupe,
     check_fork_policy,
     check_rate_limits,
-    estimate_cost,
 )
 from .telemetry import (
-    ConsentConfig,
     TelemetryCollector,
     fetch_oidc_token,
-    get_max_tier,
-    should_upload_tier,
-    validate_payload_tier,
 )
 from .telemetry.schemas import (
     SpecComplianceTelemetry,
-    build_tier1_payload,
-    build_tier2_payload,
-    findings_to_summary,
 )
-from .telemetry.uploader import upload_artifacts, upload_telemetry
-from .utils import ensure_writable_dir, json_dumps, parse_iso8601
+from .telemetry.uploader import upload_telemetry
+from .utils import ensure_writable_dir, json_dumps
 
 ACTION_VERSION = "1.3.4"
 ACTION_MAJOR_VERSION = "1"
 CHECK_NAME = "Omar Gate"
-
-def _to_workspace_relative(path: Path) -> str:
-    """
-    Prefer workspace-relative artifact paths.
-
-    Docker actions execute in a container where $GITHUB_WORKSPACE is typically mounted at
-    /github/workspace. Downstream workflow steps run on the host, so absolute container paths
-    are not useful.
-    """
-    workspace = os.environ.get("GITHUB_WORKSPACE")
-    if workspace:
-        try:
-            rel = path.relative_to(Path(workspace))
-            return str(rel).replace("\\", "/")
-        except ValueError:
-            pass
-    return str(path).replace("\\", "/")
-
-
-def _escape_workflow_command(value: str) -> str:
-    """
-    Escape a string for GitHub workflow commands (annotation messages).
-
-    See: https://docs.github.com/actions/using-workflows/workflow-commands-for-github-actions
-    """
-    if value is None:
-        return ""
-    return str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-
-
-def _emit_gate_annotation(
-    *,
-    gate_result: GateResult,
-    severity_gate: str,
-    run_id: str,
-    run_dir: Path,
-    workflow_run_url: Optional[str],
-    dashboard_url: Optional[str],
-) -> None:
-    status = (
-        gate_result.status.value
-        if hasattr(gate_result.status, "value")
-        else str(gate_result.status)
-    )
-
-    level = "notice"
-    if status in {"blocked", "error"}:
-        level = "error"
-    elif status in {"needs_approval"}:
-        level = "error"
-    elif status in {"bypassed"}:
-        level = "warning"
-
-    title = f"Omar Gate {status.upper()}"
-    counts = gate_result.counts
-    counts_str = f"P0={counts.p0}, P1={counts.p1}, P2={counts.p2}, P3={counts.p3}"
-    link = workflow_run_url or dashboard_url or ""
-    link_str = f" Details: {link}" if link else ""
-
-    run_dir_display = _to_workspace_relative(run_dir)
-    message = (
-        f"{gate_result.reason} | gate={severity_gate} | {counts_str} | "
-        f"run_id={run_id}{link_str} | artifacts={run_dir_display}"
-    )
-
-    sys.stderr.write(
-        f"::{level} title={_escape_workflow_command(title)}::{_escape_workflow_command(message)}\n"
-    )
-    sys.stderr.flush()
-
-
-def _latest_completed_check_run(runs: list[dict]) -> Optional[dict]:
-    best: Optional[dict] = None
-    best_ts: Optional[datetime] = None
-    for run in runs:
-        if run.get("status") != "completed":
-            continue
-        ts = parse_iso8601(run.get("completed_at"))
-        if not ts:
-            continue
-        if best_ts is None or ts > best_ts:
-            best = run
-            best_ts = ts
-    return best
-
-
-def _counts_from_summary(summary: str) -> Counts:
-    def _extract(sev: str) -> int:
-        m = re.search(rf"\b{re.escape(sev)}=(\d+)\b", summary)
-        return int(m.group(1)) if m else 0
-
-    return Counts(
-        p0=_extract("P0"),
-        p1=_extract("P1"),
-        p2=_extract("P2"),
-        p3=_extract("P3"),
-    )
-
-
-def _counts_from_check_run_output(summary: str, text: str) -> Counts:
-    """
-    Prefer a machine-readable marker embedded in Check Run output.text, then fall back to parsing output.summary.
-
-    Marker format:
-      <!-- sentinelayer:counts:{"P0":0,"P1":0,"P2":0,"P3":0} -->
-    """
-    try:
-        m = re.search(
-            r"<!--\s*sentinelayer:counts:(\{.*?\})\s*-->",
-            text or "",
-            flags=re.DOTALL,
-        )
-        if m:
-            payload = json.loads(m.group(1))
-            return Counts(
-                p0=int(payload.get("P0", 0) or 0),
-                p1=int(payload.get("P1", 0) or 0),
-                p2=int(payload.get("P2", 0) or 0),
-                p3=int(payload.get("P3", 0) or 0),
-            )
-    except Exception:
-        pass
-
-    return _counts_from_summary(summary or "")
-
-
-def _gate_result_from_check_run(run: dict, fallback_reason: str, extra_note: str) -> GateResult:
-    conclusion = str(run.get("conclusion") or "").lower()
-    output = run.get("output") or {}
-    summary = str(output.get("summary") or "")
-    text = str(output.get("text") or "")
-
-    counts = _counts_from_check_run_output(summary=summary, text=text)
-    cleaned_text = re.sub(
-        r"<!--\s*sentinelayer:counts:(\{.*?\})\s*-->",
-        "",
-        text,
-        flags=re.DOTALL,
-    ).strip()
-    reason = (cleaned_text or summary.strip() or fallback_reason).strip()
-    if extra_note:
-        reason = f"{reason} | {extra_note}"
-
-    if conclusion == "success":
-        status = GateStatus.PASSED
-    elif conclusion == "neutral":
-        status = GateStatus.BYPASSED
-    elif conclusion == "action_required":
-        status = GateStatus.NEEDS_APPROVAL
-    elif conclusion == "failure":
-        # Could be a real gate block or an internal error; either way we must block merge.
-        status = GateStatus.BLOCKED
-    else:
-        status = GateStatus.ERROR
-        if not reason:
-            reason = f"Unable to resolve prior Omar Gate conclusion ({conclusion or 'unknown'})."
-
-    block_merge = status in {GateStatus.BLOCKED, GateStatus.ERROR, GateStatus.NEEDS_APPROVAL}
-    return GateResult(
-        status=status,
-        reason=reason,
-        block_merge=block_merge,
-        counts=counts,
-        dedupe_key=str(run.get("external_id") or ""),
-    )
-
-
-def _exit_code_from_gate_result(result: GateResult) -> int:
-    if result.status == GateStatus.NEEDS_APPROVAL:
-        return 13
-    return 1 if result.block_merge else 0
-
+__all__ = [
+    "main",
+    "async_main",
+    "_latest_completed_check_run",
+    "_counts_from_check_run_output",
+    "_gate_result_from_check_run",
+    "_exit_code_from_gate_result",
+    "_map_category_to_spec_sections",
+    "_build_spec_compliance_from_findings",
+]
 
 def _short_circuit_with_gate_result(
     *,
@@ -250,6 +95,7 @@ def _short_circuit_with_gate_result(
         idem_key=idem_key,
         skip_label=skip_label,
         link_url=link_url,
+        action_version=ACTION_VERSION,
     )
 
     write_step_summary(
@@ -299,33 +145,6 @@ def _short_circuit_with_gate_result(
     return _exit_code_from_gate_result(gate_result)
 
 
-def _find_check_run_by_external_id(runs: list[dict], external_id: str) -> Optional[dict]:
-    for run in runs:
-        if run.get("external_id") == external_id:
-            return run
-    return None
-
-
-def _find_check_run_by_marker(runs: list[dict], marker: str) -> Optional[dict]:
-    for candidate in runs:
-        output = candidate.get("output") or {}
-        summary = output.get("summary") or ""
-        text = output.get("text") or ""
-        if marker in summary or marker in text:
-            return candidate
-    return None
-
-
-def _select_check_run_for_dedupe(runs: list[dict], idem_key: str) -> Optional[dict]:
-    return _find_check_run_by_external_id(runs, idem_key) or _find_check_run_by_marker(
-        runs, idem_key
-    )
-
-
-def _select_check_run_for_mirror(runs: list[dict]) -> Optional[dict]:
-    return _latest_completed_check_run(runs) or (runs[0] if runs else None)
-
-
 def _short_circuit_mirror_prior_check_run(
     *,
     gh: GitHubClient,
@@ -369,144 +188,6 @@ def _short_circuit_mirror_prior_check_run(
         idem_key=idem_key,
         skip_label=skip_label,
         link_url=link_url,
-    )
-
-
-def _write_preflight_artifacts(
-    run_dir: Path,
-    run_id: str,
-    gate_result: GateResult,
-    config: OmarGateConfig,
-    idem_key: str,
-    skip_label: str,
-    link_url: Optional[str],
-) -> tuple[Path, Path]:
-    # Ensure the output run directory exists so upload-artifact steps don't break on skips.
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    findings_path = run_dir / "FINDINGS.jsonl"
-    if not findings_path.exists():
-        findings_path.write_text("", encoding="utf-8")
-
-    counts = {
-        "P0": int(gate_result.counts.p0),
-        "P1": int(gate_result.counts.p1),
-        "P2": int(gate_result.counts.p2),
-        "P3": int(gate_result.counts.p3),
-    }
-    pack_summary_path = write_pack_summary(
-        run_dir=run_dir,
-        run_id=run_id,
-        writer_complete=True,
-        findings_path=findings_path,
-        counts=counts,
-        tool_versions={
-            "action": ACTION_VERSION,
-            "policy_pack": config.policy_pack_version,
-        },
-        stages_completed=["preflight"],
-        review_brief_path=None,
-        severity_gate=config.severity_gate,
-        llm_usage=None,
-        error=f"preflight_short_circuit:{skip_label}",
-        fingerprint_count=None,
-        dedupe_key=idem_key,
-        policy_pack=config.policy_pack,
-        policy_pack_version=config.policy_pack_version,
-        scan_mode=config.scan_mode,
-        llm_provider=config.llm_provider,
-        model_used=config.model,
-        model_fallback=config.model_fallback,
-        model_fallback_used=False,
-        duration_ms=0,
-    )
-
-    skip_md = run_dir / "SKIP.md"
-    url_line = f"\n\nLink: {link_url}\n" if link_url else "\n"
-    skip_md.write_text(
-        f"# Omar Gate Short-Circuit\n\nReason: {skip_label}\n{url_line}",
-        encoding="utf-8",
-    )
-
-    return findings_path, pack_summary_path
-
-
-def _map_category_to_spec_sections(category: str) -> set[str]:
-    value = str(category or "").strip().lower()
-    if not value:
-        return set()
-
-    security_tokens = {
-        "security",
-        "auth",
-        "secret",
-        "permission",
-        "crypto",
-        "xss",
-        "sqli",
-        "sql",
-        "csrf",
-        "injection",
-        "dependency",
-        "supply",
-        "vuln",
-        "cve",
-    }
-    quality_tokens = {
-        "quality",
-        "lint",
-        "style",
-        "complexity",
-        "performance",
-        "type",
-        "typing",
-        "test",
-    }
-    domain_tokens = {"domain", "business", "logic"}
-
-    sections: set[str] = set()
-    if any(token in value for token in security_tokens):
-        sections.add("5")
-    if any(token in value for token in quality_tokens):
-        sections.add("7")
-    if any(token in value for token in domain_tokens):
-        sections.add("6")
-    return sections
-
-
-def _build_spec_compliance_from_findings(
-    *,
-    spec_context: Optional[dict],
-    findings: list[dict],
-) -> Optional[SpecComplianceTelemetry]:
-    if not spec_context:
-        return None
-
-    spec_hash = str(spec_context.get("spec_hash") or "").strip().lower()
-    if not spec_hash:
-        return None
-
-    sections_checked: set[str] = set()
-    sections_violated: set[str] = set()
-
-    if spec_context.get("security_rules"):
-        sections_checked.add("5")
-    if spec_context.get("quality_gates"):
-        sections_checked.add("7")
-    if spec_context.get("domain_rules"):
-        sections_checked.add("6")
-
-    for finding in findings or []:
-        sections = _map_category_to_spec_sections(str(finding.get("category") or ""))
-        if not sections:
-            continue
-        sections_checked.update(sections)
-        sections_violated.update(sections)
-
-    return SpecComplianceTelemetry(
-        spec_hash=spec_hash,
-        sections_checked=sorted(sections_checked),
-        sections_violated=sorted(sections_violated),
     )
 
 
@@ -646,7 +327,7 @@ async def async_main() -> int:
                     spec_hash=str(spec_context.get("spec_hash", ""))[:12],
                 )
 
-        estimated_cost = _estimate_cost(ctx, gh, config)
+        estimated_cost = _estimate_cost(ctx=ctx, gh=gh, config=config)
 
         # === PREFLIGHT ===
         preflight_success = True
@@ -1332,368 +1013,11 @@ async def async_main() -> int:
                 run_dir=run_dir,
                 collector=collector,
                 logger=logger,
+                action_version=ACTION_VERSION,
+                upload_telemetry_fn=upload_telemetry,
             )
         except Exception:
             pass
-
-
-async def _upload_telemetry(
-    config: OmarGateConfig,
-    run_id: str,
-    idem_key: str,
-    analysis,
-    gate_result,
-    spec_compliance: Optional[SpecComplianceTelemetry],
-    ctx: GitHubContext,
-    run_dir: Path,
-    collector: TelemetryCollector,
-    logger: OmarLogger,
-    consent: ConsentConfig,
-) -> None:
-    """Upload telemetry to Sentinelayer (best effort)."""
-    _ = (run_id, gate_result)
-
-    sentinelayer_token = config.sentinelayer_token.get_secret_value()
-    oidc_token = await fetch_oidc_token(logger=logger)
-
-    if should_upload_tier(1, consent):
-        tier1_payload = build_tier1_payload(collector)
-        if validate_payload_tier(tier1_payload, consent):
-            await upload_telemetry(
-                tier1_payload,
-                sentinelayer_token=sentinelayer_token,
-                oidc_token=oidc_token,
-                logger=logger,
-            )
-
-    if should_upload_tier(2, consent):
-        if not sentinelayer_token and not oidc_token:
-            logger.warning("Telemetry tier 2 requires authentication")
-        else:
-            tier2_payload = build_tier2_payload(
-                collector=collector,
-                repo_owner=ctx.repo_owner,
-                repo_name=ctx.repo_name,
-                branch=ctx.head_ref or ctx.base_ref or "main",
-                pr_number=ctx.pr_number,
-                head_sha=ctx.head_sha,
-                is_fork_pr=ctx.is_fork,
-                policy_pack=config.policy_pack,
-                policy_pack_version=config.policy_pack_version,
-                action_version=ACTION_VERSION,
-                findings_summary=findings_to_summary(analysis.findings),
-                idempotency_key=idem_key,
-                severity_threshold=config.severity_gate,
-                spec_compliance=spec_compliance,
-            )
-            if validate_payload_tier(tier2_payload, consent):
-                await upload_telemetry(
-                    tier2_payload,
-                    sentinelayer_token=sentinelayer_token,
-                    oidc_token=oidc_token,
-                    logger=logger,
-                )
-
-    if should_upload_tier(3, consent):
-        if not sentinelayer_token:
-            logger.warning("Telemetry tier 3 requires sentinelayer_token")
-            return None
-        manifest_path = run_dir / "ARTIFACT_MANIFEST.json"
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            logger.warning("Failed to load artifact manifest", error=str(exc))
-            return None
-        await upload_artifacts(run_dir, manifest, sentinelayer_token, logger=logger)
-
-    return None
-
-
-def _resolve_consent(config: OmarGateConfig) -> ConsentConfig:
-    """Resolve consent using explicit flags when set, otherwise telemetry_tier."""
-    if config.share_metadata or config.share_artifacts or not config.telemetry:
-        return ConsentConfig(
-            telemetry=config.telemetry,
-            share_metadata=config.share_metadata,
-            share_artifacts=config.share_artifacts,
-            training_consent=config.training_opt_in,
-        )
-
-    tier = config.telemetry_tier
-    return ConsentConfig(
-        telemetry=tier > 0,
-        share_metadata=tier >= 2,
-        share_artifacts=tier >= 3,
-        training_consent=config.training_opt_in,
-    )
-
-
-def _parse_bool_env(value: Optional[str], default: bool) -> bool:
-    if value is None:
-        return default
-    v = value.strip().lower()
-    return v in {"1", "true", "yes", "y", "on"}
-
-
-def _parse_int_env(value: Optional[str], default: int) -> int:
-    if value is None:
-        return default
-    try:
-        return int(value.strip())
-    except Exception:
-        return default
-
-
-def _resolve_consent_best_effort(config: Optional[OmarGateConfig]) -> ConsentConfig:
-    if config is not None:
-        return _resolve_consent(config)
-
-    telemetry = _parse_bool_env(os.environ.get("INPUT_TELEMETRY"), True)
-    share_metadata = _parse_bool_env(os.environ.get("INPUT_SHARE_METADATA"), False)
-    share_artifacts = _parse_bool_env(os.environ.get("INPUT_SHARE_ARTIFACTS"), False)
-    training_opt_in = _parse_bool_env(os.environ.get("INPUT_TRAINING_OPT_IN"), False)
-
-    if share_metadata or share_artifacts or not telemetry:
-        return ConsentConfig(
-            telemetry=telemetry,
-            share_metadata=share_metadata,
-            share_artifacts=share_artifacts,
-            training_consent=training_opt_in,
-        )
-
-    tier = _parse_int_env(os.environ.get("INPUT_TELEMETRY_TIER"), 1)
-    tier = max(0, min(3, tier))
-    return ConsentConfig(
-        telemetry=telemetry and tier > 0,
-        share_metadata=tier >= 2,
-        share_artifacts=tier >= 3,
-        training_consent=training_opt_in,
-    )
-
-
-async def _upload_telemetry_always(
-    *,
-    config: Optional[OmarGateConfig],
-    run_id: str,
-    idem_key: str,
-    analysis,
-    gate_result,
-    spec_compliance: Optional[SpecComplianceTelemetry],
-    ctx: Optional[GitHubContext],
-    run_dir: Path,
-    collector: TelemetryCollector,
-    logger: OmarLogger,
-) -> None:
-    """Upload telemetry even on preflight exits (best effort)."""
-
-    consent = _resolve_consent_best_effort(config)
-    if get_max_tier(consent) <= 0:
-        return
-
-    telemetry_success = True
-    collector.stage_start("telemetry")
-    try:
-        with logger.stage("telemetry"):
-            try:
-                # Full context path.
-                if (
-                    config is not None
-                    and ctx is not None
-                    and analysis is not None
-                    and gate_result is not None
-                ):
-                    await _upload_telemetry(
-                        config=config,
-                        run_id=run_id,
-                        idem_key=idem_key,
-                        analysis=analysis,
-                        gate_result=gate_result,
-                        spec_compliance=spec_compliance,
-                        ctx=ctx,
-                        run_dir=run_dir,
-                        collector=collector,
-                        logger=logger,
-                        consent=consent,
-                    )
-                else:
-                    # Minimal Tier 1 path for early exits.
-                    sentinelayer_token = (
-                        config.sentinelayer_token.get_secret_value()
-                        if config is not None
-                        else (
-                            os.environ.get("INPUT_SENTINELAYER_TOKEN")
-                            or os.environ.get("SENTINELAYER_TOKEN")
-                            or ""
-                        )
-                    )
-                    oidc_token = await fetch_oidc_token(logger=logger)
-
-                    if should_upload_tier(1, consent):
-                        tier1_payload = build_tier1_payload(collector)
-                        if validate_payload_tier(tier1_payload, consent):
-                            await upload_telemetry(
-                                tier1_payload,
-                                sentinelayer_token=sentinelayer_token,
-                                oidc_token=oidc_token,
-                                logger=logger,
-                            )
-
-                    # Best-effort Tier 2 path (share_metadata) when we have repo identity.
-                    if config is not None and ctx is not None and should_upload_tier(2, consent):
-                        if not sentinelayer_token and not oidc_token:
-                            logger.warning("Telemetry tier 2 requires authentication")
-                        else:
-                            tier2_payload = build_tier2_payload(
-                                collector=collector,
-                                repo_owner=ctx.repo_owner,
-                                repo_name=ctx.repo_name,
-                                branch=ctx.head_ref or ctx.base_ref or "main",
-                                pr_number=ctx.pr_number,
-                                head_sha=ctx.head_sha,
-                                is_fork_pr=ctx.is_fork,
-                                policy_pack=config.policy_pack,
-                                policy_pack_version=config.policy_pack_version,
-                                action_version=ACTION_VERSION,
-                                findings_summary=[],
-                                idempotency_key=idem_key,
-                                severity_threshold=config.severity_gate,
-                                spec_compliance=None,
-                            )
-                            if validate_payload_tier(tier2_payload, consent):
-                                await upload_telemetry(
-                                    tier2_payload,
-                                    sentinelayer_token=sentinelayer_token,
-                                    oidc_token=oidc_token,
-                                    logger=logger,
-                                )
-            except Exception as exc:
-                telemetry_success = False
-                collector.record_error("telemetry", str(exc))
-                logger.warning("Telemetry upload failed", error=str(exc))
-    finally:
-        collector.stage_end("telemetry", success=telemetry_success)
-
-
-def _write_github_outputs(
-    run_id: str,
-    idem_key: str,
-    findings_path: Path,
-    pack_summary_path: Path,
-    gate_result: GateResult,
-    estimated_cost_usd: float = 0.0,
-    *,
-    review_brief_path: Optional[Path] = None,
-    audit_report_path: Optional[Path] = None,
-    scan_mode: Optional[str] = None,
-    severity_gate: Optional[str] = None,
-    llm_provider: Optional[str] = None,
-    model: Optional[str] = None,
-    model_fallback: Optional[str] = None,
-    model_fallback_used: Optional[bool] = None,
-    policy_pack: Optional[str] = None,
-    policy_pack_version: Optional[str] = None,
-) -> None:
-    """Write GitHub Actions outputs."""
-    output_path = os.environ.get("GITHUB_OUTPUT")
-    if not output_path:
-        return
-
-    with open(output_path, "a", encoding="utf-8") as f:
-        status_value = (
-            gate_result.status.value
-            if hasattr(gate_result.status, "value")
-            else str(gate_result.status)
-        )
-        f.write(f"gate_status={status_value}\n")
-        f.write(f"run_id={run_id}\n")
-        f.write(f"p0_count={gate_result.counts.p0}\n")
-        f.write(f"p1_count={gate_result.counts.p1}\n")
-        f.write(f"p2_count={gate_result.counts.p2}\n")
-        f.write(f"p3_count={gate_result.counts.p3}\n")
-        f.write(f"findings_artifact={_to_workspace_relative(findings_path)}\n")
-        f.write(f"pack_summary_artifact={_to_workspace_relative(pack_summary_path)}\n")
-        ingest_path = pack_summary_path.parent / "INGEST.json"
-        if ingest_path.exists():
-            f.write(f"ingest_artifact={_to_workspace_relative(ingest_path)}\n")
-        codebase_ingest_path = pack_summary_path.parent / "CODEBASE_INGEST.json"
-        if codebase_ingest_path.exists():
-            f.write(
-                f"codebase_ingest_artifact={_to_workspace_relative(codebase_ingest_path)}\n"
-            )
-        codebase_summary_json = pack_summary_path.parent / "CODEBASE_INGEST_SUMMARY.json"
-        if codebase_summary_json.exists():
-            f.write(
-                f"codebase_ingest_summary_artifact={_to_workspace_relative(codebase_summary_json)}\n"
-            )
-        codebase_summary_md = pack_summary_path.parent / "CODEBASE_INGEST_SUMMARY.md"
-        if codebase_summary_md.exists():
-            f.write(
-                f"codebase_ingest_summary_md_artifact={_to_workspace_relative(codebase_summary_md)}\n"
-            )
-        if review_brief_path and review_brief_path.exists():
-            f.write(
-                f"review_brief_artifact={_to_workspace_relative(review_brief_path)}\n"
-            )
-        if audit_report_path and audit_report_path.exists():
-            f.write(
-                f"audit_report_artifact={_to_workspace_relative(audit_report_path)}\n"
-            )
-        f.write(f"idempotency_key={idem_key}\n")
-        f.write(f"estimated_cost_usd={estimated_cost_usd:.4f}\n")
-        if scan_mode is not None:
-            f.write(f"scan_mode={scan_mode}\n")
-        if severity_gate is not None:
-            f.write(f"severity_gate={severity_gate}\n")
-        if llm_provider is not None:
-            f.write(f"llm_provider={llm_provider}\n")
-        if model is not None:
-            f.write(f"model={model}\n")
-        if model_fallback is not None:
-            f.write(f"model_fallback={model_fallback}\n")
-        if model_fallback_used is not None:
-            f.write(f"model_fallback_used={'true' if model_fallback_used else 'false'}\n")
-        if policy_pack is not None:
-            f.write(f"policy_pack={policy_pack}\n")
-        if policy_pack_version is not None:
-            f.write(f"policy_pack_version={policy_pack_version}\n")
-
-
-def _load_event() -> dict:
-    event_path = os.environ.get("GITHUB_EVENT_PATH")
-    if not event_path:
-        return {}
-    try:
-        return json.loads(Path(event_path).read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-
-def _estimate_cost(
-    ctx: GitHubContext,
-    gh: GitHubClient,
-    config: OmarGateConfig,
-) -> float:
-    if not ctx.pr_number:
-        return 0.0
-
-    event = _load_event()
-    pr = event.get("pull_request") or {}
-
-    if not pr:
-        try:
-            pr = gh.get_pull_request(ctx.pr_number)
-        except Exception:
-            pr = {}
-
-    additions = int(pr.get("additions") or 0)
-    deletions = int(pr.get("deletions") or 0)
-    changed_files = int(pr.get("changed_files") or 0)
-
-    return estimate_cost(
-        file_count=changed_files,
-        total_lines=additions + deletions,
-        model=config.model,
-    )
 
 
 if __name__ == "__main__":
