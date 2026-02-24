@@ -198,6 +198,35 @@ jobs:
         run: |
           set -euo pipefail
 
+          verify_and_install_cli() {
+            local package="$1"
+            local version="$2"
+            local expected_shasum=""
+            local tmpdir=""
+            local tarball=""
+            local actual_shasum=""
+
+            expected_shasum="$(npm view "${package}@${version}" dist.shasum --json | tr -d '"')"
+            if [[ -z "${expected_shasum}" ]]; then
+              echo "Unable to resolve shasum for ${package}@${version}" >&2
+              return 1
+            fi
+
+            tmpdir="$(mktemp -d)"
+            npm pack "${package}@${version}" --pack-destination "${tmpdir}" >/dev/null
+            tarball="$(ls "${tmpdir}"/*.tgz)"
+            actual_shasum="$(sha1sum "${tarball}" | awk '{print $1}')"
+
+            if [[ "${actual_shasum}" != "${expected_shasum}" ]]; then
+              echo "Integrity mismatch for ${package}@${version}" >&2
+              echo "expected=${expected_shasum} actual=${actual_shasum}" >&2
+              return 1
+            fi
+
+            npm install -g "${tarball}"
+            rm -rf "${tmpdir}"
+          }
+
           install_pinned_cli() {
             local binary="$1"
             local package="$2"
@@ -213,8 +242,8 @@ jobs:
               return 0
             fi
 
-            echo "Installing ${package}@${version}"
-            npm install -g "${package}@${version}"
+            echo "Installing ${package}@${version} with integrity verification"
+            verify_and_install_cli "${package}" "${version}"
           }
 
           install_pinned_cli codex @openai/codex "${CODEX_CLI_VERSION}"
@@ -272,10 +301,50 @@ jobs:
           path: .sentinelayer/runs/${{ steps.omar.outputs.run_id }}
           if-no-files-found: warn
 
+  deploy:
+    name: Deploy Artifact
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [quality-gates, build-provenance, secret-scanning, omar-review]
+    runs-on: ubuntu-22.04
+    environment:
+      name: production
+    permissions:
+      contents: read
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: build-provenance-${{ github.run_id }}
+          path: .build-provenance
+
+      - name: Verify promoted artifact integrity
+        run: |
+          set -euo pipefail
+          cd .build-provenance
+          sha256sum --check SHA256SUMS
+          test -s build-metadata.txt
+          echo "Promotable artifact verified."
+
+  rollback-readiness:
+    name: Rollback Readiness
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [deploy]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Verify rollback runbook checksum
+        run: |
+          set -euo pipefail
+          cd docs
+          sha256sum --check rollback-runbook.sha256
+
   release-gate:
     name: Release Gate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [quality-gates, build-provenance, secret-scanning, omar-review]
+    needs: [deploy, rollback-readiness]
     runs-on: ubuntu-22.04
     environment:
       name: production

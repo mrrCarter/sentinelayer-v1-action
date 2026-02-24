@@ -4,18 +4,11 @@
 FROM python:3.11-alpine@sha256:303398d5c9f110790bce60d64f902e51e1a061e33292985c72bf6cd07960bf09 AS builder
 
 RUN set -eux; \
-    apk update; \
-    pin_pkg() { \
-      pkg="$1"; \
-      ver="$(apk search -x "$pkg" | sed -n "s/^${pkg}-//p" | head -n1)"; \
-      test -n "$ver"; \
-      printf '%s=%s\n' "$pkg" "$ver"; \
-    }; \
     apk add --no-cache \
-      "$(pin_pkg build-base)" \
-      "$(pin_pkg libffi-dev)" \
-      "$(pin_pkg openssl-dev)" \
-      "$(pin_pkg cargo)" \
+      build-base=0.5-r3 \
+      libffi-dev=3.5.2-r0 \
+      openssl-dev=3.5.5-r0 \
+      cargo=1.91.1-r0 \
     && python -m pip install --upgrade pip wheel
 
 WORKDIR /tmp
@@ -27,19 +20,12 @@ RUN python -m pip install --no-cache-dir --prefix=/install --require-hashes -r /
 FROM python:3.11-alpine@sha256:303398d5c9f110790bce60d64f902e51e1a061e33292985c72bf6cd07960bf09 AS runtime
 
 RUN set -eux; \
-    apk update; \
-    pin_pkg() { \
-      pkg="$1"; \
-      ver="$(apk search -x "$pkg" | sed -n "s/^${pkg}-//p" | head -n1)"; \
-      test -n "$ver"; \
-      printf '%s=%s\n' "$pkg" "$ver"; \
-    }; \
     apk add --no-cache \
-      "$(pin_pkg ca-certificates)" \
-      "$(pin_pkg libstdc++)" \
-      "$(pin_pkg nodejs)" \
-      "$(pin_pkg npm)" \
-      "$(pin_pkg git)"
+      ca-certificates=20251003-r0 \
+      libstdc++=15.2.0-r2 \
+      nodejs=24.13.0-r1 \
+      npm=11.6.3-r0 \
+      git=2.52.0-r0
 
 # Install Codex CLI (pinned). Latest as of 2026-02-08: 0.98.0
 RUN npm install -g @openai/codex@0.98.0 \
