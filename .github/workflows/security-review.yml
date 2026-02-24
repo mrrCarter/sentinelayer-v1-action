@@ -65,7 +65,10 @@ jobs:
       - name: Generate checksums
         run: |
           set -euo pipefail
-          sha256sum dist/* > dist/SHA256SUMS
+          (
+            cd dist
+            sha256sum * > SHA256SUMS
+          )
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
