@@ -11,7 +11,7 @@ from typing import Optional
 
 from .analyze import AnalysisOrchestrator
 from .analyze.spec_context import fetch_spec_context
-from .comment import marker, marker_prefix, render_pr_comment
+from .comment import marker, render_pr_comment
 from .config import OmarGateConfig
 from .context import GitHubContext
 from .gate import evaluate_gate
@@ -390,7 +390,11 @@ async def async_main() -> int:
                         comment_url = gh.create_or_update_pr_comment(
                             ctx.pr_number,
                             comment_body,
-                            marker_prefix(config.comment_tag),
+                            marker(
+                                ctx.repo_full_name,
+                                ctx.pr_number,
+                                comment_tag=config.comment_tag,
+                            ),
                         )
                         logger.info("PR comment upserted", url=comment_url)
                     exit_code = 12
@@ -873,7 +877,11 @@ async def async_main() -> int:
                         comment_url = gh.create_or_update_pr_comment(
                             ctx.pr_number,
                             comment_body,
-                            marker_prefix(config.comment_tag),
+                            marker(
+                                ctx.repo_full_name,
+                                ctx.pr_number,
+                                comment_tag=config.comment_tag,
+                            ),
                         )
                         logger.info("PR comment upserted", url=comment_url)
                     except Exception as exc:
