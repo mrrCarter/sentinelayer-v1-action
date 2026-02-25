@@ -14,6 +14,7 @@ async def check_rate_limits(
     pr_number: Optional[int],
     config: OmarGateConfig,
     logger: OmarLogger,
+    check_name: str = "Omar Gate",
 ) -> Tuple[bool, str]:
     """
     Check cooldown and daily limits.
@@ -52,7 +53,7 @@ async def check_rate_limits(
         head_sha = (pr.get("head") or {}).get("sha")
         if not head_sha:
             return _on_api_error("missing_head_sha")
-        runs = gh.list_check_runs(head_sha, "Omar Gate")
+        runs = gh.list_check_runs(head_sha, check_name)
     except Exception as exc:
         return _on_api_error("exception", error=str(exc))
 

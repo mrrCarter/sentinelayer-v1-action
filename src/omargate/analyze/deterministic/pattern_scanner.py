@@ -43,6 +43,7 @@ class Finding:
     message: str
     recommendation: str
     confidence: float
+    fix_plan: str = ""
     source: str = "deterministic"
 
 
@@ -170,6 +171,7 @@ class PatternScanner:
                     snippet=snippet,
                     message=pattern["message"],
                     recommendation=pattern["recommendation"],
+                    fix_plan=str(pattern.get("fix_plan", "")),
                     confidence=1.0,
                 )
             )
@@ -225,6 +227,7 @@ class PatternScanner:
                         snippet=snippet,
                         message=pattern["message"],
                         recommendation=pattern["recommendation"],
+                        fix_plan=str(pattern.get("fix_plan", "")),
                         confidence=1.0,
                     )
                 )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Iterable, List, Optional
 
 from .formatting import (
@@ -18,11 +19,26 @@ MARKER_PREFIX = "<!-- sentinelayer:omar-gate:v1:"
 _SEVERITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
 
-def marker(repo_full_name: str, pr_number: int) -> str:
+def _normalize_comment_tag(comment_tag: str = "") -> str:
+    tag = str(comment_tag or "").strip().lower()
+    if not tag:
+        return ""
+    tag = re.sub(r"[^a-z0-9_-]+", "-", tag)
+    tag = re.sub(r"-{2,}", "-", tag).strip("-_")
+    return tag
+
+
+def marker(repo_full_name: str, pr_number: int, comment_tag: str = "") -> str:
+    tag = _normalize_comment_tag(comment_tag)
+    if tag:
+        return f"{MARKER_PREFIX}{tag}:{repo_full_name}:{pr_number} -->"
     return f"{MARKER_PREFIX}{repo_full_name}:{pr_number} -->"
 
 
-def marker_prefix() -> str:
+def marker_prefix(comment_tag: str = "") -> str:
+    tag = _normalize_comment_tag(comment_tag)
+    if tag:
+        return f"{MARKER_PREFIX}{tag}:"
     return MARKER_PREFIX
 
 
@@ -158,7 +174,7 @@ def _top_findings_section(
                 recommendation=finding.get("recommendation", ""),
                 message=finding.get("message", ""),
             ),
-            320,
+            600,
         )
 
         loc = f"{file_path}:{line_start}" if line_start else file_path
@@ -231,6 +247,7 @@ def render_pr_comment(
     server_url: str = "https://github.com",
     codebase_snapshot: Optional[dict] = None,
     codebase_synopsis: Optional[str] = None,
+    comment_tag: str = "",
 ) -> str:
     """
     Render the PR comment for Omar Gate.
@@ -421,7 +438,7 @@ def render_pr_comment(
             "",
             f"<sub>Omar Gate v{version} · run_id={run_id[:8]} · dedupe={(dedupe_key or 'n/a')[:8]} · raw_findings(det={deterministic_count}, llm={llm_count})</sub>",
             "",
-            marker(repo_full_name, pr_number),
+            marker(repo_full_name, pr_number, comment_tag=comment_tag),
         ]
     )
 

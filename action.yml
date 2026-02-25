@@ -37,6 +37,10 @@ inputs:
     description: 'GitHub token for posting check runs and comments (use github.token)'
     required: false
     default: ''
+  comment_tag:
+    description: 'Optional provider tag for distinct PR comments/check runs (e.g., gemini)'
+    required: false
+    default: ''
 
   # Sentinelayer integration (optional)
   sentinelayer_token:
@@ -322,6 +326,7 @@ runs:
         INPUT_GOOGLE_API_KEY: ${{ inputs.google_api_key }}
         INPUT_XAI_API_KEY: ${{ inputs.xai_api_key }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github_token || github.token }}
+        INPUT_COMMENT_TAG: ${{ inputs.comment_tag }}
         INPUT_SENTINELAYER_TOKEN: ${{ inputs.sentinelayer_token }}
         INPUT_SENTINELAYER_SPEC_ID: ${{ inputs.sentinelayer_spec_id }}
         INPUT_SENTINELAYER_MANAGED_LLM: ${{ inputs.sentinelayer_managed_llm }}

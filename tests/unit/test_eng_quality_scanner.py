@@ -172,3 +172,29 @@ def test_missing_health_endpoint_uses_distinct_rule_id() -> None:
     assert finding is not None
     assert finding.severity == "P2"
 
+
+def test_large_timeout_rule_has_actionable_fix_plan() -> None:
+    files = {"src/server.js": "setTimeout(runJob, 86400000);\n"}
+    scanner = EngQualityScanner(tech_stack=["Node.js"])
+    findings = scanner.scan(files)
+    finding = next((f for f in findings if f.pattern_id == "EQ-010"), None)
+    assert finding is not None
+    assert "CACHE_TTL_MS" in finding.fix_plan
+    assert "Pseudo-code:" not in finding.fix_plan
+
+
+def test_missing_request_id_rule_has_stack_specific_fix_plan() -> None:
+    files = {
+        "src/api.ts": (
+            "export function handler(req, res) {\n"
+            "  return res.status(500).json({ error: 'boom' });\n"
+            "}\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Node.js"])
+    findings = scanner.scan(files)
+    finding = next((f for f in findings if f.pattern_id == "EQ-016"), None)
+    assert finding is not None
+    assert "requestId" in finding.fix_plan
+    assert "Express" in finding.fix_plan
+

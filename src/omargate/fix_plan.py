@@ -17,7 +17,7 @@ def _normalize_text(value: Any) -> str:
     return " ".join(text.split())
 
 
-def _truncate(text: str, max_chars: int = 320) -> str:
+def _truncate(text: str, max_chars: int = 600) -> str:
     if len(text) <= max_chars:
         return text
     if max_chars <= 3:

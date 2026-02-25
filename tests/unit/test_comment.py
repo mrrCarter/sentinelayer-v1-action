@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from omargate.comment import MARKER_PREFIX, render_pr_comment
+from omargate.comment import MARKER_PREFIX, marker, marker_prefix, render_pr_comment
 from omargate.models import Counts, GateResult, GateStatus
 
 
@@ -12,6 +12,18 @@ def _gate_result() -> GateResult:
         counts=Counts(p0=0, p1=1, p2=2, p3=3),
         dedupe_key="dedupe-123456",
     )
+
+
+def test_marker_without_comment_tag_is_unchanged() -> None:
+    assert marker("acme/demo", 42) == "<!-- sentinelayer:omar-gate:v1:acme/demo:42 -->"
+    assert marker_prefix() == MARKER_PREFIX
+
+
+def test_marker_with_comment_tag_is_provider_aware() -> None:
+    assert marker("acme/demo", 42, comment_tag="gemini") == (
+        "<!-- sentinelayer:omar-gate:v1:gemini:acme/demo:42 -->"
+    )
+    assert marker_prefix("gemini") == "<!-- sentinelayer:omar-gate:v1:gemini:"
 
 
 def test_comment_contains_marker() -> None:
@@ -55,6 +67,21 @@ def test_comment_contains_marker() -> None:
     assert "Cost (est.):** `$0.0032`" in body
     assert "**Fix:**" in body
     assert "Apply Fix:** Coming soon." in body
+
+
+def test_comment_contains_provider_specific_marker_when_tagged() -> None:
+    body = render_pr_comment(
+        result=_gate_result(),
+        run_id="run-abcdef123456",
+        repo_full_name="acme/demo",
+        pr_number=42,
+        dashboard_url=None,
+        artifacts_url=None,
+        estimated_cost_usd=0.0032,
+        version="1.2.0",
+        comment_tag="gemini",
+    )
+    assert "<!-- sentinelayer:omar-gate:v1:gemini:acme/demo:42 -->" in body
 
 
 def test_comment_contains_all_sections() -> None:
