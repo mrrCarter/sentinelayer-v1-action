@@ -12,6 +12,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "Potential hardcoded API key detected",
       "recommendation": "Move to environment variables or a secrets manager",
+      "fix_plan": "Remove the inline API key assignment and load the key from runtime secret storage. Replace literals with env lookups (for example process.env.API_KEY or os.environ['API_KEY']) and add a startup validation that fails when missing.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "placeholder", "xxx", "your-api-key"]
     },
@@ -26,6 +27,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "Potential hardcoded password detected",
       "recommendation": "Move passwords to environment variables or a secrets manager",
+      "fix_plan": "Delete hardcoded password values from source and rotate credentials immediately. Inject passwords through secret managers or environment variables and update tests to use non-sensitive fixtures.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "placeholder", "changeme"]
     },
@@ -40,6 +42,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "Potential hardcoded secret detected",
       "recommendation": "Store secrets in environment variables or a secrets manager",
+      "fix_plan": "Replace hardcoded secret/private key literals with secret-manager references and rotate exposed material. Keep only key identifiers in code and fetch secrets at runtime with least-privilege access.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "placeholder", "dummy"]
     },
@@ -54,6 +57,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "AWS access key detected",
       "recommendation": "Revoke and rotate the key, use environment variables",
+      "fix_plan": "Immediately revoke and rotate the exposed AWS key and audit CloudTrail for abuse. Remove the key from source/history and supply credentials via IAM roles, OIDC federation, or secure environment injection.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "sample", "not-a-key"]
     },
@@ -68,6 +72,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "GitHub token detected",
       "recommendation": "Revoke and rotate the token, use GitHub Secrets",
+      "fix_plan": "Revoke the leaked token and issue a replacement with minimal scopes. Remove token literals from repo/workflows and reference credentials through GitHub Secrets or a short-lived OIDC flow.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "sample", "fake"]
     },
@@ -82,6 +87,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "JWT token detected",
       "recommendation": "Do not commit tokens; use environment variables",
+      "fix_plan": "Treat committed JWTs as compromised and invalidate the issuing session/keys if possible. Remove token literals from source and load test tokens from ephemeral fixtures or secure environment variables.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "sample", "dummy"]
     },
@@ -96,6 +102,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "CORS allow-all with credentials detected",
       "recommendation": "Restrict allowed origins when credentials are enabled",
+      "fix_plan": "Set an explicit allowlist of trusted origins when credentials are true and reject all others. Replace wildcard/true origin settings with a function or list that validates exact production domains.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "sample", "localhost"]
     },
@@ -110,6 +117,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "Potential SQL injection risk detected",
       "recommendation": "Use parameterized queries or safe query builders",
+      "fix_plan": "Replace unsafe/raw SQL execution with parameterized query APIs and bound variables. Add a regression test using attacker-controlled input to confirm the query path no longer interpolates raw values.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "docs", "safe"]
     },
@@ -124,6 +132,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "dangerouslySetInnerHTML usage detected",
       "recommendation": "Sanitize HTML before rendering or avoid raw HTML",
+      "fix_plan": "Avoid dangerouslySetInnerHTML unless absolutely required; prefer escaped rendering. If needed, sanitize input with a vetted sanitizer (for example DOMPurify) and render only the sanitized variable.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "docs", "test"]
     },
@@ -138,6 +147,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "eval() usage detected",
       "recommendation": "Avoid eval; use safe parsers or alternatives",
+      "fix_plan": "Remove eval-based execution and replace with explicit parser/dispatch logic. For dynamic expressions, parse into a restricted AST or map known commands to safe handler functions.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "docs", "test"]
     },
@@ -152,6 +162,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "SSL verification disabled",
       "recommendation": "Enable SSL verification in production",
+      "fix_plan": "Enable certificate verification and remove verify=False/rejectUnauthorized:false in production code paths. Configure trusted CA bundles explicitly for internal services instead of disabling TLS checks.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "test", "local"]
     },
@@ -166,6 +177,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "Hardcoded IP/host detected",
       "recommendation": "Move hosts to configuration or environment variables",
+      "fix_plan": "Move endpoint hosts into environment-specific config and keep code host-agnostic. Define variables like API_BASE_URL per environment and reject direct literal IP endpoints in application logic.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "localhost", "127.0.0.1"]
     }

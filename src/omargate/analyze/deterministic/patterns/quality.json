@@ -12,6 +12,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "TODO/FIXME marker detected",
       "recommendation": "Resolve or track TODOs before release",
+      "fix_plan": "Replace unresolved TODO/FIXME markers with an implemented change or link to a tracked issue ID. If deferred intentionally, add owner + due date and enforce backlog tracking outside release branches.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "docs"]
     },
@@ -26,6 +27,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "Explicit any type detected",
       "recommendation": "Use precise types instead of any",
+      "fix_plan": "Replace any with concrete interfaces/types inferred from actual payload shape. Define shared types (for example type UserResponse = {...}) and update call sites to compile with strict type checking.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "migration"]
     },
@@ -40,6 +42,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "Console log detected",
       "recommendation": "Remove debug logging or use structured logging",
+      "fix_plan": "Remove console.debug/info/log from shipped code and route logs through the project's structured logger. Guard temporary debugging behind explicit development flags and add lint rules to block future console logs.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "docs", "test"]
     },
@@ -54,6 +57,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "Debugger statement detected",
       "recommendation": "Remove debugger statements before release",
+      "fix_plan": "Delete debugger statements from production sources and rely on breakpoints in local debug configs only. Add lint enforcement (no-debugger) to fail CI when debugger is introduced.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "docs", "test"]
     },
@@ -68,6 +72,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "Empty catch block detected",
       "recommendation": "Handle or log exceptions instead of empty catch",
+      "fix_plan": "Replace empty catch blocks with explicit error handling paths that log context and propagate/translate failures. At minimum capture exception details with request context and return a controlled error response.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "generated"]
     },
@@ -82,6 +87,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "Magic number detected",
       "recommendation": "Replace magic numbers with named constants",
+      "fix_plan": "Extract the literal into a named constant near domain logic and document units. Example: const RETRY_DELAY_MS = 5_000; or const CACHE_TTL_MS = 24 * 60 * 60 * 1000; then reuse constant across call sites.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "docs", "test"]
     },
@@ -96,6 +102,7 @@
       "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
       "message": "Long function detected",
       "recommendation": "Split long functions into smaller units",
+      "fix_plan": "Refactor long functions into focused helpers with single responsibilities and clear inputs/outputs. Keep orchestration in the parent function and move validation, side effects, and mapping into testable private functions.",
       "evidence_capture": "block",
       "false_positive_hints": ["generated", "auto"]
     }

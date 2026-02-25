@@ -70,6 +70,10 @@ class OmarGateConfig(BaseSettings):
 
     # GitHub integration (recommended)
     github_token: SecretStr = Field(default="", description="GitHub token used for API calls")
+    comment_tag: str = Field(
+        default="",
+        description="Optional provider tag to isolate PR comments/check runs",
+    )
 
     # Sentinelayer integration (optional)
     sentinelayer_token: SecretStr = Field(default="", description="Sentinelayer API token")
@@ -153,6 +157,16 @@ class OmarGateConfig(BaseSettings):
         if isinstance(value, str):
             return value.strip().lower()
         return value
+
+    @field_validator("comment_tag", mode="before")
+    @classmethod
+    def _normalize_comment_tag(cls, value: str) -> str:
+        tag = str(value or "").strip().lower()
+        if not tag:
+            return ""
+        sanitized = re.sub(r"[^a-z0-9_-]+", "-", tag)
+        sanitized = re.sub(r"-{2,}", "-", sanitized).strip("-_")
+        return sanitized[:32]
 
     @field_validator(
         "scan_mode",

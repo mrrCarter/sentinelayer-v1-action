@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from omargate.main import (
+    _check_name,
     _build_spec_compliance_from_findings,
     _counts_from_check_run_output,
     _exit_code_from_gate_result,
@@ -16,6 +17,11 @@ def test_parse_iso8601_handles_z_suffix() -> None:
     ts = parse_iso8601("2026-02-08T05:31:22.137538Z")
     assert ts is not None
     assert ts.tzinfo is not None
+
+
+def test_check_name_uses_comment_tag_when_set() -> None:
+    assert _check_name("") == "Omar Gate"
+    assert _check_name("gemini") == "Omar Gate (gemini)"
 
 
 def test_latest_completed_check_run_picks_newest_completed() -> None:

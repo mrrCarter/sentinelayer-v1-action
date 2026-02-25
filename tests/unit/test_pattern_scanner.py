@@ -39,6 +39,7 @@ def test_scanner_finds_hardcoded_api_key(scanner: PatternScanner) -> None:
     assert len(findings) == 1
     assert findings[0].pattern_id == "SEC-001"
     assert findings[0].severity == "P1"
+    assert "env" in findings[0].fix_plan.lower()
 
 
 def test_scanner_ignores_test_files(scanner: PatternScanner) -> None:
@@ -69,6 +70,15 @@ def test_scanner_long_function_detection(scanner: PatternScanner) -> None:
     content = "\n".join(lines)
     findings = scanner.scan_file(Path("src/long.py"), content)
     assert any(finding.pattern_id == "QUAL-007" for finding in findings)
+
+
+def test_scanner_magic_number_fix_plan_is_specific(scanner: PatternScanner) -> None:
+    content = "const cacheTtl = 86400000;"
+    findings = scanner.scan_file(Path("src/constants.ts"), content)
+    finding = next((f for f in findings if f.pattern_id == "QUAL-006"), None)
+    assert finding is not None
+    assert "CACHE_TTL_MS" in finding.fix_plan
+    assert "Pseudo-code:" not in finding.fix_plan
 
 
 def test_scan_files_aggregates_findings(scanner: PatternScanner, tmp_path: Path) -> None:

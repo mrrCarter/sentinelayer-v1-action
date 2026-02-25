@@ -11,7 +11,7 @@ from typing import Optional
 
 from .analyze import AnalysisOrchestrator
 from .analyze.spec_context import fetch_spec_context
-from .comment import marker, marker_prefix, render_pr_comment
+from .comment import marker, render_pr_comment
 from .config import OmarGateConfig
 from .context import GitHubContext
 from .gate import evaluate_gate
@@ -64,7 +64,7 @@ from .utils import ensure_writable_dir, json_dumps
 
 ACTION_VERSION = "1.3.4"
 ACTION_MAJOR_VERSION = "1"
-CHECK_NAME = "Omar Gate"
+CHECK_NAME_BASE = "Omar Gate"
 __all__ = [
     "main",
     "async_main",
@@ -75,6 +75,13 @@ __all__ = [
     "_map_category_to_spec_sections",
     "_build_spec_compliance_from_findings",
 ]
+
+
+def _check_name(comment_tag: str = "") -> str:
+    tag = str(comment_tag or "").strip().lower()
+    if not tag:
+        return CHECK_NAME_BASE
+    return f"{CHECK_NAME_BASE} ({tag})"
 
 def _short_circuit_with_gate_result(
     *,
@@ -256,6 +263,7 @@ async def async_main() -> int:
         collector.scan_mode = config.scan_mode
         collector.llm_provider = config.llm_provider
         collector.model_used = config.model
+        check_name = _check_name(config.comment_tag)
         effective_scan_mode = config.scan_mode
         if config.scan_mode == "nightly":
             effective_scan_mode = "deep"
@@ -309,6 +317,7 @@ async def async_main() -> int:
             policy_pack=config.policy_pack,
             policy_pack_version=config.policy_pack_version,
             action_major_version=ACTION_MAJOR_VERSION,
+            comment_tag=config.comment_tag,
         )
 
         token = config.github_token.get_secret_value() or os.environ.get("GITHUB_TOKEN", "")
@@ -336,7 +345,7 @@ async def async_main() -> int:
         try:
             with logger.stage("preflight"):
                 should_skip, existing_url = await check_dedupe(
-                    gh, ctx.head_sha, idem_key, CHECK_NAME
+                    gh, ctx.head_sha, idem_key, check_name
                 )
                 if should_skip:
                     collector.dedupe_skipped = True
@@ -348,7 +357,7 @@ async def async_main() -> int:
                             gh=gh,
                             head_sha=ctx.head_sha,
                             idem_key=idem_key,
-                            check_name=CHECK_NAME,
+                            check_name=check_name,
                             select="dedupe",
                             fallback_reason="Deduped",
                             note_prefix="Deduped (already analyzed). Mirroring prior Omar Gate result.",
@@ -376,12 +385,16 @@ async def async_main() -> int:
                             "## 🛡️ Omar Gate: Blocked\n\n"
                             "Fork PRs cannot access secrets required for full analysis. "
                             "Please ask a maintainer to run the scan via workflow_dispatch.\n\n"
-                            f"{marker(ctx.repo_full_name, ctx.pr_number)}"
+                            f"{marker(ctx.repo_full_name, ctx.pr_number, comment_tag=config.comment_tag)}"
                         )
                         comment_url = gh.create_or_update_pr_comment(
                             ctx.pr_number,
                             comment_body,
-                            marker_prefix(),
+                            marker(
+                                ctx.repo_full_name,
+                                ctx.pr_number,
+                                comment_tag=config.comment_tag,
+                            ),
                         )
                         logger.info("PR comment upserted", url=comment_url)
                     exit_code = 12
@@ -389,7 +402,7 @@ async def async_main() -> int:
                     return exit_code
 
                 proceed, rate_reason = await check_rate_limits(
-                    gh, ctx.pr_number, config, logger
+                    gh, ctx.pr_number, config, logger, check_name=check_name
                 )
                 if not proceed:
                     collector.rate_limit_skipped = True
@@ -431,7 +444,7 @@ async def async_main() -> int:
                             gh=gh,
                             head_sha=ctx.head_sha,
                             idem_key=idem_key,
-                            check_name=CHECK_NAME,
+                            check_name=check_name,
                             select="latest",
                             fallback_reason="Rate limited",
                             note_prefix=f"Rate limited ({rate_reason}). Mirroring latest Omar Gate result.",
@@ -457,7 +470,7 @@ async def async_main() -> int:
                         )
                         try:
                             gh.create_check_run(
-                                name=CHECK_NAME,
+                                name=check_name,
                                 head_sha=ctx.head_sha,
                                 conclusion="neutral",
                                 summary=reason_msg,
@@ -482,7 +495,7 @@ async def async_main() -> int:
                     collector.record_preflight_exit(reason="cost_approval", exit_code=exit_code)
                     return exit_code
 
-                bp_ok, bp_message = check_branch_protection(gh, ctx, CHECK_NAME)
+                bp_ok, bp_message = check_branch_protection(gh, ctx, check_name)
                 if not bp_ok:
                     logger.warning("Branch protection issue", message=bp_message)
         except Exception as exc:
@@ -535,7 +548,7 @@ async def async_main() -> int:
             if gh.token:
                 try:
                     gh.create_check_run(
-                        name=CHECK_NAME,
+                        name=check_name,
                         head_sha=ctx.head_sha,
                         conclusion="success",
                         summary=reason_msg,
@@ -859,11 +872,16 @@ async def async_main() -> int:
                             actual_cost_usd=cost_usd,
                             head_sha=ctx.head_sha,
                             server_url=server_url,
+                            comment_tag=config.comment_tag,
                         )
                         comment_url = gh.create_or_update_pr_comment(
                             ctx.pr_number,
                             comment_body,
-                            marker_prefix(),
+                            marker(
+                                ctx.repo_full_name,
+                                ctx.pr_number,
+                                comment_tag=config.comment_tag,
+                            ),
                         )
                         logger.info("PR comment upserted", url=comment_url)
                     except Exception as exc:
@@ -914,7 +932,7 @@ async def async_main() -> int:
                 else:
                     try:
                         check_url = gh.create_check_run(
-                            name=CHECK_NAME,
+                            name=check_name,
                             head_sha=ctx.head_sha,
                             conclusion=conclusion_map.get(status_key, "failure"),
                             summary=summary_text,

@@ -48,14 +48,14 @@ class GitHubClient:
             "User-Agent": "omar-gate-action",
         })
 
-    def create_or_update_pr_comment(self, pr_number: int, body: str, marker_prefix: str) -> Optional[str]:
-        """Idempotent update: search recent comments for marker prefix; update if found else create."""
+    def create_or_update_pr_comment(self, pr_number: int, body: str, marker_token: str) -> Optional[str]:
+        """Idempotent update: match exact marker token; update if found else create."""
         url = f"{GITHUB_API}/repos/{self.repo}/issues/{pr_number}/comments"
         r = self.session.get(url, params={"per_page": 100}, timeout=DEFAULT_HTTP_TIMEOUT_SECONDS)
         r.raise_for_status()
         comments = r.json()
         for c in comments:
-            if marker_prefix in (c.get("body") or ""):
+            if marker_token in (c.get("body") or ""):
                 patch_url = f"{GITHUB_API}/repos/{self.repo}/issues/comments/{c['id']}"
                 pr = self.session.patch(
                     patch_url,

@@ -44,6 +44,7 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: read
+      packages: write
       id-token: write
       attestations: write
     steps:
@@ -66,26 +67,70 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
 
+      - name: Derive OCI image coordinates
+        id: image_meta
+        run: |
+          set -euo pipefail
+          image_name="ghcr.io/${GITHUB_REPOSITORY,,}"
+          image_ref_tag="${image_name}:sha-${GITHUB_SHA}"
+          echo "image_name=${image_name}" >> "$GITHUB_OUTPUT"
+          echo "image_ref_tag=${image_ref_tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
       - name: Build Docker image with SBOM + provenance
         id: docker_build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
-          push: false
-          tags: omargate-local:${{ github.sha }}
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: ${{ steps.image_meta.outputs.image_ref_tag }}
           provenance: mode=max
           sbom: true
 
       - name: Capture image metadata
+        env:
+          IMAGE_DIGEST: ${{ steps.docker_build.outputs.digest }}
         run: |
           set -euo pipefail
-          echo "image_digest=${{ steps.docker_build.outputs.digest }}" > dist/build-metadata.txt
+          {
+            echo "image_name=${{ steps.image_meta.outputs.image_name }}"
+            echo "image_tag=sha-${{ github.sha }}"
+            echo "image_digest=${IMAGE_DIGEST}"
+            if [[ -n "${IMAGE_DIGEST}" ]]; then
+              echo "image_ref=${{ steps.image_meta.outputs.image_name }}@${IMAGE_DIGEST}"
+            else
+              echo "image_ref="
+            fi
+          } > dist/build-metadata.txt
 
       - name: Attest source bundle provenance
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
         with:
           subject-path: dist/omargate-action-src.tgz
+
+      - name: Attest Docker image provenance
+        id: attest_image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.docker_build.outputs.digest != ''
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with:
+          subject-name: ${{ steps.image_meta.outputs.image_name }}
+          subject-digest: ${{ steps.docker_build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Record image attestation metadata
+        if: always() && steps.attest_image.outputs.attestation-url != ''
+        run: |
+          set -euo pipefail
+          {
+            echo "image_attestation_id=${{ steps.attest_image.outputs.attestation-id }}"
+            echo "image_attestation_url=${{ steps.attest_image.outputs.attestation-url }}"
+          } >> dist/build-metadata.txt
 
       - name: Generate checksums
         run: |
@@ -201,25 +246,25 @@ jobs:
           verify_and_install_cli() {
             local package="$1"
             local version="$2"
-            local expected_shasum=""
+            local expected_integrity=""
             local tmpdir=""
             local tarball=""
-            local actual_shasum=""
+            local actual_integrity=""
 
-            expected_shasum="$(npm view "${package}@${version}" dist.shasum --json | tr -d '"')"
-            if [[ -z "${expected_shasum}" ]]; then
-              echo "Unable to resolve shasum for ${package}@${version}" >&2
+            expected_integrity="$(npm view "${package}@${version}" dist.integrity --json | tr -d '"')"
+            if [[ -z "${expected_integrity}" ]]; then
+              echo "Unable to resolve integrity for ${package}@${version}" >&2
               return 1
             fi
 
             tmpdir="$(mktemp -d)"
             npm pack "${package}@${version}" --pack-destination "${tmpdir}" >/dev/null
             tarball="$(ls "${tmpdir}"/*.tgz)"
-            actual_shasum="$(sha1sum "${tarball}" | awk '{print $1}')"
+            actual_integrity="sha512-$(openssl dgst -sha512 -binary "${tarball}" | openssl base64 -A)"
 
-            if [[ "${actual_shasum}" != "${expected_shasum}" ]]; then
+            if [[ "${actual_integrity}" != "${expected_integrity}" ]]; then
               echo "Integrity mismatch for ${package}@${version}" >&2
-              echo "expected=${expected_shasum} actual=${actual_shasum}" >&2
+              echo "expected=${expected_integrity} actual=${actual_integrity}" >&2
               return 1
             fi
 
@@ -306,11 +351,19 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [quality-gates, build-provenance, secret-scanning, omar-review]
     runs-on: ubuntu-22.04
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
     environment:
       name: production
     permissions:
       contents: read
+      packages: write
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+
       - name: Download build artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -318,12 +371,48 @@ jobs:
           path: .build-provenance
 
       - name: Verify promoted artifact integrity
+        id: verify_artifact
         run: |
           set -euo pipefail
           cd .build-provenance
           sha256sum --check SHA256SUMS
           test -s build-metadata.txt
-          echo "Promotable artifact verified."
+          source build-metadata.txt
+          test -n "${image_name:-}"
+          test -n "${image_digest:-}"
+          test -n "${image_ref:-}"
+          echo "image_name=${image_name}" >> "${GITHUB_OUTPUT}"
+          echo "image_digest=${image_digest}" >> "${GITHUB_OUTPUT}"
+          echo "image_ref=${image_ref}" >> "${GITHUB_OUTPUT}"
+          echo "Promotable artifact verified: ${image_ref}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - name: Authenticate to GHCR
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Verify container attestation before promotion
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_REF: ${{ steps.verify_artifact.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          gh attestation verify "oci://${IMAGE_REF}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/security-review.yml@refs/heads/main"
+
+      - name: Promote immutable image to production tag
+        env:
+          IMAGE_NAME: ${{ steps.verify_artifact.outputs.image_name }}
+          IMAGE_REF: ${{ steps.verify_artifact.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create --tag "${IMAGE_NAME}:production" "${IMAGE_REF}"
+          docker buildx imagetools inspect "${IMAGE_NAME}:production"
+          echo "Promoted ${IMAGE_REF} -> ${IMAGE_NAME}:production" >> "${GITHUB_STEP_SUMMARY}"
 
   rollback-readiness:
     name: Rollback Readiness
@@ -334,12 +423,32 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 2
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
 
       - name: Verify rollback runbook checksum
         run: |
           set -euo pipefail
           cd docs
           sha256sum --check rollback-runbook.sha256
+
+      - name: Run rollback drill on previous commit
+        run: |
+          set -euo pipefail
+          rollback_target="$(git rev-parse HEAD~1)"
+          rollback_worktree="$(mktemp -d)"
+          cleanup() {
+            git worktree remove --force "${rollback_worktree}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          git worktree add --detach "${rollback_worktree}" "${rollback_target}" >/dev/null
+          python -m compileall -q "${rollback_worktree}/src"
+          echo "Rollback drill passed for ${rollback_target}" >> "${GITHUB_STEP_SUMMARY}"
 
   release-gate:
     name: Release Gate

@@ -5,8 +5,6 @@ import json
 import re
 from typing import List
 
-from ...fix_plan import ensure_fix_plan
-
 
 @dataclass
 class ParsedFinding:
@@ -144,11 +142,7 @@ class ResponseParser:
             line_end=obj.get("line_end", obj["line_start"]),
             message=obj["message"],
             recommendation=recommendation,
-            fix_plan=ensure_fix_plan(
-                fix_plan=obj.get("fix_plan", ""),
-                recommendation=recommendation,
-                message=obj.get("message", ""),
-            ),
+            fix_plan=str(obj.get("fix_plan", "") or "").strip(),
             confidence=float(obj.get("confidence", 0.8)),
             source="llm",
         )

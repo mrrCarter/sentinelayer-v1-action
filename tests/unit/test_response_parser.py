@@ -15,7 +15,7 @@ def test_parser_valid_jsonl() -> None:
     assert len(result.findings) == 2
     assert result.findings[0].severity == "P1"
     assert "sanitize HTML" in result.findings[0].fix_plan
-    assert result.findings[1].fix_plan.startswith("Pseudo-code:")
+    assert result.findings[1].fix_plan == ""
 
 
 def test_parser_handles_markdown_block() -> None:
@@ -27,7 +27,7 @@ def test_parser_handles_markdown_block() -> None:
 ```"""
     result = parser.parse(response)
     assert len(result.findings) == 1
-    assert result.findings[0].fix_plan.startswith("Pseudo-code:")
+    assert result.findings[0].fix_plan == ""
 
 
 def test_parser_handles_no_findings() -> None:
@@ -67,3 +67,16 @@ def test_parser_handles_missing_fields() -> None:
     response = '{"severity": "P1", "category": "XSS"}'
     result = parser.parse(response)
     assert len(result.findings) == 0
+
+
+def test_parser_preserves_detailed_fix_plan_verbatim() -> None:
+    parser = ResponseParser()
+    response = (
+        '{"severity":"P1","category":"backend","file_path":"src/api.ts","line_start":17,'
+        '"message":"Timeout missing","fix_plan":"Add HTTP_TIMEOUT_MS constant and pass timeout: HTTP_TIMEOUT_MS to axios.get in fetchProfile()."}'
+    )
+    result = parser.parse(response)
+    assert len(result.findings) == 1
+    assert result.findings[0].fix_plan == (
+        "Add HTTP_TIMEOUT_MS constant and pass timeout: HTTP_TIMEOUT_MS to axios.get in fetchProfile()."
+    )

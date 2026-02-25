@@ -40,9 +40,11 @@ Output requirements (STRICT):
 - Do NOT output markdown, headings, code fences, or commentary.
 - Each JSON object MUST include: severity, category, file_path, line_start, message, fix_plan.
 - Recommended fields: line_end, recommendation, confidence.
-- fix_plan rules: 1-3 sentences, actionable, code-specific, pseudo-code style, no fluff.
+- fix_plan rules: 1-3 sentences, actionable, code-specific, no fluff.
+- fix_plan MUST reference concrete symbols from the finding context when available (function names, route names, middleware names, env vars, config keys).
+- fix_plan SHOULD include a minimal code-oriented example (realistic snippet or exact API usage), not generic "best practices" wording.
 - If no findings: output exactly {"no_findings": true}
 
 JSONL schema:
-{"severity":"P1","category":"infrastructure","file_path":"path/to/file","line_start":123,"line_end":125,"message":"What is wrong + why it matters (include impact on deploy/rollback).","recommendation":"Concrete fix steps.","fix_plan":"Pseudo-code: update this workflow step to pin the action by commit SHA, then add a CI check that fails when unpinned actions are introduced.","confidence":0.85}
+{"severity":"P1","category":"infrastructure","file_path":"path/to/file","line_start":123,"line_end":125,"message":"What is wrong + why it matters (include impact on deploy/rollback).","recommendation":"Concrete fix steps.","fix_plan":"Pin this workflow action to a commit SHA in deploy.yml (replace uses: org/action@main with uses: org/action@<sha>). Add a workflow lint check that fails PRs when @main/@latest refs appear.","confidence":0.85}
 

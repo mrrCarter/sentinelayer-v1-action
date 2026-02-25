@@ -97,3 +97,10 @@ def test_config_auto_detects_sentinelayer_spec_id_from_workflow(
 
     cfg = OmarGateConfig()
     assert cfg.sentinelayer_spec_id == "b" * 64
+
+
+def test_config_sanitizes_comment_tag(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INPUT_OPENAI_API_KEY", "sk_test_dummy")
+    monkeypatch.setenv("INPUT_COMMENT_TAG", "  Gemini !@# Provider  ")
+    cfg = OmarGateConfig()
+    assert cfg.comment_tag == "gemini-provider"
