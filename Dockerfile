@@ -25,11 +25,30 @@ RUN set -eux; \
       libstdc++=15.2.0-r2 \
       nodejs=24.13.0-r1 \
       npm=11.6.3-r0 \
+      openssl=3.5.5-r0 \
       git=2.52.0-r0
 
-# Install Codex CLI (pinned). Latest as of 2026-02-08: 0.98.0
-RUN npm install -g @openai/codex@0.98.0 \
-    && npm cache clean --force
+# Install Codex CLI (pinned) with npm dist.integrity verification.
+ARG CODEX_CLI_PACKAGE=@openai/codex
+ARG CODEX_CLI_VERSION=0.98.0
+RUN set -eux; \
+    expected_integrity="$(npm view "${CODEX_CLI_PACKAGE}@${CODEX_CLI_VERSION}" dist.integrity --json | tr -d '"')"; \
+    if [ -z "${expected_integrity}" ]; then \
+      echo "Unable to resolve npm dist.integrity for ${CODEX_CLI_PACKAGE}@${CODEX_CLI_VERSION}" >&2; \
+      exit 1; \
+    fi; \
+    tmpdir="$(mktemp -d)"; \
+    npm pack "${CODEX_CLI_PACKAGE}@${CODEX_CLI_VERSION}" --pack-destination "${tmpdir}" >/dev/null; \
+    tarball="$(ls "${tmpdir}"/*.tgz)"; \
+    actual_integrity="sha512-$(openssl dgst -sha512 -binary "${tarball}" | openssl base64 -A)"; \
+    if [ "${actual_integrity}" != "${expected_integrity}" ]; then \
+      echo "Integrity mismatch for ${CODEX_CLI_PACKAGE}@${CODEX_CLI_VERSION}" >&2; \
+      echo "expected=${expected_integrity} actual=${actual_integrity}" >&2; \
+      exit 1; \
+    fi; \
+    npm install -g "${tarball}"; \
+    rm -rf "${tmpdir}"; \
+    npm cache clean --force
 
 WORKDIR /app
 
