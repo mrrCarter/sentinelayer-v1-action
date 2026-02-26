@@ -802,7 +802,7 @@ async def async_main() -> int:
         try:
             with logger.stage("publish"):
                 # Avoid misleading "$0.00" when the engine cannot report usage (e.g. Codex CLI).
-                if int(analysis.llm_count or 0) == 0:
+                if not analysis.llm_success and int(analysis.llm_count or 0) == 0:
                     cost_usd = 0.0
                 elif analysis.llm_usage:
                     cost_raw = analysis.llm_usage.get("cost_usd")
@@ -820,7 +820,9 @@ async def async_main() -> int:
                     try:
                         llm_engine_used = "disabled"
                         llm_model_used = "n/a"
-                        if int(analysis.llm_count or 0) > 0:
+                        # Show LLM engine/model when analysis ran, even if it found 0 findings.
+                        _llm_ran = analysis.llm_success or analysis.llm_usage is not None
+                        if _llm_ran:
                             if analysis.llm_usage:
                                 llm_engine_used = str(
                                     analysis.llm_usage.get("engine")
