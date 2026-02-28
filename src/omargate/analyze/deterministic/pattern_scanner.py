@@ -20,6 +20,8 @@ _COMMENT_SKIP_CATEGORIES = frozenset({"secrets"})
 _GLOBAL_PLACEHOLDER_TOKENS = frozenset({
     "your", "placeholder", "changeme", "change_this", "replace",
     "example", "sample", "dummy", "todo", "fixme", "xxx",
+    "test_value", "fake", "mock", "stub", "fixture", "seed",
+    "<redacted>", "redacted", "not-a-real", "your-key-here",
 })
 
 FUNCTION_START_PATTERNS = [

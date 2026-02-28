@@ -9,12 +9,12 @@
       "description": "TODO/FIXME marker left in code",
       "regex": "\\b(TODO|FIXME|HACK|XXX|BUG)[\\s:]+",
       "file_patterns": ["*.ts", "*.tsx", "*.js", "*.jsx", "*.py", "*.java", "*.go", "*.rb", "*.php", "*.cs", "*.kt", "*.scala", "*.swift", "*.rs", "*.sh", "*.bash"],
-      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
+      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt", "*.d.ts", "*.lock", "*.min.js", "*.min.css", "CHANGELOG*", "LICENSE*"],
       "message": "TODO/FIXME marker detected",
       "recommendation": "Resolve or track TODOs before release",
       "fix_plan": "Replace unresolved TODO/FIXME markers with an implemented change or link to a tracked issue ID. If deferred intentionally, add owner + due date and enforce backlog tracking outside release branches.",
       "evidence_capture": "line",
-      "false_positive_hints": ["example", "docs"]
+      "false_positive_hints": ["example", "docs", "generated", "auto-generated", "eslint", "prettier", "stylelint"]
     },
     {
       "id": "QUAL-002",
@@ -39,12 +39,12 @@
       "description": "Console logging left in code",
       "regex": "console\\.(log|debug|info)\\s*\\(",
       "file_patterns": ["*.ts", "*.tsx", "*.js", "*.jsx"],
-      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
+      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt", "*.config.*", "vite.config.*", "webpack.config.*", "*.min.js"],
       "message": "Console log detected",
       "recommendation": "Remove debug logging or use structured logging",
       "fix_plan": "Remove console.debug/info/log from shipped code and route logs through the project's structured logger. Guard temporary debugging behind explicit development flags and add lint rules to block future console logs.",
       "evidence_capture": "line",
-      "false_positive_hints": ["example", "docs", "test"]
+      "false_positive_hints": ["example", "docs", "test", "eslint", "logger", "winston", "pino"]
     },
     {
       "id": "QUAL-004",
@@ -82,14 +82,14 @@
       "severity": "P3",
       "category": "quality",
       "description": "Large magic number detected",
-      "regex": "(?<![0-9a-zA-Z_.])[0-9]{4,}(?![0-9a-zA-Z_.])",
+      "regex": "(?<![0-9a-zA-Z_.x#])[0-9]{5,}(?![0-9a-zA-Z_.])",
       "file_patterns": ["*.ts", "*.tsx", "*.js", "*.jsx", "*.py", "*.java", "*.go", "*.rb", "*.php", "*.cs", "*.kt", "*.scala", "*.swift", "*.rs"],
-      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
+      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt", "*.lock", "*.min.js", "*.d.ts", "*.css", "*.svg"],
       "message": "Magic number detected",
       "recommendation": "Replace magic numbers with named constants",
       "fix_plan": "Extract the literal into a named constant near domain logic and document units. Example: const RETRY_DELAY_MS = 5_000; or const CACHE_TTL_MS = 24 * 60 * 60 * 1000; then reuse constant across call sites.",
       "evidence_capture": "line",
-      "false_positive_hints": ["example", "docs", "test"]
+      "false_positive_hints": ["example", "docs", "test", "status_code", "http_port", "rgba(", "0x"]
     },
     {
       "id": "QUAL-007",
