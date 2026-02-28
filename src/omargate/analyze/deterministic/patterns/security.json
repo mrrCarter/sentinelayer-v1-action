@@ -180,6 +180,66 @@
       "fix_plan": "Move endpoint hosts into environment-specific config and keep code host-agnostic. Define variables like API_BASE_URL per environment and reject direct literal IP endpoints in application logic.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "localhost", "127.0.0.1"]
+    },
+    {
+      "id": "SEC-013",
+      "name": "SSRF Risk — User-Controlled URL Fetch",
+      "severity": "P1",
+      "category": "ssrf",
+      "description": "Server-side request using user-controlled URL without allowlist validation",
+      "regex": "(fetch|axios|requests?\\.get|httpx?\\.get|urllib\\.request|http\\.get)\\s*\\(\\s*(req\\.|request\\.|params\\.|query\\.|body\\.|args\\.)",
+      "file_patterns": ["*.ts", "*.tsx", "*.js", "*.jsx", "*.py", "*.java", "*.go", "*.rb", "*.php"],
+      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
+      "message": "Potential SSRF — user-controlled URL passed to server-side HTTP request",
+      "recommendation": "Validate URLs against an allowlist of permitted hosts and block private/internal IPs",
+      "fix_plan": "Parse the user-supplied URL and validate its host against an explicit allowlist before issuing the request. Block requests to private IP ranges (10.x, 172.16-31.x, 192.168.x, 169.254.x, 127.x) and loopback addresses. Use DNS resolution pinning to prevent TOCTOU bypasses.",
+      "evidence_capture": "line",
+      "false_positive_hints": ["example", "test", "mock", "stub"]
+    },
+    {
+      "id": "SEC-014",
+      "name": "UUID/Internal ID Exposure in Response",
+      "severity": "P2",
+      "category": "data-exposure",
+      "description": "Internal UUIDs or database IDs exposed in API responses without access control",
+      "regex": "(user_id|internal_id|db_id|record_id)\\s*[=:]\\s*(row|record|obj|model|entity)\\.",
+      "file_patterns": ["*.ts", "*.tsx", "*.js", "*.jsx", "*.py", "*.java", "*.go", "*.rb"],
+      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt", "*.d.ts"],
+      "message": "Internal ID field exposed in response — may enable enumeration",
+      "recommendation": "Use opaque external-facing IDs or ensure proper authorization before exposing internal identifiers",
+      "fix_plan": "Map internal database IDs to opaque external identifiers (e.g., UUID v4 or hashid) before including them in API responses. Add authorization checks to ensure users can only access their own records.",
+      "evidence_capture": "line",
+      "false_positive_hints": ["example", "test", "schema", "migration", "fixture"]
+    },
+    {
+      "id": "SEC-015",
+      "name": "PII Logged or Exposed",
+      "severity": "P1",
+      "category": "privacy",
+      "description": "Personally identifiable information logged or included in error responses",
+      "regex": "(log|logger|console|print|logging)\\.(info|warn|error|debug|log)\\s*\\(.*\\b(email|ssn|social_security|phone_number|credit_card|card_number|passport)\\b",
+      "file_patterns": ["*.ts", "*.tsx", "*.js", "*.jsx", "*.py", "*.java", "*.go", "*.rb", "*.php"],
+      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
+      "message": "PII field referenced in log statement — may leak to log aggregation",
+      "recommendation": "Redact or mask PII before logging; never include raw PII in log output",
+      "fix_plan": "Mask or redact PII fields before passing them to log statements. Use a structured logging library with automatic PII scrubbing. Replace raw field references with masked versions (e.g., email -> j***@example.com).",
+      "evidence_capture": "line",
+      "false_positive_hints": ["example", "test", "redact", "mask", "sanitize"]
+    },
+    {
+      "id": "SEC-016",
+      "name": "Admin Endpoint Without Auth Guard",
+      "severity": "P1",
+      "category": "auth",
+      "description": "Admin or privileged endpoint defined without authentication/authorization middleware",
+      "regex": "(@(app|router)\\.(get|post|put|patch|delete)\\s*\\(\\s*['\"]\\s*/admin)(?!.*(?:auth|guard|protect|middleware|require_admin|is_admin|Depends))",
+      "file_patterns": ["*.py", "*.ts", "*.tsx", "*.js", "*.jsx", "*.java", "*.go", "*.rb"],
+      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
+      "message": "Admin route defined without visible auth guard — verify authorization is applied",
+      "recommendation": "Ensure all /admin endpoints require authentication and admin-role authorization",
+      "fix_plan": "Add authentication and admin-role authorization middleware to every /admin route. Use a centralized guard (e.g., require_admin dependency, isAdmin middleware) applied at the router or route level, not inline.",
+      "evidence_capture": "line",
+      "false_positive_hints": ["example", "test", "mock", "docs"]
     }
   ]
 }
