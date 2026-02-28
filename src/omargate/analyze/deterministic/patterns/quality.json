@@ -89,7 +89,7 @@
       "recommendation": "Replace magic numbers with named constants",
       "fix_plan": "Extract the literal into a named constant near domain logic and document units. Example: const RETRY_DELAY_MS = 5_000; or const CACHE_TTL_MS = 24 * 60 * 60 * 1000; then reuse constant across call sites.",
       "evidence_capture": "line",
-      "false_positive_hints": ["example", "docs", "test", "status", "port", "version", "year", "date", "timestamp", "const ", "enum", "color", "rgba", "hex"]
+      "false_positive_hints": ["example", "docs", "test", "status_code", "http_port", "rgba(", "0x"]
     },
     {
       "id": "QUAL-007",
