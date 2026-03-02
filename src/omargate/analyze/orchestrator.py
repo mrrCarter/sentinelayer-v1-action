@@ -207,14 +207,14 @@ class AnalysisOrchestrator:
                 findings_count=len(det_findings),
             )
 
-        # Step 4-5: Parallel deep scan — 3 models via Codex CLI
+        # Step 4-5: Parallel deep scan — primary + spark via Codex CLI
+        # gpt-5.2-codex retained as fallback_model only (not run in parallel)
         llm_findings: List[dict] = []
         llm_success = False
         llm_usage: Optional[dict] = None
 
         _PARALLEL_CODEX_MODELS = [
             "gpt-5.3-codex",
-            "gpt-5.2-codex",
             "gpt-5.3-codex-spark",
         ]
 
