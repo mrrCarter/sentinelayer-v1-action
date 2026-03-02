@@ -42,7 +42,7 @@ class LLMClient:
     def __init__(
         self,
         api_key: str,
-        primary_model: str = "gpt-5.2-codex",  # TODO: bump to gpt-5.3-codex when available
+        primary_model: str = "gpt-5.3-codex",
         fallback_model: str = "gpt-5.2-codex",
         llm_provider: str = "openai",
         anthropic_api_key: str = "",

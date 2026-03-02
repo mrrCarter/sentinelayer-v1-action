@@ -95,9 +95,9 @@ inputs:
     default: 'P1'
 
   model:
-    description: 'LLM API model (used when Codex CLI is unavailable). Default is gpt-5.2-codex.'
+    description: 'LLM API model (used when Codex CLI is unavailable). Default is gpt-5.3-codex.'
     required: false
-    default: 'gpt-5.2-codex'
+    default: 'gpt-5.3-codex'
 
   model_fallback:
     description: 'Fallback LLM API model (if primary model fails or quota exceeded)'
@@ -122,7 +122,7 @@ inputs:
   codex_model:
     description: 'Model for Codex CLI'
     required: false
-    default: 'gpt-5.2-codex'
+    default: 'gpt-5.3-codex'
 
   codex_timeout:
     description: 'Timeout in seconds for Codex execution'

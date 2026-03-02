@@ -157,7 +157,7 @@ This mode forwards bounded LLM context through `POST /api/v1/proxy/llm`. The API
     scan_mode: pr-diff        # pr-diff = changed files only (fast, default), deep = full repo
 
     # Which model?
-    model: gpt-5.2-codex      # default primary model
+    model: gpt-5.3-codex      # default primary model
     model_fallback: gpt-4.1-mini  # default fallback model
 ```
 
@@ -167,7 +167,7 @@ This mode forwards bounded LLM context through `POST /api/v1/proxy/llm`. The API
 
 | Model | Provider | Quality | Cost | Speed | Best For |
 |-------|----------|:-------:|:----:|:-----:|----------|
-| `gpt-5.2-codex` | OpenAI | best | $$$ | Medium | Deep agentic audit, full codebase understanding |
+| `gpt-5.3-codex` | OpenAI | best | $$$ | Medium | Deep agentic audit, full codebase understanding |
 | `claude-opus-4-6` | Anthropic | best | $$$ | Medium | Nuanced analysis, architectural review |
 | `claude-sonnet-4-5` | Anthropic | great | $$ | Fast | Strong balance of quality and cost |
 | `gpt-4.1` | OpenAI | great | $$ | Fast | Reliable all-rounder, great default |
@@ -275,11 +275,11 @@ Use these in subsequent workflow steps:
 | Input | Default | Description |
 |-------|---------|-------------|
 | `llm_provider` | `openai` | `openai`, `anthropic`, `google`, `xai` |
-| `model` | `gpt-5.2-codex` | Primary LLM model |
+| `model` | `gpt-5.3-codex` | Primary LLM model |
 | `model_fallback` | `gpt-4.1-mini` | Fallback if primary fails |
 | `sentinelayer_managed_llm` | `false` | Route OpenAI calls through Sentinelayer-managed proxy. If false, auto-enables when `openai_api_key` is empty and `sentinelayer_token` exists. |
 | `use_codex` | `true` | Use Codex CLI for deep agentic audit (OpenAI only, requires host runner) |
-| `codex_model` | `gpt-5.2-codex` | Model for Codex CLI |
+| `codex_model` | `gpt-5.3-codex` | Model for Codex CLI |
 
 ### Rate Limiting
 
@@ -338,7 +338,7 @@ See [action.yml](action.yml) for all 30+ options. See [docs/CONFIGURATION.md](do
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-    model: gpt-5.2-codex
+    model: gpt-5.3-codex
     model_fallback: gpt-4.1-mini
     use_codex: false
     max_input_tokens: 40000

@@ -213,8 +213,8 @@ class AnalysisOrchestrator:
         llm_usage: Optional[dict] = None
 
         _PARALLEL_CODEX_MODELS = [
-            "gpt-5.2-codex",
             "gpt-5.3-codex",
+            "gpt-5.2-codex",
             "gpt-5.3-codex-spark",
         ]
 

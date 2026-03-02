@@ -26,12 +26,12 @@ SentinelLayer (Omar Gate) is configured entirely via GitHub Action inputs (see [
 | Input | Type | Default | Purpose |
 |---|---|---|---|
 | `llm_provider` | string | `openai` | LLM provider: `openai`, `anthropic`, `google`, `xai`. |
-| `model` | string | `gpt-5.2-codex` | Primary LLM API model (used when Codex CLI is unavailable or disabled). |
-| `model_fallback` | string | `gpt-5.2-codex` | Fallback LLM API model (if primary fails or quota exceeded). |
+| `model` | string | `gpt-5.3-codex` | Primary LLM API model (used when Codex CLI is unavailable or disabled). |
+| `model_fallback` | string | `gpt-5.3-codex` | Fallback LLM API model (if primary fails or quota exceeded). |
 | `sentinelayer_managed_llm` | bool | `false` | Route OpenAI API path through Sentinelayer-managed proxy. If false, auto-enables when `openai_api_key` is empty and `sentinelayer_token` is set. |
 | `use_codex` | bool | `true` | Enable Codex CLI for deep agentic audit. Falls back to API if Codex fails. |
 | `codex_only` | bool | `false` | Use Codex CLI as the only LLM path. Disables API fallback entirely. |
-| `codex_model` | string | `gpt-5.2-codex` | Model passed to Codex CLI `--model` flag. |
+| `codex_model` | string | `gpt-5.3-codex` | Model passed to Codex CLI `--model` flag. |
 | `codex_timeout` | int | `300` | Timeout in seconds for Codex CLI execution. |
 | `max_input_tokens` | int | `100000` | Maximum LLM context budget in tokens. Lowering reduces cost; files get truncated or skipped. |
 | `llm_failure_policy` | string | `block` | What happens when LLM fails: `block` (fail-closed), `deterministic_only` (fall back to regex), `allow_with_warning`. |
@@ -105,7 +105,7 @@ Omar Gate supports multiple LLM providers. Pass the key for your chosen provider
 
 | Provider | Input | Secret Name | Models |
 |---|---|---|---|
-| OpenAI | `openai_api_key` | `OPENAI_API_KEY` | `gpt-4.1`, `gpt-4.1-mini`, `gpt-4o`, `gpt-5.2-codex` (Codex CLI) |
+| OpenAI | `openai_api_key` | `OPENAI_API_KEY` | `gpt-4.1`, `gpt-4.1-mini`, `gpt-4o`, `gpt-5.3-codex` (Codex CLI) |
 | Anthropic | `anthropic_api_key` | `ANTHROPIC_API_KEY` | `claude-opus-4-6`, `claude-sonnet-4-5` |
 | Google | `google_api_key` | `GOOGLE_API_KEY` | `gemini-2.5-pro`, `gemini-2.5-flash` |
 | xAI | `xai_api_key` | `XAI_API_KEY` | `grok-3`, `grok-3-mini` |
@@ -193,13 +193,13 @@ When `codex_only: true`, the API fallback is disabled. If Codex fails, the `llm_
 
 These control the **LLM API path** (not Codex CLI, which uses `codex_model`).
 
-- `model`: Primary model. Default `gpt-5.2-codex`. Used when Codex is disabled or unavailable.
-- `model_fallback`: Secondary model. Default `gpt-5.2-codex`. Used if the primary model fails, hits rate limits, or exceeds quota.
+- `model`: Primary model. Default `gpt-5.3-codex`. Used when Codex is disabled or unavailable.
+- `model_fallback`: Secondary model. Default `gpt-5.3-codex`. Used if the primary model fails, hits rate limits, or exceeds quota.
 
 ```yaml
 with:
-  model: gpt-5.2-codex
-  model_fallback: gpt-5.2-codex
+  model: gpt-5.3-codex
+  model_fallback: gpt-5.3-codex
 ```
 
 ### `.sentinelayerignore`

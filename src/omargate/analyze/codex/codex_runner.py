@@ -148,7 +148,7 @@ def parse_codex_findings(text: str) -> tuple[list[dict], list[str], bool]:
 
 
 class CodexRunner:
-    def __init__(self, api_key: str, model: str = "gpt-5.2-codex") -> None:
+    def __init__(self, api_key: str, model: str = "gpt-5.3-codex") -> None:
         self.api_key = api_key
         self.model = model
 
