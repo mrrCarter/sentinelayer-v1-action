@@ -207,63 +207,68 @@ class AnalysisOrchestrator:
                 findings_count=len(det_findings),
             )
 
-        # Step 4-5: Codex audit (optional) and/or LLM analysis
+        # Step 4-5: Parallel deep scan — 3 models via Codex CLI
         llm_findings: List[dict] = []
         llm_success = False
         llm_usage: Optional[dict] = None
 
-        ran_codex = False
+        _PARALLEL_CODEX_MODELS = [
+            "gpt-5.2-codex",
+            "gpt-5.3-codex",
+            "gpt-5.3-codex-spark",
+        ]
+
         if self.allow_llm and self.config.use_codex:
-            ran_codex = True
-            with self.logger.stage("codex_audit"):
-                codex_result = await self._run_codex_audit(
-                    ingest=ingest,
-                    deterministic_findings=det_findings,
-                    quick_learn=quick_learn,
-                    scan_mode=scan_mode,
-                    diff_content=diff_content,
-                )
-                llm_findings = codex_result.findings
-                llm_success = codex_result.success
-                llm_usage = codex_result.usage
-                if codex_result.warning:
-                    warnings.append(codex_result.warning)
-                self.logger.info(
-                    "Codex audit complete",
-                    success=llm_success,
-                    findings_count=len(llm_findings),
+            with self.logger.stage("parallel_deep_scan"):
+                async def _run_codex_model(model_name: str) -> LLMAnalysisResult:
+                    """Run Codex CLI audit for a single model."""
+                    try:
+                        result = await self._run_codex_audit(
+                            ingest=ingest,
+                            deterministic_findings=det_findings,
+                            quick_learn=quick_learn,
+                            scan_mode=scan_mode,
+                            diff_content=diff_content,
+                            codex_model_override=model_name,
+                        )
+                        for f in result.findings:
+                            f["model_source"] = model_name
+                        return result
+                    except Exception as exc:
+                        self.logger.warning(
+                            f"Parallel Codex scan failed for {model_name}",
+                            error=str(exc),
+                        )
+                        return LLMAnalysisResult(
+                            findings=[],
+                            success=False,
+                            usage=None,
+                            warning=f"{model_name} Codex scan failed: {exc}",
+                        )
+
+                results = await asyncio.gather(
+                    *[_run_codex_model(m) for m in _PARALLEL_CODEX_MODELS]
                 )
 
-        codex_failed_with_strict_mode = (
-            ran_codex and not llm_success and bool(getattr(self.config, "codex_only", False))
-        )
+                all_model_findings: List[dict] = []
+                usages: List[dict] = []
+                for model_name, result in zip(_PARALLEL_CODEX_MODELS, results):
+                    self.logger.info(
+                        f"Codex model scan complete: {model_name}",
+                        success=result.success,
+                        findings_count=len(result.findings),
+                    )
+                    if result.success:
+                        llm_success = True
+                        all_model_findings.extend(result.findings)
+                    if result.usage:
+                        usages.append(result.usage)
+                    if result.warning:
+                        warnings.append(result.warning)
 
-        if codex_failed_with_strict_mode:
-            warnings.append("Codex audit failed (codex_only=true, API fallback disabled)")
-        elif (not ran_codex or not llm_success) and self._should_run_llm():
-            with self.logger.stage("llm_analysis"):
-                llm_result = await self._run_llm_analysis(
-                    ingest=ingest,
-                    deterministic_findings=det_findings,
-                    quick_learn=quick_learn,
-                    spec_context=spec_context,
-                    scan_mode=scan_mode,
-                    diff_content=diff_content,
-                    changed_files=changed_files,
-                )
-                llm_findings = llm_result.findings
-                llm_success = llm_result.success
-                llm_usage = llm_result.usage
-
-                if llm_result.warning:
-                    warnings.append(llm_result.warning)
-
-                self.logger.info(
-                    "LLM analysis complete",
-                    success=llm_success,
-                    findings_count=len(llm_findings),
-                )
-        elif not ran_codex:
+                llm_findings = all_model_findings
+                llm_usage = usages[0] if usages else None
+        elif not self.allow_llm:
             warnings.append("LLM analysis skipped (no API key or limited mode)")
 
         # Step 6: Merge findings
@@ -510,6 +515,7 @@ class AnalysisOrchestrator:
         quick_learn: Optional[QuickLearnSummary],
         scan_mode: str,
         diff_content: Optional[str],
+        codex_model_override: Optional[str] = None,
     ) -> LLMAnalysisResult:
         """
         Run Codex CLI agentic audit and parse JSONL findings.
@@ -548,7 +554,8 @@ class AnalysisOrchestrator:
             ingest=ingest,
         )
 
-        runner = CodexRunner(api_key=api_key, model=self.config.codex_model)
+        active_model = codex_model_override or self.config.codex_model
+        runner = CodexRunner(api_key=api_key, model=active_model)
         result = await runner.run_audit(
             prompt=built.prompt,
             working_dir=str(self.repo_root),
@@ -571,7 +578,7 @@ class AnalysisOrchestrator:
             usage={
                 "engine": "codex",
                 "provider": "openai",
-                "model": self.config.codex_model,
+                "model": active_model,
                 "tokens_in": None,
                 "tokens_out": None,
                 "cost_usd": None,

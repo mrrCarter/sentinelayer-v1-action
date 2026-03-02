@@ -64,6 +64,7 @@ class OpenAIProvider(LLMProvider):
 
     def estimate_cost(self, model: str, tokens_in: int, tokens_out: int) -> float:
         pricing = {
+            "gpt-5.3-codex-spark": {"input": 0.00075, "output": 0.003},
             "gpt-5.3-codex": {"input": 0.00175, "output": 0.014},
             "gpt-5.2-codex": {"input": 0.00175, "output": 0.014},
             "gpt-4.1": {"input": 0.002, "output": 0.008},

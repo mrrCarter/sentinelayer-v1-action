@@ -198,8 +198,9 @@ async def test_codex_only_disables_api_fallback_on_codex_failure(
 
     result = await orchestrator.run(scan_mode="deep")
 
+    # Parallel scan runs 3 Codex CLIs — no LLM API fallback
     assert called["llm"] is False
-    assert any("codex_only=true" in warning for warning in result.warnings)
+    assert any("codex failed" in warning for warning in result.warnings)
 
 
 @pytest.mark.anyio
