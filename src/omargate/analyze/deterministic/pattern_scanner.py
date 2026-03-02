@@ -11,7 +11,6 @@ import re
 
 MAX_SNIPPET_CHARS = 500
 MAX_SCAN_BYTES = 1_000_000
-LONG_FUNCTION_THRESHOLD = 80
 
 _COMMENT_LINE_RE = re.compile(r"^\s*(?://|#|\*|/\*)")
 # Categories where comment-line matches are almost always false positives.
@@ -24,12 +23,6 @@ _GLOBAL_PLACEHOLDER_TOKENS = frozenset({
     "<redacted>", "redacted", "not-a-real", "your-key-here",
 })
 
-FUNCTION_START_PATTERNS = [
-    re.compile(r"^\s*def\s+\w+\s*\("),
-    re.compile(r"^\s*(?:async\s+)?function\s+\w+\s*\("),
-    re.compile(r"^\s*(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\([^)]*\)\s*=>"),
-    re.compile(r"^\s*(?:public|private|protected|static|\s)*\s*\w[\w<>\[\]]*\s+\w+\s*\([^)]*\)\s*\{"),
-]
 
 
 @dataclass
@@ -136,49 +129,6 @@ class PatternScanner:
     def _mask_sensitive(self, snippet: str, pattern: Dict[str, Any]) -> str:
         return mask_secret_in_snippet(snippet, pattern.get("category", ""))
 
-    def _scan_long_functions(self, file_path: str, lines: List[str], pattern: Dict[str, Any]) -> List[Finding]:
-        if not lines:
-            return []
-        start_indices: List[int] = []
-        for idx, line in enumerate(lines):
-            for regex in FUNCTION_START_PATTERNS:
-                if regex.match(line):
-                    start_indices.append(idx)
-                    break
-        if not start_indices:
-            return []
-        start_indices.append(len(lines))
-        findings: List[Finding] = []
-        for idx, start in enumerate(start_indices[:-1]):
-            end = start_indices[idx + 1] - 1
-            if end < start:
-                continue
-            length = end - start + 1
-            if length < LONG_FUNCTION_THRESHOLD:
-                continue
-            line_start = start + 1
-            line_end = end + 1
-            snippet = _snippet_from_lines(lines, line_start, line_end)
-            snippet = self._mask_sensitive(snippet, pattern)
-            snippet = _truncate_snippet(snippet)
-            findings.append(
-                Finding(
-                    id=_build_finding_id(pattern["id"], file_path, line_start),
-                    pattern_id=pattern["id"],
-                    severity=pattern["severity"],
-                    category=pattern["category"],
-                    file_path=file_path,
-                    line_start=line_start,
-                    line_end=line_end,
-                    snippet=snippet,
-                    message=pattern["message"],
-                    recommendation=pattern["recommendation"],
-                    fix_plan=str(pattern.get("fix_plan", "")),
-                    confidence=1.0,
-                )
-            )
-        return findings
-
     def _scan_content(self, file_path: Path, content: str, patterns: Iterable[Dict[str, Any]]) -> List[Finding]:
         rel_path = file_path.as_posix()
         line_starts = _build_line_starts(content)
@@ -186,9 +136,6 @@ class PatternScanner:
         findings: List[Finding] = []
         for pattern in patterns:
             if not self._file_matches_pattern(rel_path, pattern):
-                continue
-            if pattern.get("id") == "QUAL-007":
-                findings.extend(self._scan_long_functions(rel_path, lines, pattern))
                 continue
             regex = pattern.get("_compiled")
             if not regex:

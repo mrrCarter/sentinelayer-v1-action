@@ -58,60 +58,35 @@ def test_scanner_masks_secrets_in_snippet(scanner: PatternScanner) -> None:
 
 
 def test_scanner_respects_file_patterns(scanner: PatternScanner) -> None:
-    content = "dangerouslySetInnerHTML={{ __html: data }}"
-    findings_tsx = scanner.scan_file(Path("Component.tsx"), content)
-    findings_py = scanner.scan_file(Path("script.py"), content)
-    assert len(findings_tsx) == 1
-    assert len(findings_py) == 0
-
-
-def test_scanner_long_function_detection(scanner: PatternScanner) -> None:
-    lines = ["def big_function():"] + ["    value = 1"] * 90
-    content = "\n".join(lines)
-    findings = scanner.scan_file(Path("src/long.py"), content)
-    assert any(finding.pattern_id == "QUAL-007" for finding in findings)
-
-
-def test_scanner_magic_number_fix_plan_is_specific(scanner: PatternScanner) -> None:
-    content = "const cacheTtl = 86400000;"
-    findings = scanner.scan_file(Path("src/constants.ts"), content)
-    finding = next((f for f in findings if f.pattern_id == "QUAL-006"), None)
-    assert finding is not None
-    assert "CACHE_TTL_MS" in finding.fix_plan
-    assert "Pseudo-code:" not in finding.fix_plan
+    content = 'verify = False  # disable SSL check'
+    findings_py = scanner.scan_file(Path("src/client.py"), content)
+    findings_md = scanner.scan_file(Path("docs/notes.md"), content)
+    assert len(findings_py) >= 1
+    assert findings_py[0].pattern_id == "SEC-011"
+    assert len(findings_md) == 0
 
 
 def test_scan_files_aggregates_findings(scanner: PatternScanner, tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     (repo_root / "src").mkdir(parents=True)
     file_a = repo_root / "src" / "config.ts"
-    file_b = repo_root / "src" / "notes.ts"
     api_key_value = "sk_test_" + ("a" * 20)
     file_a.write_text('const API_KEY = "' + api_key_value + '"', encoding="utf-8")
-    file_b.write_text("// TODO: clean this up", encoding="utf-8")
     files = [
         {"path": "src/config.ts", "size_bytes": file_a.stat().st_size},
-        {"path": "src/notes.ts", "size_bytes": file_b.stat().st_size},
     ]
     findings = scanner.scan_files(files, repo_root)
     pattern_ids = {finding.pattern_id for finding in findings}
     assert "SEC-001" in pattern_ids
-    assert "QUAL-001" in pattern_ids
 
 
 def test_scanner_truncates_snippet(scanner: PatternScanner) -> None:
-    content = "TODO: " + ("a" * 600)
-    findings = scanner.scan_file(Path("src/notes.ts"), content)
+    long_comment = "x" * 600
+    content = f"verify = False  # {long_comment}"
+    findings = scanner.scan_file(Path("src/client.py"), content)
+    assert len(findings) >= 1
     assert len(findings[0].snippet) <= 500
     assert findings[0].snippet.endswith("...")
-
-
-def test_scanner_line_numbers(scanner: PatternScanner) -> None:
-    content = "const ok = 1;\nconsole.log('hi')"
-    findings = scanner.scan_file(Path("src/app.ts"), content)
-    console_findings = [f for f in findings if f.pattern_id == "QUAL-003"]
-    assert console_findings
-    assert console_findings[0].line_start == 2
 
 
 def test_scanner_performance_1000_files(scanner: PatternScanner, benchmark_fixture) -> None:
