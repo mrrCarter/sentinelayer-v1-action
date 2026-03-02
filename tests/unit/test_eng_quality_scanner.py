@@ -3,18 +3,23 @@ from __future__ import annotations
 from omargate.analyze.deterministic.eng_quality_scanner import EngQualityScanner
 
 
-def test_react_project_triggers_frontend_rules_python_project_does_not() -> None:
+def test_frontend_rules_only_apply_to_react_projects() -> None:
     files = {
-        "src/App.tsx": "export const App = () => <div dangerouslySetInnerHTML={{ __html: html }} />;\n",
+        "src/App.tsx": (
+            "export const App = () => {\n"
+            "  items.forEach(item => { setCount(item.count); });\n"
+            "  return <div />;\n"
+            "};\n"
+        ),
     }
 
     react = EngQualityScanner(tech_stack=["React", "TypeScript"])
     react_findings = react.scan(files)
-    assert any(f.pattern_id == "EQ-003" for f in react_findings)
+    assert any(f.pattern_id == "EQ-001" for f in react_findings)
 
     python = EngQualityScanner(tech_stack=["Python"])
     python_findings = python.scan(files)
-    assert not any(f.pattern_id == "EQ-003" for f in python_findings)
+    assert not any(f.pattern_id == "EQ-001" for f in python_findings)
 
 
 def test_eval_detected_as_p0() -> None:
@@ -87,13 +92,6 @@ def test_n_plus_one_query_pattern_detected() -> None:
     scanner = EngQualityScanner(tech_stack=["FastAPI", "Python"])
     findings = scanner.scan(files)
     assert any(f.pattern_id == "EQ-007" for f in findings)
-
-
-def test_console_log_in_test_file_not_flagged() -> None:
-    files = {"src/foo.test.tsx": "console.log('debug');\n"}
-    scanner = EngQualityScanner(tech_stack=["React"])
-    findings = scanner.scan(files)
-    assert not any(f.pattern_id == "EQ-005" for f in findings)
 
 
 def test_workflow_secret_labels_not_flagged_as_hardcoded_secrets() -> None:
@@ -173,16 +171,6 @@ def test_missing_health_endpoint_uses_distinct_rule_id() -> None:
     assert finding.severity == "P2"
 
 
-def test_large_timeout_rule_has_actionable_fix_plan() -> None:
-    files = {"src/server.js": "setTimeout(runJob, 86400000);\n"}
-    scanner = EngQualityScanner(tech_stack=["Node.js"])
-    findings = scanner.scan(files)
-    finding = next((f for f in findings if f.pattern_id == "EQ-010"), None)
-    assert finding is not None
-    assert "CACHE_TTL_MS" in finding.fix_plan
-    assert "Pseudo-code:" not in finding.fix_plan
-
-
 def test_missing_request_id_rule_has_stack_specific_fix_plan() -> None:
     files = {
         "src/api.ts": (
@@ -197,4 +185,3 @@ def test_missing_request_id_rule_has_stack_specific_fix_plan() -> None:
     assert finding is not None
     assert "requestId" in finding.fix_plan
     assert "Express" in finding.fix_plan
-

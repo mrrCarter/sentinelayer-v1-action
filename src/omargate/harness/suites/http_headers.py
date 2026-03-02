@@ -64,7 +64,7 @@ class HttpSecurityHeadersSuite(SecuritySuite):
             Finding(
                 id="HARNESS-HTTP-HEADERS",
                 pattern_id="HARNESS-HTTP-HEADERS",
-                severity="P2",
+                severity="P3",
                 category="web",
                 file_path=".sentinelayer/harness",
                 line_start=1,

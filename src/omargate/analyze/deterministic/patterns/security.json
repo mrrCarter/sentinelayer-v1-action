@@ -47,36 +47,6 @@
       "false_positive_hints": ["example", "placeholder", "dummy"]
     },
     {
-      "id": "SEC-004",
-      "name": "AWS Access Key",
-      "severity": "P0",
-      "category": "secrets",
-      "description": "AWS access key detected in code",
-      "regex": "AKIA[0-9A-Z]{16}",
-      "file_patterns": ["*.ts", "*.tsx", "*.js", "*.jsx", "*.py", "*.java", "*.go", "*.rb", "*.php", "*.cs", "*.kt", "*.scala", "*.swift", "*.rs", "*.sh", "*.bash"],
-      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
-      "message": "AWS access key detected",
-      "recommendation": "Revoke and rotate the key, use environment variables",
-      "fix_plan": "Immediately revoke and rotate the exposed AWS key and audit CloudTrail for abuse. Remove the key from source/history and supply credentials via IAM roles, OIDC federation, or secure environment injection.",
-      "evidence_capture": "line",
-      "false_positive_hints": ["example", "sample", "not-a-key"]
-    },
-    {
-      "id": "SEC-005",
-      "name": "GitHub Token",
-      "severity": "P0",
-      "category": "secrets",
-      "description": "GitHub access token detected in code",
-      "regex": "gh[pousr]_[A-Za-z0-9_]{36,}",
-      "file_patterns": ["*.ts", "*.tsx", "*.js", "*.jsx", "*.py", "*.java", "*.go", "*.rb", "*.php", "*.cs", "*.kt", "*.scala", "*.swift", "*.rs", "*.sh", "*.bash"],
-      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
-      "message": "GitHub token detected",
-      "recommendation": "Revoke and rotate the token, use GitHub Secrets",
-      "fix_plan": "Revoke the leaked token and issue a replacement with minimal scopes. Remove token literals from repo/workflows and reference credentials through GitHub Secrets or a short-lived OIDC flow.",
-      "evidence_capture": "line",
-      "false_positive_hints": ["example", "sample", "fake"]
-    },
-    {
       "id": "SEC-006",
       "name": "JWT Token",
       "severity": "P1",
@@ -122,36 +92,6 @@
       "false_positive_hints": ["example", "docs", "safe"]
     },
     {
-      "id": "SEC-009",
-      "name": "dangerouslySetInnerHTML",
-      "severity": "P1",
-      "category": "xss",
-      "description": "Use of dangerouslySetInnerHTML can lead to XSS",
-      "regex": "dangerouslySetInnerHTML",
-      "file_patterns": ["*.tsx", "*.jsx"],
-      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
-      "message": "dangerouslySetInnerHTML usage detected",
-      "recommendation": "Sanitize HTML before rendering or avoid raw HTML",
-      "fix_plan": "Avoid dangerouslySetInnerHTML unless absolutely required; prefer escaped rendering. If needed, sanitize input with a vetted sanitizer (for example DOMPurify) and render only the sanitized variable.",
-      "evidence_capture": "line",
-      "false_positive_hints": ["example", "docs", "test"]
-    },
-    {
-      "id": "SEC-010",
-      "name": "eval() Usage",
-      "severity": "P1",
-      "category": "code-execution",
-      "description": "Use of eval can lead to code injection",
-      "regex": "\\beval\\s*\\(",
-      "file_patterns": ["*.ts", "*.tsx", "*.js", "*.jsx"],
-      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
-      "message": "eval() usage detected",
-      "recommendation": "Avoid eval; use safe parsers or alternatives",
-      "fix_plan": "Remove eval-based execution and replace with explicit parser/dispatch logic. For dynamic expressions, parse into a restricted AST or map known commands to safe handler functions.",
-      "evidence_capture": "line",
-      "false_positive_hints": ["example", "docs", "test"]
-    },
-    {
       "id": "SEC-011",
       "name": "Disabled SSL Verify",
       "severity": "P1",
@@ -167,21 +107,6 @@
       "false_positive_hints": ["example", "test", "local"]
     },
     {
-      "id": "SEC-012",
-      "name": "Hardcoded IP/Host",
-      "severity": "P2",
-      "category": "network",
-      "description": "Hardcoded IP address or host detected",
-      "regex": "['\"]https?://\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}",
-      "file_patterns": ["*.ts", "*.tsx", "*.js", "*.jsx", "*.py", "*.java", "*.go", "*.rb", "*.php", "*.cs", "*.kt", "*.scala", "*.swift", "*.rs", "*.json", "*.yml", "*.yaml"],
-      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt"],
-      "message": "Hardcoded IP/host detected",
-      "recommendation": "Move hosts to configuration or environment variables",
-      "fix_plan": "Move endpoint hosts into environment-specific config and keep code host-agnostic. Define variables like API_BASE_URL per environment and reject direct literal IP endpoints in application logic.",
-      "evidence_capture": "line",
-      "false_positive_hints": ["example", "localhost", "127.0.0.1"]
-    },
-    {
       "id": "SEC-013",
       "name": "SSRF Risk — User-Controlled URL Fetch",
       "severity": "P1",
@@ -195,21 +120,6 @@
       "fix_plan": "Parse the user-supplied URL and validate its host against an explicit allowlist before issuing the request. Block requests to private IP ranges (10.x, 172.16-31.x, 192.168.x, 169.254.x, 127.x) and loopback addresses. Use DNS resolution pinning to prevent TOCTOU bypasses.",
       "evidence_capture": "line",
       "false_positive_hints": ["example", "test", "mock", "stub"]
-    },
-    {
-      "id": "SEC-014",
-      "name": "UUID/Internal ID Exposure in Response",
-      "severity": "P2",
-      "category": "data-exposure",
-      "description": "Internal UUIDs or database IDs exposed in API responses without access control",
-      "regex": "(user_id|internal_id|db_id|record_id)\\s*[=:]\\s*(row|record|obj|model|entity)\\.",
-      "file_patterns": ["*.ts", "*.tsx", "*.js", "*.jsx", "*.py", "*.java", "*.go", "*.rb"],
-      "exclude_patterns": ["*.test.*", "*.spec.*", "*_test.*", "test_*", "*.md", "*.rst", "*.txt", "*.d.ts"],
-      "message": "Internal ID field exposed in response — may enable enumeration",
-      "recommendation": "Use opaque external-facing IDs or ensure proper authorization before exposing internal identifiers",
-      "fix_plan": "Map internal database IDs to opaque external identifiers (e.g., UUID v4 or hashid) before including them in API responses. Add authorization checks to ensure users can only access their own records.",
-      "evidence_capture": "line",
-      "false_positive_hints": ["example", "test", "schema", "migration", "fixture"]
     },
     {
       "id": "SEC-015",

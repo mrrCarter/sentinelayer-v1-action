@@ -33,7 +33,7 @@ class ConfigHardeningSuite(SecuritySuite):
                     Finding(
                         id="HARNESS-NODE-IGNORE-SCRIPTS",
                         pattern_id="HARNESS-NODE-IGNORE-SCRIPTS",
-                        severity="P2",
+                        severity="P3",
                         category="supply-chain",
                         file_path=".npmrc" if npmrc.is_file() else "package.json",
                         line_start=1,
@@ -56,7 +56,7 @@ class ConfigHardeningSuite(SecuritySuite):
                     Finding(
                         id="HARNESS-DOCKER-MULTISTAGE",
                         pattern_id="HARNESS-DOCKER-MULTISTAGE",
-                        severity="P2",
+                        severity="P3",
                         category="infrastructure",
                         file_path="Dockerfile",
                         line_start=1,
@@ -91,23 +91,7 @@ class ConfigHardeningSuite(SecuritySuite):
         tf_files = list(root.rglob("*.tf"))
         if tf_files:
             joined = "\n".join(read_text_best_effort(p) for p in tf_files[:25])
-            if "backend" not in joined:
-                findings.append(
-                    Finding(
-                        id="HARNESS-TF-BACKEND",
-                        pattern_id="HARNESS-TF-BACKEND",
-                        severity="P2",
-                        category="infrastructure",
-                        file_path="*.tf",
-                        line_start=1,
-                        line_end=1,
-                        snippet="",
-                        message="Terraform remote backend block not detected",
-                        recommendation="Use a remote backend to avoid local state and improve team safety",
-                        confidence=0.6,
-                        source="harness",
-                    )
-                )
+            # HARNESS-TF-BACKEND removed: duplicate of EQ-019, low confidence (0.6)
             if re.search(r'(?is)backend\s+"s3"\s*\{[^}]*\}', joined) and "encrypt" not in joined:
                 findings.append(
                     Finding(

@@ -66,10 +66,10 @@ class EngQualityScanner:
         findings: list[Finding] = []
         findings.extend(self._scan_state_updates_in_loops(files))
         findings.extend(self._scan_useeffect_without_cleanup(files))
-        findings.extend(self._scan_dangerously_set_inner_html(files))
-        findings.extend(self._scan_inline_jsx_literals(files))
-        findings.extend(self._scan_console_log(files))
-        findings.extend(self._scan_useeffect_empty_deps_outer_state(files))
+        # EQ-003 dangerouslySetInnerHTML: dropped (ESLint no-danger covers this)
+        # EQ-004 inline JSX literals: dropped (ESLint jsx-no-bind territory)
+        # EQ-005 console.log: dropped (ESLint no-console covers this)
+        # EQ-006 useEffect empty deps: dropped (eslint-plugin-react-hooks exhaustive-deps)
         return findings
 
     def _scan_backend(self, files: dict[str, str]) -> list[Finding]:
@@ -77,14 +77,14 @@ class EngQualityScanner:
         findings.extend(self._scan_n_plus_one(files))
         findings.extend(self._scan_eval_or_function_ctor(files))
         findings.extend(self._scan_sql_string_concat(files))
-        findings.extend(self._scan_large_timeouts(files))
+        # EQ-010 large timeouts: dropped (magic number variant, not gate-worthy)
         findings.extend(self._scan_auth_routes_without_rate_limit(files))
         findings.extend(self._scan_http_calls_without_timeout(files))
         findings.extend(self._scan_unbounded_retry_loops(files))
         findings.extend(self._scan_rate_limit_fail_open(files))
         findings.extend(self._scan_mutations_without_idempotency(files))
         findings.extend(self._scan_missing_request_id_schema(files))
-        findings.extend(self._scan_external_calls_without_fallback(files))
+        # EQ-017 external calls no fallback: dropped (0.35 confidence, too noisy)
         findings.extend(self._scan_oidc_verify_aud_disabled(files))
         findings.extend(self._scan_oauth_callback_missing_state(files))
         return findings
