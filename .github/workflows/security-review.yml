@@ -185,7 +185,6 @@ jobs:
       PYTHONPATH: src
       CODEX_CLI_VERSION: "0.98.0"
       CLAUDE_CLI_VERSION: "2.1.39"
-      GEMINI_CLI_VERSION: "0.28.0"
     permissions:
       contents: read
       pull-requests: write
@@ -234,7 +233,7 @@ jobs:
           path: |
             ~/.npm
             ~/.npm-global
-          key: ${{ runner.os }}-llm-cli-${{ env.CODEX_CLI_VERSION }}-${{ env.CLAUDE_CLI_VERSION }}-${{ env.GEMINI_CLI_VERSION }}
+          key: ${{ runner.os }}-llm-cli-${{ env.CODEX_CLI_VERSION }}-${{ env.CLAUDE_CLI_VERSION }}
           restore-keys: |
             ${{ runner.os }}-llm-cli-
 
@@ -293,17 +292,14 @@ jobs:
 
           install_pinned_cli codex @openai/codex "${CODEX_CLI_VERSION}"
           install_pinned_cli claude @anthropic-ai/claude-code "${CLAUDE_CLI_VERSION}"
-          install_pinned_cli gemini @google/gemini-cli "${GEMINI_CLI_VERSION}"
 
       - name: Verify LLM CLIs
         run: |
           set -euo pipefail
           echo "codex:  $(command -v codex)"
           echo "claude: $(command -v claude)"
-          echo "gemini: $(command -v gemini)"
           codex --version
           claude --version
-          gemini --version
 
       - name: Omar Gate (Host Runner)
         id: omar
@@ -449,16 +445,3 @@ jobs:
           git worktree add --detach "${rollback_worktree}" "${rollback_target}" >/dev/null
           python -m compileall -q "${rollback_worktree}/src"
           echo "Rollback drill passed for ${rollback_target}" >> "${GITHUB_STEP_SUMMARY}"
-
-  release-gate:
-    name: Release Gate
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [deploy, rollback-readiness]
-    runs-on: ubuntu-22.04
-    environment:
-      name: production
-    permissions:
-      contents: read
-    steps:
-      - name: Confirm release protection gates
-        run: echo "All pre-release gates passed."

@@ -207,67 +207,44 @@ class AnalysisOrchestrator:
                 findings_count=len(det_findings),
             )
 
-        # Step 4-5: Parallel deep scan — primary + spark via Codex CLI
-        # gpt-5.2-codex retained as fallback_model only (not run in parallel)
+        # Step 4-5: Deep scan via Codex CLI (single model from config)
         llm_findings: List[dict] = []
         llm_success = False
         llm_usage: Optional[dict] = None
 
-        _PARALLEL_CODEX_MODELS = [
-            "gpt-5.3-codex",
-            "gpt-5.3-codex-spark",
-        ]
-
         if self.allow_llm and self.config.use_codex:
-            with self.logger.stage("parallel_deep_scan"):
-                async def _run_codex_model(model_name: str) -> LLMAnalysisResult:
-                    """Run Codex CLI audit for a single model."""
-                    try:
-                        result = await self._run_codex_audit(
-                            ingest=ingest,
-                            deterministic_findings=det_findings,
-                            quick_learn=quick_learn,
-                            scan_mode=scan_mode,
-                            diff_content=diff_content,
-                            codex_model_override=model_name,
-                        )
-                        for f in result.findings:
-                            f["model_source"] = model_name
-                        return result
-                    except Exception as exc:
-                        self.logger.warning(
-                            f"Parallel Codex scan failed for {model_name}",
-                            error=str(exc),
-                        )
-                        return LLMAnalysisResult(
-                            findings=[],
-                            success=False,
-                            usage=None,
-                            warning=f"{model_name} Codex scan failed: {exc}",
-                        )
-
-                results = await asyncio.gather(
-                    *[_run_codex_model(m) for m in _PARALLEL_CODEX_MODELS]
-                )
-
-                all_model_findings: List[dict] = []
-                usages: List[dict] = []
-                for model_name, result in zip(_PARALLEL_CODEX_MODELS, results):
+            with self.logger.stage("deep_scan"):
+                codex_model = self.config.codex_model
+                try:
+                    result = await self._run_codex_audit(
+                        ingest=ingest,
+                        deterministic_findings=det_findings,
+                        quick_learn=quick_learn,
+                        scan_mode=scan_mode,
+                        diff_content=diff_content,
+                        codex_model_override=codex_model,
+                    )
+                    for f in result.findings:
+                        f["model_source"] = codex_model
                     self.logger.info(
-                        f"Codex model scan complete: {model_name}",
+                        "Codex scan complete",
+                        model=codex_model,
                         success=result.success,
                         findings_count=len(result.findings),
                     )
                     if result.success:
                         llm_success = True
-                        all_model_findings.extend(result.findings)
-                    if result.usage:
-                        usages.append(result.usage)
+                        llm_findings = result.findings
+                    llm_usage = result.usage
                     if result.warning:
                         warnings.append(result.warning)
-
-                llm_findings = all_model_findings
-                llm_usage = usages[0] if usages else None
+                except Exception as exc:
+                    self.logger.warning(
+                        "Codex scan failed",
+                        model=codex_model,
+                        error=str(exc),
+                    )
+                    warnings.append(f"{codex_model} Codex scan failed: {exc}")
         elif not self.allow_llm:
             warnings.append("LLM analysis skipped (no API key or limited mode)")
 
