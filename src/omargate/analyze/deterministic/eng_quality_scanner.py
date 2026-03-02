@@ -832,6 +832,9 @@ class EngQualityScanner:
         for path, content in self._iter_files(files, exts=_BACKEND_EXTS):
             if self._is_test_file(path):
                 continue
+            # JSX/TSX files are frontend UI components, not backend API handlers.
+            if path.lower().endswith((".tsx", ".jsx")):
+                continue
             if not error_marker_re.search(content):
                 continue
             if request_id_re.search(content):

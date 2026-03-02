@@ -216,7 +216,17 @@ def _likely_secret_context(source_line: str, candidate: str) -> bool:
     return False
 
 
+_LOCKFILE_NAMES = frozenset({
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock",
+    "pipfile.lock", "gemfile.lock", "composer.lock", "cargo.lock",
+})
+
+
 def scan_for_secrets(content: str, file_path: str) -> List[Finding]:
+    # Lockfiles contain only integrity hashes, not secrets.
+    basename = file_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
+    if basename in _LOCKFILE_NAMES:
+        return []
     line_starts = _build_line_starts(content)
     lines = content.splitlines()
     findings: List[Finding] = []

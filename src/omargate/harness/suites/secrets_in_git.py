@@ -91,8 +91,10 @@ class SecretsInGitSuite(SecuritySuite):
                 if added_lines:
                     content = "\n".join(added_lines)
                     for f in scan_for_secrets(content, file_path):
-                        if f.pattern_id == "SEC-ENTROPY" and file_path.lower().endswith(
-                            (".md", ".rst", ".txt")
+                        _lower = file_path.lower()
+                        if f.pattern_id == "SEC-ENTROPY" and (
+                            _lower.endswith((".md", ".rst", ".txt"))
+                            or "lock" in _lower
                         ):
                             continue
                         key = (f.pattern_id, f.file_path, f.line_start)
