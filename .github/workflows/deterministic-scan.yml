@@ -2,8 +2,8 @@ name: Deterministic Security Scan
 
 on:
   push:
-    branches-ignore:
-      - 'dependabot/**'
+    branches:
+      - main
 
 permissions:
   contents: read
