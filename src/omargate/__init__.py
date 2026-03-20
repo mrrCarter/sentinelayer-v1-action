@@ -1,1 +1,4 @@
-__version__ = "1.3.2"
+"""Sentinelayer Omar compatibility action package."""
+
+__all__ = ["main"]
+
