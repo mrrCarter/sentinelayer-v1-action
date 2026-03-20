@@ -23,6 +23,7 @@ This Action is the CI bridge. Core adjudication logic runs in the backend GitHub
 
 - Install the Sentinelayer GitHub App on the target repository/org.
 - Provide `sentinelayer_token` (bearer token) to the workflow.
+  - Optional: provide `status_poll_token` if status polling uses a different service token.
 
 ## Minimal usage
 
@@ -41,13 +42,15 @@ jobs:
         uses: mrrCarter/sentinelayer-v1-action@v1
         with:
           sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+          status_poll_token: ${{ secrets.SENTINELAYER_STATUS_TOKEN }}
           scan_mode: deep
           severity_gate: P1
 ```
 
 ## Inputs
 
-- `sentinelayer_token` (required): bearer token for Sentinelayer API.
+- `sentinelayer_token` (required): bearer token for Sentinelayer trigger API.
+- `status_poll_token` (optional): bearer token for Sentinelayer status API; falls back to `sentinelayer_token` when omitted.
 - `sentinelayer_api_url` (optional): defaults to `https://api.sentinelayer.com`.
 - `scan_mode` (optional): `baseline`, `deep`, `full-depth`.
 - `severity_gate` (optional): `P0`, `P1`, `P2`, `none`.
