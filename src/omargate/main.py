@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-ACTION_VERSION = "1.4.0"
+ACTION_VERSION = "1.5.0"
 SENTINELAYER_WEB_BASE = "https://sentinelayer.com"
 
 
@@ -133,7 +133,7 @@ def _api_json_request(
         "Accept": "application/json",
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "User-Agent": "sentinelayer-compat-action/1.4.0",
+        "User-Agent": "sentinelayer-compat-action/1.5.0",
     }
     if payload is not None:
         body = json.dumps(payload).encode("utf-8")
@@ -231,26 +231,8 @@ def _emit_outputs(
     _write_output("p2_count", str(int(counts.get("P2") or 0)))
     _write_output("p3_count", str(int(counts.get("P3") or 0)))
     _write_output("run_id", run_id)
-
-    # Legacy outputs retained for compatibility.
-    _write_output("findings_artifact", "")
-    _write_output("pack_summary_artifact", "")
-    _write_output("ingest_artifact", "")
-    _write_output("codebase_ingest_artifact", "")
-    _write_output("codebase_ingest_summary_artifact", "")
-    _write_output("codebase_ingest_summary_md_artifact", "")
-    _write_output("review_brief_artifact", "")
-    _write_output("audit_report_artifact", "")
-    _write_output("estimated_cost_usd", "")
-    _write_output("idempotency_key", run_id)
     _write_output("scan_mode", scan_mode)
     _write_output("severity_gate", severity_gate)
-    _write_output("llm_provider", "sentinelayer_managed")
-    _write_output("model", "github_app_managed")
-    _write_output("model_fallback", "")
-    _write_output("model_fallback_used", "false")
-    _write_output("policy_pack", "omar")
-    _write_output("policy_pack_version", "v1")
 
 
 def main() -> int:

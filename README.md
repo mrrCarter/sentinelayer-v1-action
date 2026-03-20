@@ -55,5 +55,4 @@ jobs:
 ## Outputs
 
 - `gate_status`, `p0_count`, `p1_count`, `p2_count`, `p3_count`, `run_id`
-- Legacy output keys are kept for compatibility but are empty in bridge mode.
-
+- `scan_mode`, `severity_gate`
