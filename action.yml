@@ -47,152 +47,6 @@ inputs:
     required: false
     default: ''
 
-  # Deprecated compatibility inputs (accepted but ignored)
-  openai_api_key:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  llm_provider:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  anthropic_api_key:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  google_api_key:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  xai_api_key:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  github_token:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  comment_tag:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  telemetry_tier:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  telemetry:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  share_metadata:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  share_artifacts:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  training_opt_in:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  model:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  model_fallback:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  llm_failure_policy:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  use_codex:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  codex_only:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  codex_model:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  codex_timeout:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  run_harness:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  pip_audit_ignore_ids:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  max_daily_scans:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  min_scan_interval_minutes:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  rate_limit_fail_mode:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  max_input_tokens:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  require_cost_confirmation:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  approval_mode:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  approval_label:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  fork_policy:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  run_deterministic_fix:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  run_llm_fix:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  auto_commit_fixes:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  policy_pack:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  policy_pack_version:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  sentinelayer_spec_id:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-  sentinelayer_managed_llm:
-    description: 'Deprecated. Ignored in compatibility mode.'
-    required: false
-    default: ''
-
 outputs:
   gate_status:
     description: 'Gate result: passed, blocked, queued, or error'
@@ -212,60 +66,12 @@ outputs:
   run_id:
     description: 'Run identifier (investigation run when available)'
     value: ${{ steps.omar.outputs.run_id }}
-  findings_artifact:
-    description: 'Legacy output retained for compatibility (empty in bridge mode)'
-    value: ${{ steps.omar.outputs.findings_artifact }}
-  pack_summary_artifact:
-    description: 'Legacy output retained for compatibility (empty in bridge mode)'
-    value: ${{ steps.omar.outputs.pack_summary_artifact }}
-  ingest_artifact:
-    description: 'Legacy output retained for compatibility (empty in bridge mode)'
-    value: ${{ steps.omar.outputs.ingest_artifact }}
-  codebase_ingest_artifact:
-    description: 'Legacy output retained for compatibility (empty in bridge mode)'
-    value: ${{ steps.omar.outputs.codebase_ingest_artifact }}
-  codebase_ingest_summary_artifact:
-    description: 'Legacy output retained for compatibility (empty in bridge mode)'
-    value: ${{ steps.omar.outputs.codebase_ingest_summary_artifact }}
-  codebase_ingest_summary_md_artifact:
-    description: 'Legacy output retained for compatibility (empty in bridge mode)'
-    value: ${{ steps.omar.outputs.codebase_ingest_summary_md_artifact }}
-  review_brief_artifact:
-    description: 'Legacy output retained for compatibility (empty in bridge mode)'
-    value: ${{ steps.omar.outputs.review_brief_artifact }}
-  audit_report_artifact:
-    description: 'Legacy output retained for compatibility (empty in bridge mode)'
-    value: ${{ steps.omar.outputs.audit_report_artifact }}
-  estimated_cost_usd:
-    description: 'Legacy output retained for compatibility (empty in bridge mode)'
-    value: ${{ steps.omar.outputs.estimated_cost_usd }}
-  idempotency_key:
-    description: 'Legacy output retained for compatibility'
-    value: ${{ steps.omar.outputs.idempotency_key }}
   scan_mode:
     description: 'Configured scan mode for this run'
     value: ${{ steps.omar.outputs.scan_mode }}
   severity_gate:
     description: 'Configured severity gate threshold for this run'
     value: ${{ steps.omar.outputs.severity_gate }}
-  llm_provider:
-    description: 'Legacy output retained for compatibility'
-    value: ${{ steps.omar.outputs.llm_provider }}
-  model:
-    description: 'Legacy output retained for compatibility'
-    value: ${{ steps.omar.outputs.model }}
-  model_fallback:
-    description: 'Legacy output retained for compatibility'
-    value: ${{ steps.omar.outputs.model_fallback }}
-  model_fallback_used:
-    description: 'Legacy output retained for compatibility'
-    value: ${{ steps.omar.outputs.model_fallback_used }}
-  policy_pack:
-    description: 'Legacy output retained for compatibility'
-    value: ${{ steps.omar.outputs.policy_pack }}
-  policy_pack_version:
-    description: 'Legacy output retained for compatibility'
-    value: ${{ steps.omar.outputs.policy_pack_version }}
 
 runs:
   using: 'composite'
@@ -295,4 +101,3 @@ runs:
         set -euo pipefail
         export PYTHONPATH="${GITHUB_ACTION_PATH}/src:${PYTHONPATH:-}"
         python -m omargate.main
-
