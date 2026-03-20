@@ -1,22 +1,28 @@
-# Omar Gate Action (Compatibility Bridge)
+# Omar Gate Action (GitHub App Bridge)
 
-This Action is now a thin compatibility layer. It no longer runs proprietary ingest, deterministic scanners, or prompt orchestration in-repo.
+Sentinelayer is a reproducible PR governance layer for AI-generated and human-written changes.
+This public Action is intentionally thin: it triggers and reads scan status from Sentinelayer's
+GitHub App backend instead of embedding private scanner internals in this repository.
 
-All scan execution runs in Sentinelayer GitHub App backend.
+## What this Action does
 
-## What changed
+- Detects repository + PR context from the GitHub event.
+- Calls `POST /api/v1/github-app/trigger`.
+- Optionally waits for completion via `GET /api/v1/github-app/runs/{run_id}/status`.
+- Applies merge gate thresholds from returned severity counts (`P0/P1/P2/P3`).
 
-- Local scan internals were removed from this public Action.
-- The Action now:
-  - detects repo + PR context from the GitHub event,
-  - calls `POST /api/v1/github-app/trigger`,
-  - optionally waits for run completion via `GET /api/v1/github-app/runs/{run_id}/status`,
-  - applies gate threshold from returned severity counts.
+## Positioning (fair and clear)
+
+- **CodeQL / Semgrep / Snyk**: strong scanners that produce findings.
+- **Sentinelayer**: governance layer that turns findings + PR context + evidence
+  into a release decision workflow with reproducibility artifacts.
+
+This Action is the CI bridge. Core adjudication logic runs in the backend GitHub App pipeline.
 
 ## Required setup
 
-- Install the Sentinelayer GitHub App on the target repository.
-- Provide a Sentinelayer bearer token to the workflow (`sentinelayer_token` input).
+- Install the Sentinelayer GitHub App on the target repository/org.
+- Provide `sentinelayer_token` (bearer token) to the workflow.
 
 ## Minimal usage
 
@@ -41,12 +47,12 @@ jobs:
 
 ## Inputs
 
-- `sentinelayer_token` (required): Bearer token for Sentinelayer API.
+- `sentinelayer_token` (required): bearer token for Sentinelayer API.
 - `sentinelayer_api_url` (optional): defaults to `https://api.sentinelayer.com`.
-- `scan_mode` (optional): `baseline`, `deep`, `full-depth` (mapped to slash commands).
+- `scan_mode` (optional): `baseline`, `deep`, `full-depth`.
 - `severity_gate` (optional): `P0`, `P1`, `P2`, `none`.
 - `provider_installation_id` (optional): explicit installation id override.
-- `command` (optional): explicit slash command override (example `/omar baseline`).
+- `command` (optional): explicit slash command override, example `/omar baseline`.
 - `wait_for_completion` (optional): `true` by default.
 - `wait_timeout_seconds` (optional): `900` by default.
 - `wait_poll_seconds` (optional): `10` by default.
@@ -54,5 +60,8 @@ jobs:
 
 ## Outputs
 
-- `gate_status`, `p0_count`, `p1_count`, `p2_count`, `p3_count`, `run_id`
-- `scan_mode`, `severity_gate`
+- `gate_status`
+- `p0_count`, `p1_count`, `p2_count`, `p3_count`
+- `run_id`
+- `scan_mode`
+- `severity_gate`

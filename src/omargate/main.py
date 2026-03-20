@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-ACTION_VERSION = "1.5.0"
+ACTION_VERSION = "1.5.1"
 SENTINELAYER_WEB_BASE = "https://sentinelayer.com"
 
 
@@ -133,7 +133,7 @@ def _api_json_request(
         "Accept": "application/json",
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "User-Agent": "sentinelayer-compat-action/1.5.0",
+        "User-Agent": "sentinelayer-compat-action/1.5.1",
     }
     if payload is not None:
         body = json.dumps(payload).encode("utf-8")
@@ -237,8 +237,8 @@ def _emit_outputs(
 
 def main() -> int:
     print(
-        "::notice::Omar Gate Action v1 is now a thin compatibility bridge. "
-        "Proprietary scan logic runs in Sentinelayer GitHub App backend."
+        "::notice::Omar Gate Action v1 is a thin GitHub App bridge. "
+        "Scan adjudication runs in Sentinelayer backend services."
     )
 
     try:
