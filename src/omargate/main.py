@@ -10,13 +10,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-ACTION_VERSION = "1.5.1"
+ACTION_VERSION = "1.5.2"
 SENTINELAYER_WEB_BASE = "https://sentinelayer.com"
 
 
 @dataclass(frozen=True)
 class BridgeConfig:
     token: str
+    status_poll_token: str
     api_url: str
     repo_full_name: str
     event_path: Path
@@ -72,6 +73,11 @@ def _load_config() -> BridgeConfig:
         or os.environ.get("SENTINELAYER_TOKEN")
         or ""
     ).strip()
+    status_poll_token = str(
+        os.environ.get("INPUT_STATUS_POLL_TOKEN")
+        or os.environ.get("STATUS_POLL_TOKEN")
+        or token
+    ).strip()
     api_url = str(
         os.environ.get("INPUT_SENTINELAYER_API_URL")
         or "https://api.sentinelayer.com"
@@ -110,6 +116,7 @@ def _load_config() -> BridgeConfig:
 
     return BridgeConfig(
         token=token,
+        status_poll_token=status_poll_token,
         api_url=api_url,
         repo_full_name=repo_full_name,
         event_path=event_path,
@@ -133,7 +140,7 @@ def _api_json_request(
         "Accept": "application/json",
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "User-Agent": "sentinelayer-compat-action/1.5.1",
+        "User-Agent": f"sentinelayer-compat-action/{ACTION_VERSION}",
     }
     if payload is not None:
         body = json.dumps(payload).encode("utf-8")
@@ -272,7 +279,11 @@ def main() -> int:
             deadline = time.time() + float(config.wait_timeout_seconds)
             while time.time() < deadline:
                 status_url = f"{config.api_url}/api/v1/github-app/runs/{run_id}/status"
-                status_payload = _api_json_request(method="GET", url=status_url, token=config.token)
+                status_payload = _api_json_request(
+                    method="GET",
+                    url=status_url,
+                    token=config.status_poll_token,
+                )
                 status = str(status_payload.get("status") or "queued").strip().lower()
                 progress = str(status_payload.get("progress_label") or "").strip() or status
                 payload_counts = status_payload.get("severity_counts")
