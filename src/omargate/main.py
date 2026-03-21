@@ -26,6 +26,9 @@ class BridgeConfig:
     severity_gate: str
     command_override: str
     provider_installation_id: int | None
+    spec_hash: str | None
+    spec_id: str | None
+    spec_binding_mode: str
     wait_for_completion: bool
     wait_timeout_seconds: int
     wait_poll_seconds: int
@@ -67,6 +70,24 @@ def _int_input(name: str, default: int) -> int:
         return default
 
 
+def _normalize_spec_hash(value: str | None) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None
+    if len(normalized) != 64:
+        return None
+    if any(ch not in "0123456789abcdef" for ch in normalized):
+        return None
+    return normalized
+
+
+def _normalize_spec_binding_mode(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"explicit", "auto_discovered"}:
+        return normalized
+    return "none"
+
+
 def _load_config() -> BridgeConfig:
     token = str(
         os.environ.get("INPUT_SENTINELAYER_TOKEN")
@@ -96,6 +117,15 @@ def _load_config() -> BridgeConfig:
         if provider_installation_id_raw.isdigit()
         else None
     )
+    spec_hash = _normalize_spec_hash(
+        str(os.environ.get("INPUT_SENTINELAYER_SPEC_HASH") or "").strip()
+    )
+    spec_id = str(os.environ.get("INPUT_SENTINELAYER_SPEC_ID") or "").strip() or None
+    spec_binding_mode = _normalize_spec_binding_mode(
+        str(os.environ.get("INPUT_SPEC_BINDING_MODE") or "").strip()
+    )
+    if spec_binding_mode == "none" and (spec_hash or spec_id):
+        spec_binding_mode = "explicit"
     wait_for_completion = _bool_input("INPUT_WAIT_FOR_COMPLETION", True)
     wait_timeout_seconds = max(30, _int_input("INPUT_WAIT_TIMEOUT_SECONDS", 900))
     wait_poll_seconds = max(5, _int_input("INPUT_WAIT_POLL_SECONDS", 10))
@@ -125,6 +155,9 @@ def _load_config() -> BridgeConfig:
         severity_gate=severity_gate,
         command_override=command_override,
         provider_installation_id=provider_installation_id,
+        spec_hash=spec_hash,
+        spec_id=spec_id,
+        spec_binding_mode=spec_binding_mode,
         wait_for_completion=wait_for_completion,
         wait_timeout_seconds=wait_timeout_seconds,
         wait_poll_seconds=wait_poll_seconds,
@@ -261,6 +294,11 @@ def main() -> int:
         }
         if config.provider_installation_id and config.provider_installation_id > 0:
             trigger_payload["provider_installation_id"] = int(config.provider_installation_id)
+        if config.spec_hash:
+            trigger_payload["spec_hash"] = config.spec_hash
+        if config.spec_id:
+            trigger_payload["spec_id"] = config.spec_id
+        trigger_payload["spec_binding_mode"] = config.spec_binding_mode
 
         trigger_url = f"{config.api_url}/api/v1/github-app/trigger"
         trigger_response = _api_json_request(
@@ -330,6 +368,7 @@ def main() -> int:
             f"- PR: `#{pr_number}`",
             f"- Status: `{status}`",
             f"- Progress: `{progress}`",
+            f"- Spec binding: `{config.spec_binding_mode}`",
             f"- Findings: `P0={counts['P0']} P1={counts['P1']} P2={counts['P2']} P3={counts['P3']}`",
             f"- Gate: `{gate_status}` (threshold `{config.severity_gate}`)",
         ]

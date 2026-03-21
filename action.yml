@@ -34,6 +34,18 @@ inputs:
     description: 'Optional explicit slash command override (example: /omar baseline)'
     required: false
     default: ''
+  sentinelayer_spec_hash:
+    description: 'Optional Sentinelayer spec hash (64-char hex) to bind run governance context'
+    required: false
+    default: ''
+  sentinelayer_spec_id:
+    description: 'Optional Sentinelayer spec UUID associated with sentinelayer_spec_hash'
+    required: false
+    default: ''
+  spec_binding_mode:
+    description: 'Spec binding mode: none, explicit, auto_discovered'
+    required: false
+    default: 'none'
   wait_for_completion:
     description: 'Wait for managed run completion before exiting'
     required: false
@@ -98,6 +110,9 @@ runs:
         INPUT_SEVERITY_GATE: ${{ inputs.severity_gate }}
         INPUT_PROVIDER_INSTALLATION_ID: ${{ inputs.provider_installation_id }}
         INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_SENTINELAYER_SPEC_HASH: ${{ inputs.sentinelayer_spec_hash }}
+        INPUT_SENTINELAYER_SPEC_ID: ${{ inputs.sentinelayer_spec_id }}
+        INPUT_SPEC_BINDING_MODE: ${{ inputs.spec_binding_mode }}
         INPUT_WAIT_FOR_COMPLETION: ${{ inputs.wait_for_completion }}
         INPUT_WAIT_TIMEOUT_SECONDS: ${{ inputs.wait_timeout_seconds }}
         INPUT_WAIT_POLL_SECONDS: ${{ inputs.wait_poll_seconds }}
