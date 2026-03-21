@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -12,6 +13,24 @@ from typing import Any
 
 ACTION_VERSION = "1.5.2"
 SENTINELAYER_WEB_BASE = "https://sentinelayer.com"
+_SPEC_DISCOVERY_MAX_FILES = 24
+_SPEC_DISCOVERY_MAX_BYTES = 512_000
+_SPEC_DISCOVERY_ALLOWED_SUFFIXES = {".md", ".markdown", ".txt", ".yml", ".yaml", ".json"}
+_SPEC_DISCOVERY_EXACT_FILENAMES = {
+    "spec.md",
+    "specification.md",
+    "requirements.md",
+    "swe_excellence_framework.md",
+}
+_SPEC_DISCOVERY_SKIP_DIRS = {
+    ".git",
+    ".venv",
+    "venv",
+    "node_modules",
+    "dist",
+    "build",
+    "__pycache__",
+}
 
 
 @dataclass(frozen=True)
@@ -29,6 +48,7 @@ class BridgeConfig:
     spec_hash: str | None
     spec_id: str | None
     spec_binding_mode: str
+    spec_sources: list[str]
     wait_for_completion: bool
     wait_timeout_seconds: int
     wait_poll_seconds: int
@@ -88,6 +108,119 @@ def _normalize_spec_binding_mode(value: str | None) -> str:
     return "none"
 
 
+def _normalize_spec_sources(values: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        candidate = str(value or "").replace("\\", "/").strip()
+        if not candidate:
+            continue
+        lowered = candidate.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        normalized.append(candidate)
+    normalized.sort(key=lambda item: item.lower())
+    return normalized
+
+
+def _normalize_text_for_hash(content: str) -> str:
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.rstrip() for line in normalized.split("\n")]
+    collapsed = "\n".join(lines).strip()
+    return collapsed
+
+
+def _spec_file_score(relative_path: str) -> tuple[int, str]:
+    normalized = str(relative_path or "").replace("\\", "/").strip().lower()
+    name = normalized.rsplit("/", 1)[-1]
+    score = 90
+    if name in _SPEC_DISCOVERY_EXACT_FILENAMES:
+        score = 0
+    elif normalized.startswith(".sentinelayer/"):
+        score = 10
+    elif "system designs and specifications/" in normalized:
+        score = 20
+    elif normalized.startswith("docs/") and "spec" in name:
+        score = 30
+    elif "spec" in name:
+        score = 40
+    elif "requirement" in name:
+        score = 50
+    elif "design" in normalized:
+        score = 60
+    return score, normalized
+
+
+def _discover_spec_sources(workspace: Path) -> list[str]:
+    if not workspace.exists():
+        return []
+
+    candidates: list[str] = []
+    for root, dirs, files in os.walk(workspace):
+        dirs[:] = [directory for directory in dirs if directory not in _SPEC_DISCOVERY_SKIP_DIRS]
+        for file_name in files:
+            suffix = Path(file_name).suffix.lower()
+            if suffix not in _SPEC_DISCOVERY_ALLOWED_SUFFIXES:
+                continue
+            lowered_name = file_name.lower()
+            if (
+                lowered_name not in _SPEC_DISCOVERY_EXACT_FILENAMES
+                and "spec" not in lowered_name
+                and "requirement" not in lowered_name
+                and "design" not in lowered_name
+            ):
+                continue
+
+            absolute_path = Path(root) / file_name
+            try:
+                if absolute_path.stat().st_size > _SPEC_DISCOVERY_MAX_BYTES:
+                    continue
+            except OSError:
+                continue
+
+            try:
+                relative = absolute_path.relative_to(workspace)
+            except ValueError:
+                continue
+            candidates.append(str(relative).replace("\\", "/"))
+
+    ranked = sorted(
+        _normalize_spec_sources(candidates),
+        key=_spec_file_score,
+    )
+    return ranked[:_SPEC_DISCOVERY_MAX_FILES]
+
+
+def _compute_spec_hash_from_sources(workspace: Path, sources: list[str]) -> str | None:
+    normalized_sources = _normalize_spec_sources(sources)
+    if not normalized_sources:
+        return None
+
+    manifest: list[dict[str, str]] = []
+    for relative_path in normalized_sources:
+        file_path = workspace / relative_path
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        normalized_text = _normalize_text_for_hash(content)
+        if not normalized_text:
+            continue
+        content_hash = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+        manifest.append({"path": relative_path, "content_hash": content_hash})
+
+    if not manifest:
+        return None
+    payload = json.dumps(
+        manifest,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _load_config() -> BridgeConfig:
     token = str(
         os.environ.get("INPUT_SENTINELAYER_TOKEN")
@@ -117,6 +250,7 @@ def _load_config() -> BridgeConfig:
         if provider_installation_id_raw.isdigit()
         else None
     )
+    workspace = Path(str(os.environ.get("GITHUB_WORKSPACE") or ".")).resolve()
     spec_hash = _normalize_spec_hash(
         str(os.environ.get("INPUT_SENTINELAYER_SPEC_HASH") or "").strip()
     )
@@ -124,6 +258,14 @@ def _load_config() -> BridgeConfig:
     spec_binding_mode = _normalize_spec_binding_mode(
         str(os.environ.get("INPUT_SPEC_BINDING_MODE") or "").strip()
     )
+    discovered_spec_sources: list[str] = []
+    if spec_hash is None:
+        discovered_spec_sources = _discover_spec_sources(workspace)
+        discovered_hash = _compute_spec_hash_from_sources(workspace, discovered_spec_sources)
+        if discovered_hash:
+            spec_hash = discovered_hash
+            if spec_binding_mode == "none":
+                spec_binding_mode = "auto_discovered"
     if spec_binding_mode == "none" and (spec_hash or spec_id):
         spec_binding_mode = "explicit"
     wait_for_completion = _bool_input("INPUT_WAIT_FOR_COMPLETION", True)
@@ -158,6 +300,7 @@ def _load_config() -> BridgeConfig:
         spec_hash=spec_hash,
         spec_id=spec_id,
         spec_binding_mode=spec_binding_mode,
+        spec_sources=_normalize_spec_sources(discovered_spec_sources),
         wait_for_completion=wait_for_completion,
         wait_timeout_seconds=wait_timeout_seconds,
         wait_poll_seconds=wait_poll_seconds,
@@ -299,6 +442,8 @@ def main() -> int:
         if config.spec_id:
             trigger_payload["spec_id"] = config.spec_id
         trigger_payload["spec_binding_mode"] = config.spec_binding_mode
+        if config.spec_sources:
+            trigger_payload["spec_sources"] = config.spec_sources
 
         trigger_url = f"{config.api_url}/api/v1/github-app/trigger"
         trigger_response = _api_json_request(
@@ -369,6 +514,12 @@ def main() -> int:
             f"- Status: `{status}`",
             f"- Progress: `{progress}`",
             f"- Spec binding: `{config.spec_binding_mode}`",
+            (
+                f"- Spec hash: `{config.spec_hash[:12]}...`"
+                if config.spec_hash
+                else "- Spec hash: `none`"
+            ),
+            f"- Spec sources: `{len(config.spec_sources)}`",
             f"- Findings: `P0={counts['P0']} P1={counts['P1']} P2={counts['P2']} P3={counts['P3']}`",
             f"- Gate: `{gate_status}` (threshold `{config.severity_gate}`)",
         ]
