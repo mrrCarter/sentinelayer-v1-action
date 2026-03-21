@@ -9,6 +9,10 @@
 
 Omar Gate runs a 7-layer security analysis on every pull request — combining deterministic pattern scanning, codebase-aware ingestion, and deep AI-powered code review — then blocks the merge if critical vulnerabilities are found.
 
+### Example blocked PR output
+
+![Omar Gate blocked PR output with severity breakdown and top findings](examples/omar-gate-blocked-example.jpeg)
+
 Built by engineers, for engineers. No vendor lock-in. Bring your own LLM.
 
 ---
