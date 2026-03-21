@@ -1,5 +1,5 @@
 name: 'Omar Gate'
-description: 'Thin compatibility action that delegates scans to Sentinelayer GitHub App backend'
+description: 'Compatibility action that delegates scans to Sentinelayer GitHub App pipeline'
 author: 'Sentinelayer'
 branding:
   icon: 'shield'
@@ -7,11 +7,11 @@ branding:
 
 inputs:
   sentinelayer_token:
-    description: 'Sentinelayer bearer token used to call backend trigger API'
+    description: 'Sentinelayer service token used to authorize run orchestration'
     required: true
     default: ''
   status_poll_token:
-    description: 'Optional bearer token for backend status polling endpoint when wait_for_completion=true'
+    description: 'Optional token for status polling when wait_for_completion=true'
     required: false
     default: ''
   sentinelayer_api_url:
@@ -35,15 +35,15 @@ inputs:
     required: false
     default: ''
   wait_for_completion:
-    description: 'Wait for backend run completion before exiting'
+    description: 'Wait for managed run completion before exiting'
     required: false
     default: 'true'
   wait_timeout_seconds:
-    description: 'Max wait time for backend run completion'
+    description: 'Max wait time for run completion'
     required: false
     default: '900'
   wait_poll_seconds:
-    description: 'Polling interval for run status endpoint'
+    description: 'Polling interval for run status checks'
     required: false
     default: '10'
   pr_number:
