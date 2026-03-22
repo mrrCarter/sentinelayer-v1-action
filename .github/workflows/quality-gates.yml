@@ -21,10 +21,28 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install quality gate tooling
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install ruff pytest
+
       - name: Validate action bridge sources compile
         run: |
           set -euo pipefail
           python -m compileall -q src
+
+      - name: Lint bridge sources
+        run: |
+          set -euo pipefail
+          python -m ruff check src tests
+
+      - name: Run bridge unit tests
+        env:
+          PYTHONPATH: src
+        run: |
+          set -euo pipefail
+          python -m pytest -q tests
 
       - name: Validate action metadata
         run: |
@@ -32,4 +50,3 @@ jobs:
           test -s action.yml
           grep -q "sentinelayer_token" action.yml
           grep -q "python -m omargate.main" action.yml
-
