@@ -28,7 +28,6 @@ permissions:
   contents: read
   pull-requests: write
   checks: write
-  id-token: write
 
 jobs:
   security-review:
@@ -40,8 +39,9 @@ jobs:
         id: omar
         uses: mrrCarter/sentinelayer-v1-action@v1
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+          scan_mode: deep
+          severity_gate: P1
 
       - name: Upload Artifacts
         if: always()
@@ -59,7 +59,29 @@ That's it. Open a PR and Omar Gate will:
 4. Block the merge if P0/P1 issues are found
 5. Upload full audit artifacts for download
 
-> **Required inputs:** `github_token` and an API key for your chosen LLM provider. Without `github_token`, the action cannot fetch your PR diff and will fail. Without an API key, only deterministic scanning runs (no AI analysis).
+> **Required input:** `sentinelayer_token`. This action is a GitHub App bridge and authenticates against Sentinelayer API using that bearer token.
+
+### Fastest Installer Setup (recommended)
+
+Use one organization-level Actions secret and reuse it across repos:
+
+```bash
+gh secret set SENTINELAYER_TOKEN --org <your-org> --visibility all
+```
+
+Or scope it to selected repos:
+
+```bash
+gh secret set SENTINELAYER_TOKEN --org <your-org> --repos repo-a,repo-b
+```
+
+If you self-host and keep runtime values in AWS Secrets Manager, sync the same runtime token key to GitHub:
+
+```bash
+aws secretsmanager get-secret-value --secret-id sentinelayer/prod/api-runtime --query SecretString --output text \
+| jq -r '.sentinelayer_token' \
+| gh secret set SENTINELAYER_TOKEN --org <your-org> --visibility all
+```
 
 ---
 
