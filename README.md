@@ -11,6 +11,25 @@ Omar Gate runs a 7-layer security analysis on every pull request — combining d
 
 Built by engineers, for engineers. No vendor lock-in. Bring your own LLM.
 
+## Recommended: Start with Spec Builder
+
+If you're building a new feature or a new app, start here first:
+
+**[Sentinelayer Spec Builder](https://sentinelayer.com/spec-builder)**
+
+Tell our AI what you want to build (or connect your repo), then it generates:
+- a project spec sheet
+- an AI builder prompt you can paste into Cursor, Claude Code, Copilot, or any coding agent
+- Omar Gate setup aligned to that spec
+- a phase-by-phase build guide
+
+Why this is better than doing everything manually:
+- you get one coherent contract for product, architecture, and security from day one
+- Omar is wired for you and stays tied to the spec, so PR reviews enforce the same requirements every time
+- you reduce prompt drift, rework, and inconsistent implementation decisions
+
+If you cannot get setup working, we can help. Use Spec Builder first, then follow the Quick Start below for direct GitHub Action install.
+
 ---
 
 ## Quick Start
