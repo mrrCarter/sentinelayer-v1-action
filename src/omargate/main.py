@@ -544,10 +544,16 @@ def main() -> int:
 
     playwright_status = "skipped"
     playwright_mode = "off"
+    playwright_detail = "Playwright gate disabled."
     try:
         config = _load_config()
         playwright_mode = config.playwright_mode
-        playwright_status, playwright_detail = _execute_playwright_gate(config)
+        try:
+            playwright_status, playwright_detail = _execute_playwright_gate(config)
+        except Exception as playwright_exc:
+            playwright_status = "failed"
+            playwright_detail = str(playwright_exc)
+            raise
         payload = json.loads(config.event_path.read_text(encoding="utf-8"))
         pr_number = _detect_pr_number(payload, fallback_pr_number=config.pr_number_override)
         command = config.command_override or _command_for_scan_mode(config.scan_mode)

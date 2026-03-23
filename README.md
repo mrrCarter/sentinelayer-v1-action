@@ -341,6 +341,52 @@ jobs:
 
 ---
 
+## Enterprise Supply-Chain Proof (SLSA + SBOM)
+
+For buyer-facing audits, pair Omar Gate with signed provenance and SBOM attestations.
+
+### A) GitHub build provenance attestation (SLSA)
+```yaml
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build release artifact
+        run: make release
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: "dist/*"
+```
+
+### B) Container SBOM attestation (SPDX)
+```bash
+# Attach signed SPDX SBOM attestation to the image digest
+COSIGN_EXPERIMENTAL=1 cosign attest \
+  --predicate sbom.spdx.json \
+  --type spdx \
+  oci://registry/org/image:tag
+```
+
+### Buyer Verify Commands
+```bash
+# Verify GitHub provenance attestation for a release artifact
+gh attestation verify dist/myapp-linux-amd64 -R org/repo
+
+# Verify SPDX SBOM attestation on a container image
+cosign verify-attestation --type spdx oci://registry/org/image:tag
+```
+
+See [Supply-Chain Attestation Guide](docs/supply-chain-attestation.md) for an end-to-end checklist.
+
+---
+
 ## Troubleshooting
 
 ### "Illegal header value b'Bearer '"

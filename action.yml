@@ -127,8 +127,31 @@ runs:
       with:
         python-version: '3.11'
 
+    - name: Normalize Playwright mode
+      id: playwright_mode
+      shell: bash
+      env:
+        RAW_PLAYWRIGHT_MODE: ${{ inputs.playwright_mode }}
+      run: |
+        set -euo pipefail
+        normalized="$(printf '%s' "${RAW_PLAYWRIGHT_MODE:-}" | tr '[:upper:]' '[:lower:]' | xargs)"
+        effective="off"
+        enabled="false"
+        case "${normalized}" in
+          baseline|smoke|pr)
+            effective="baseline"
+            enabled="true"
+            ;;
+          audit|deep|full|full-depth)
+            effective="audit"
+            enabled="true"
+            ;;
+        esac
+        echo "effective=${effective}" >> "${GITHUB_OUTPUT}"
+        echo "enabled=${enabled}" >> "${GITHUB_OUTPUT}"
+
     - name: Setup Node (Playwright option)
-      if: ${{ inputs.playwright_mode != 'off' }}
+      if: ${{ steps.playwright_mode.outputs.enabled == 'true' }}
       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
       with:
         node-version: ${{ inputs.playwright_node_version }}
@@ -154,7 +177,7 @@ runs:
         INPUT_WAIT_TIMEOUT_SECONDS: ${{ inputs.wait_timeout_seconds }}
         INPUT_WAIT_POLL_SECONDS: ${{ inputs.wait_poll_seconds }}
         INPUT_PR_NUMBER: ${{ inputs.pr_number }}
-        INPUT_PLAYWRIGHT_MODE: ${{ inputs.playwright_mode }}
+        INPUT_PLAYWRIGHT_MODE: ${{ steps.playwright_mode.outputs.effective }}
         INPUT_PLAYWRIGHT_BASE_URL: ${{ inputs.playwright_base_url }}
         INPUT_PLAYWRIGHT_BOOTSTRAP: ${{ inputs.playwright_bootstrap }}
         INPUT_PLAYWRIGHT_BASELINE_COMMAND: ${{ inputs.playwright_baseline_command }}
