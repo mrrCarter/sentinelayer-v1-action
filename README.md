@@ -62,6 +62,7 @@ jobs:
           scan_mode: deep
           severity_gate: P1
           playwright_mode: baseline
+          sbom_mode: baseline
 
       - name: Upload Artifacts
         if: always()
@@ -218,6 +219,8 @@ Use these in subsequent workflow steps:
 | `severity_gate` | Effective severity threshold used by the bridge |
 | `playwright_status` | Browser gate status: `skipped`, `passed`, or `failed` |
 | `playwright_mode` | Effective Playwright mode: `off`, `baseline`, or `audit` |
+| `sbom_status` | SBOM gate status: `skipped`, `passed`, or `failed` |
+| `sbom_mode` | Effective SBOM mode: `off`, `baseline`, or `audit` |
 
 ---
 
@@ -252,6 +255,11 @@ Use these in subsequent workflow steps:
 | `playwright_bootstrap` | `true` | Run `npm ci --ignore-scripts` + `npx playwright install --with-deps chromium` before Playwright command. |
 | `playwright_baseline_command` | `npm run test:e2e:baseline` | Command for PR baseline browser sweep. |
 | `playwright_audit_command` | `npm run test:e2e:audit` | Command for deep audit browser sweep. |
+| `sbom_mode` | `off` | Optional SBOM profile: `off`, `baseline`, `audit`. |
+| `sbom_bootstrap` | `true` | Install default SBOM generator prerequisites before built-in SBOM commands. |
+| `sbom_output_dir` | `.sentinelayer/sbom` | Output directory used for generated SBOM artifacts. |
+| `sbom_baseline_command` | empty | Optional override command for `sbom_mode: baseline`. Empty uses default Node/Python CycloneDX profile. |
+| `sbom_audit_command` | empty | Optional override command for `sbom_mode: audit`. Empty uses default Node/Python CycloneDX profile with expanded output. |
 
 See [action.yml](action.yml) for the authoritative input contract.
 
@@ -300,6 +308,18 @@ See [action.yml](action.yml) for the authoritative input contract.
     playwright_baseline_command: npm run test:e2e:baseline
 ```
 
+### PR Baseline with Playwright + SBOM
+```yaml
+- name: Omar Gate
+  uses: mrrCarter/sentinelayer-v1-action@v1
+  with:
+    sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+    scan_mode: deep
+    severity_gate: P1
+    playwright_mode: baseline
+    sbom_mode: baseline
+```
+
 ### Audit Mode with Deep Frontend E2E + Full-Depth Omar
 ```yaml
 - name: Omar Gate
@@ -310,6 +330,7 @@ See [action.yml](action.yml) for the authoritative input contract.
     severity_gate: P1
     playwright_mode: audit
     playwright_audit_command: npm run test:e2e:audit
+    sbom_mode: audit
 ```
 
 ### Deep Scan (Nightly / Release Gate)
@@ -344,6 +365,7 @@ jobs:
 ## Enterprise Supply-Chain Proof (SLSA + SBOM)
 
 For buyer-facing audits, pair Omar Gate with signed provenance and SBOM attestations.
+Enable the built-in action SBOM pass (`sbom_mode: baseline` on PR or `sbom_mode: audit` for release/deep scans), then attest the resulting artifacts.
 
 ### A) GitHub build provenance attestation (SLSA)
 ```yaml

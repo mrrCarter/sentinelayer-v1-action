@@ -2,6 +2,20 @@
 
 This guide adds cryptographic supply-chain proof on top of Omar Gate findings so enterprise reviewers can verify provenance and SBOM integrity.
 
+## 0. Generate SBOM artifacts in Omar Gate runs
+
+Use the action's SBOM mode so PR and audit workflows emit CycloneDX SBOM artifacts deterministically.
+
+```yaml
+- name: Omar Gate
+  uses: mrrCarter/sentinelayer-v1-action@v1
+  with:
+    sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+    scan_mode: audit
+    playwright_mode: audit
+    sbom_mode: audit
+```
+
 ## 1. Emit SLSA provenance from GitHub Actions
 
 Use GitHub attestation permissions and provenance generation in your release workflow.
@@ -48,6 +62,7 @@ cosign verify-attestation --type spdx oci://registry/org/image:tag
 
 1. Omar Gate PR run passes required severity gate.
 2. Release build emits provenance attestation.
-3. Container image has signed SPDX SBOM attestation.
-4. README includes verify commands above for third-party auditors.
-5. Release notes include artifact name, digest, and attestation references.
+3. Omar Gate SBOM mode generated SBOM artifacts in `.sentinelayer/sbom` (or your configured output directory).
+4. Container image has signed SPDX SBOM attestation.
+5. README includes verify commands above for third-party auditors.
+6. Release notes include artifact name, digest, and attestation references.

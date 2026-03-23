@@ -11,7 +11,9 @@ from omargate.main import (
     _compute_spec_hash_from_sources,
     _detect_pr_number,
     _execute_playwright_gate,
+    _execute_sbom_gate,
     _normalize_playwright_mode,
+    _normalize_sbom_mode,
     _normalize_spec_binding_mode,
     _normalize_spec_hash,
     _normalize_spec_sources,
@@ -26,6 +28,10 @@ def _bridge_config(
     playwright_mode: str = "baseline",
     playwright_bootstrap: bool = True,
     playwright_base_url: str = "",
+    sbom_mode: str = "off",
+    sbom_bootstrap: bool = True,
+    sbom_baseline_command: str = "",
+    sbom_audit_command: str = "",
 ) -> BridgeConfig:
     event_path = tmp_path / "event.json"
     event_path.write_text('{"pull_request":{"number":42}}', encoding="utf-8")
@@ -53,6 +59,11 @@ def _bridge_config(
         playwright_bootstrap=playwright_bootstrap,
         playwright_baseline_command="npm run test:e2e:baseline",
         playwright_audit_command="npm run test:e2e:audit",
+        sbom_mode=sbom_mode,
+        sbom_bootstrap=sbom_bootstrap,
+        sbom_output_dir=".sentinelayer/sbom",
+        sbom_baseline_command=sbom_baseline_command,
+        sbom_audit_command=sbom_audit_command,
     )
 
 
@@ -109,6 +120,15 @@ def test_normalize_playwright_mode() -> None:
     assert _normalize_playwright_mode("full-depth") == "audit"
     assert _normalize_playwright_mode("off") == "off"
     assert _normalize_playwright_mode("invalid") == "off"
+
+
+def test_normalize_sbom_mode() -> None:
+    assert _normalize_sbom_mode("baseline") == "baseline"
+    assert _normalize_sbom_mode("pr") == "baseline"
+    assert _normalize_sbom_mode("audit") == "audit"
+    assert _normalize_sbom_mode("full-depth") == "audit"
+    assert _normalize_sbom_mode("off") == "off"
+    assert _normalize_sbom_mode("invalid") == "off"
 
 
 def test_parse_safe_command_blocks_shell_control_tokens() -> None:
@@ -194,6 +214,71 @@ def test_execute_playwright_gate_raises_on_command_failure(
         _execute_playwright_gate(config)
 
 
+def test_execute_sbom_gate_default_skips_when_no_supported_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = _bridge_config(
+        tmp_path,
+        sbom_mode="baseline",
+        sbom_bootstrap=False,
+    )
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+
+    status, detail = _execute_sbom_gate(config)
+    assert status == "skipped"
+    assert "no Node/Python manifests" in detail
+
+
+def test_execute_sbom_gate_uses_custom_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config = _bridge_config(
+        tmp_path,
+        sbom_mode="audit",
+        sbom_bootstrap=False,
+        sbom_audit_command="npm run sbom:audit",
+    )
+    run_calls: list[tuple[str, dict[str, str] | None]] = []
+
+    def _fake_run(command: str, *, env: dict[str, str] | None = None) -> int:
+        run_calls.append((command, env))
+        return 0
+
+    monkeypatch.setattr("omargate.main._run_command", _fake_run)
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+
+    status, detail = _execute_sbom_gate(config)
+    assert status == "passed"
+    assert "sbom:audit" in detail
+    assert run_calls[0][0] == "npm run sbom:audit"
+    assert run_calls[0][1]["SENTINELAYER_SBOM_OUTPUT_DIR"] == ".sentinelayer/sbom"
+
+
+def test_execute_sbom_gate_default_node_and_python(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    (tmp_path / "package.json").write_text('{"name":"demo"}', encoding="utf-8")
+    (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("requests==2.32.0\n", encoding="utf-8")
+    config = _bridge_config(
+        tmp_path,
+        sbom_mode="audit",
+        sbom_bootstrap=True,
+    )
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    command_calls: list[list[str]] = []
+
+    def _fake_run_args(args: list[str], *, env: dict[str, str] | None = None) -> int:
+        command_calls.append(args)
+        return 0
+
+    monkeypatch.setattr("omargate.main._run_command_args", _fake_run_args)
+    status, detail = _execute_sbom_gate(config)
+    assert status == "passed"
+    assert "generated" in detail
+    assert command_calls[0] == ["npm", "ci", "--ignore-scripts"]
+    assert command_calls[1][:3] == ["npx", "--yes", "@cyclonedx/cyclonedx-npm"]
+    assert command_calls[2][:3] == ["npx", "--yes", "@cyclonedx/cyclonedx-npm"]
+    assert command_calls[3][:5] == ["python", "-m", "pip", "install", "--upgrade"]
+    assert command_calls[4][0] == "cyclonedx-py"
+
+
 def test_main_sets_playwright_status_failed_when_gate_errors(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -221,3 +306,33 @@ def test_main_sets_playwright_status_failed_when_gate_errors(
     assert outputs["gate_status"] == "error"
     assert outputs["playwright_status"] == "failed"
     assert outputs["playwright_mode"] == "audit"
+
+
+def test_main_sets_sbom_status_failed_when_gate_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = _bridge_config(tmp_path, sbom_mode="audit", sbom_bootstrap=False)
+    output_path = tmp_path / "github_output.txt"
+    monkeypatch.setattr("omargate.main._load_config", lambda: config)
+    monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr(
+        "omargate.main._execute_sbom_gate",
+        lambda _config: (_ for _ in ()).throw(RuntimeError("sbom exploded")),
+    )
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    monkeypatch.setenv("INPUT_SCAN_MODE", "deep")
+    monkeypatch.setenv("INPUT_SEVERITY_GATE", "P1")
+
+    exit_code = main()
+    assert exit_code == 2
+
+    outputs = {}
+    for line in output_path.read_text(encoding="utf-8").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        outputs[key] = value
+
+    assert outputs["gate_status"] == "error"
+    assert outputs["sbom_status"] == "failed"
+    assert outputs["sbom_mode"] == "audit"

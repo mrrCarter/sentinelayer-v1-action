@@ -33,6 +33,12 @@ _SPEC_DISCOVERY_SKIP_DIRS = {
     "build",
     "__pycache__",
 }
+_SBOM_DEFAULT_OUTPUT_DIR = ".sentinelayer/sbom"
+_SBOM_PYTHON_REQUIREMENTS_FILES = (
+    "requirements.txt",
+    "requirements-dev.txt",
+    "requirements-prod.txt",
+)
 
 
 @dataclass(frozen=True)
@@ -60,6 +66,11 @@ class BridgeConfig:
     playwright_bootstrap: bool
     playwright_baseline_command: str
     playwright_audit_command: str
+    sbom_mode: str
+    sbom_bootstrap: bool
+    sbom_output_dir: str
+    sbom_baseline_command: str
+    sbom_audit_command: str
 
 
 def _write_output(name: str, value: str) -> None:
@@ -118,6 +129,15 @@ def _normalize_spec_binding_mode(value: str | None) -> str:
 def _normalize_playwright_mode(value: str | None) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in {"baseline", "smoke", "pr"}:
+        return "baseline"
+    if normalized in {"audit", "deep", "full", "full-depth"}:
+        return "audit"
+    return "off"
+
+
+def _normalize_sbom_mode(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"baseline", "pr", "smoke"}:
         return "baseline"
     if normalized in {"audit", "deep", "full", "full-depth"}:
         return "audit"
@@ -300,6 +320,14 @@ def _load_config() -> BridgeConfig:
     playwright_audit_command = str(
         os.environ.get("INPUT_PLAYWRIGHT_AUDIT_COMMAND") or "npm run test:e2e:audit"
     ).strip()
+    sbom_mode = _normalize_sbom_mode(str(os.environ.get("INPUT_SBOM_MODE") or "").strip())
+    sbom_bootstrap = _bool_input("INPUT_SBOM_BOOTSTRAP", True)
+    sbom_output_dir = (
+        str(os.environ.get("INPUT_SBOM_OUTPUT_DIR") or _SBOM_DEFAULT_OUTPUT_DIR).strip()
+        or _SBOM_DEFAULT_OUTPUT_DIR
+    )
+    sbom_baseline_command = str(os.environ.get("INPUT_SBOM_BASELINE_COMMAND") or "").strip()
+    sbom_audit_command = str(os.environ.get("INPUT_SBOM_AUDIT_COMMAND") or "").strip()
 
     missing = []
     if not token:
@@ -337,6 +365,11 @@ def _load_config() -> BridgeConfig:
         playwright_bootstrap=playwright_bootstrap,
         playwright_baseline_command=playwright_baseline_command,
         playwright_audit_command=playwright_audit_command,
+        sbom_mode=sbom_mode,
+        sbom_bootstrap=sbom_bootstrap,
+        sbom_output_dir=sbom_output_dir,
+        sbom_baseline_command=sbom_baseline_command,
+        sbom_audit_command=sbom_audit_command,
     )
 
 
@@ -495,6 +528,201 @@ def _execute_playwright_gate(config: BridgeConfig) -> tuple[str, str]:
     return "passed", detail
 
 
+def _resolve_sbom_output_dir(workspace: Path, configured_output_dir: str) -> Path:
+    raw = str(configured_output_dir or "").strip() or _SBOM_DEFAULT_OUTPUT_DIR
+    output_dir = Path(raw)
+    if not output_dir.is_absolute():
+        output_dir = workspace / output_dir
+    return output_dir.resolve()
+
+
+def _discover_requirements_file(workspace: Path) -> Path | None:
+    for file_name in _SBOM_PYTHON_REQUIREMENTS_FILES:
+        candidate = workspace / file_name
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
+def _run_default_sbom_collection(config: BridgeConfig) -> tuple[str, str]:
+    workspace = Path(str(os.environ.get("GITHUB_WORKSPACE") or ".")).resolve()
+    output_dir = _resolve_sbom_output_dir(workspace, config.sbom_output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    mode = str(config.sbom_mode or "off").strip().lower()
+    env = os.environ.copy()
+
+    generated: list[Path] = []
+    node_project = (workspace / "package.json").exists()
+    node_lock = (workspace / "package-lock.json").exists() or (workspace / "npm-shrinkwrap.json").exists()
+    requirements_file = _discover_requirements_file(workspace)
+    pyproject_file = workspace / "pyproject.toml"
+    python_project = requirements_file is not None or pyproject_file.exists()
+
+    if not node_project and not python_project:
+        return (
+            "skipped",
+            "SBOM mode enabled but no Node/Python manifests were discovered at repository root.",
+        )
+
+    if node_project:
+        if config.sbom_bootstrap and node_lock:
+            print("::notice::SBOM gate: bootstrapping Node dependencies with npm ci.")
+            npm_ci_code = _run_command_args(["npm", "ci", "--ignore-scripts"], env=env)
+            if npm_ci_code != 0:
+                raise RuntimeError(
+                    "SBOM bootstrap failed "
+                    "(command=`npm ci --ignore-scripts`, "
+                    f"exit_code={npm_ci_code})."
+                )
+
+        node_json = output_dir / (
+            "sbom-node.audit.cdx.json" if mode == "audit" else "sbom-node.baseline.cdx.json"
+        )
+        node_command = [
+            "npx",
+            "--yes",
+            "@cyclonedx/cyclonedx-npm",
+            "--output-format",
+            "JSON",
+            "--spec-version",
+            "1.5",
+            "--output-file",
+            str(node_json),
+            "--validate",
+        ]
+        if node_lock:
+            node_command.append("--package-lock-only")
+        node_code = _run_command_args(node_command, env=env)
+        if node_code != 0:
+            raise RuntimeError(
+                "SBOM generation failed for Node "
+                "(command=`npx --yes @cyclonedx/cyclonedx-npm ...`, "
+                f"exit_code={node_code})."
+            )
+        generated.append(node_json)
+
+        if mode == "audit":
+            node_xml = output_dir / "sbom-node.audit.cdx.xml"
+            node_xml_command = [
+                "npx",
+                "--yes",
+                "@cyclonedx/cyclonedx-npm",
+                "--output-format",
+                "XML",
+                "--spec-version",
+                "1.5",
+                "--output-file",
+                str(node_xml),
+                "--validate",
+            ]
+            if node_lock:
+                node_xml_command.append("--package-lock-only")
+            node_xml_code = _run_command_args(node_xml_command, env=env)
+            if node_xml_code != 0:
+                raise RuntimeError(
+                    "SBOM generation failed for Node XML output "
+                    "(command=`npx --yes @cyclonedx/cyclonedx-npm ...`, "
+                    f"exit_code={node_xml_code})."
+                )
+            generated.append(node_xml)
+
+    if python_project:
+        if config.sbom_bootstrap:
+            print("::notice::SBOM gate: installing cyclonedx-bom for Python SBOM generation.")
+            py_bootstrap_code = _run_command_args(
+                ["python", "-m", "pip", "install", "--upgrade", "pip", "cyclonedx-bom"],
+                env=env,
+            )
+            if py_bootstrap_code != 0:
+                raise RuntimeError(
+                    "SBOM bootstrap failed "
+                    "(command=`python -m pip install --upgrade pip cyclonedx-bom`, "
+                    f"exit_code={py_bootstrap_code})."
+                )
+
+        py_json = output_dir / (
+            "sbom-python.audit.cdx.json" if mode == "audit" else "sbom-python.baseline.cdx.json"
+        )
+        if requirements_file is not None:
+            py_command = [
+                "cyclonedx-py",
+                "requirements",
+                str(requirements_file),
+                "--output-format",
+                "JSON",
+                "--spec-version",
+                "1.5",
+                "--output-file",
+                str(py_json),
+                "--validate",
+            ]
+        else:
+            py_command = [
+                "cyclonedx-py",
+                "environment",
+                "--output-format",
+                "JSON",
+                "--spec-version",
+                "1.5",
+                "--output-file",
+                str(py_json),
+                "--validate",
+            ]
+        py_code = _run_command_args(py_command, env=env)
+        if py_code != 0:
+            raise RuntimeError(
+                "SBOM generation failed for Python "
+                "(command=`cyclonedx-py ...`, "
+                f"exit_code={py_code})."
+            )
+        generated.append(py_json)
+
+    if not generated:
+        return (
+            "skipped",
+            "SBOM mode enabled but no SBOM files were generated for discovered manifests.",
+        )
+
+    relative_output_dir = str(output_dir)
+    try:
+        relative_output_dir = str(output_dir.relative_to(workspace)).replace("\\", "/")
+    except ValueError:
+        relative_output_dir = str(output_dir).replace("\\", "/")
+
+    detail = (
+        f"SBOM mode `{mode}` generated `{len(generated)}` file(s) in "
+        f"`{relative_output_dir}`."
+    )
+    return "passed", detail
+
+
+def _execute_sbom_gate(config: BridgeConfig) -> tuple[str, str]:
+    mode = str(config.sbom_mode or "off").strip().lower()
+    if mode == "off":
+        return "skipped", "SBOM gate disabled."
+
+    command = config.sbom_audit_command if mode == "audit" else config.sbom_baseline_command
+    command = str(command or "").strip()
+    if not command:
+        print(f"::notice::SBOM gate: executing default profile mode={mode}.")
+        return _run_default_sbom_collection(config)
+
+    env = os.environ.copy()
+    env["SENTINELAYER_SBOM_OUTPUT_DIR"] = str(config.sbom_output_dir or _SBOM_DEFAULT_OUTPUT_DIR)
+    started = time.time()
+    print(f"::notice::SBOM gate: executing mode={mode} command=`{command}`")
+    run_code = _run_command(command, env=env)
+    duration = int(round(time.time() - started))
+    if run_code != 0:
+        raise RuntimeError(
+            "SBOM gate failed "
+            f"(mode={mode}, exit_code={run_code}, command=`{command}`)."
+        )
+    detail = f"SBOM mode `{mode}` passed in `{duration}s` using `{command}`."
+    return "passed", detail
+
+
 def _blocking_count(*, severity_gate: str, counts: dict[str, int]) -> int:
     gate = str(severity_gate or "P1").strip().upper()
     p0 = int(counts.get("P0") or 0)
@@ -523,6 +751,8 @@ def _emit_outputs(
     severity_gate: str,
     playwright_status: str,
     playwright_mode: str,
+    sbom_status: str,
+    sbom_mode: str,
 ) -> None:
     _write_output("gate_status", gate_status)
     _write_output("p0_count", str(int(counts.get("P0") or 0)))
@@ -534,6 +764,8 @@ def _emit_outputs(
     _write_output("severity_gate", severity_gate)
     _write_output("playwright_status", playwright_status)
     _write_output("playwright_mode", playwright_mode)
+    _write_output("sbom_status", sbom_status)
+    _write_output("sbom_mode", sbom_mode)
 
 
 def main() -> int:
@@ -545,14 +777,24 @@ def main() -> int:
     playwright_status = "skipped"
     playwright_mode = "off"
     playwright_detail = "Playwright gate disabled."
+    sbom_status = "skipped"
+    sbom_mode = "off"
+    sbom_detail = "SBOM gate disabled."
     try:
         config = _load_config()
         playwright_mode = config.playwright_mode
+        sbom_mode = config.sbom_mode
         try:
             playwright_status, playwright_detail = _execute_playwright_gate(config)
         except Exception as playwright_exc:
             playwright_status = "failed"
             playwright_detail = str(playwright_exc)
+            raise
+        try:
+            sbom_status, sbom_detail = _execute_sbom_gate(config)
+        except Exception as sbom_exc:
+            sbom_status = "failed"
+            sbom_detail = str(sbom_exc)
             raise
         payload = json.loads(config.event_path.read_text(encoding="utf-8"))
         pr_number = _detect_pr_number(payload, fallback_pr_number=config.pr_number_override)
@@ -631,6 +873,8 @@ def main() -> int:
             severity_gate=config.severity_gate,
             playwright_status=playwright_status,
             playwright_mode=playwright_mode,
+            sbom_status=sbom_status,
+            sbom_mode=sbom_mode,
         )
 
         run_url = f"{SENTINELAYER_WEB_BASE}/runs/{run_id}" if run_id else ""
@@ -654,6 +898,8 @@ def main() -> int:
             f"- Gate: `{gate_status}` (threshold `{config.severity_gate}`)",
             f"- Playwright gate: `{playwright_status}` ({playwright_mode})",
             f"- Playwright detail: {playwright_detail}",
+            f"- SBOM gate: `{sbom_status}` ({sbom_mode})",
+            f"- SBOM detail: {sbom_detail}",
         ]
         if run_url:
             summary_lines.append(f"- Run: {run_url}")
@@ -673,6 +919,8 @@ def main() -> int:
             severity_gate=str(os.environ.get("INPUT_SEVERITY_GATE") or "P1").strip().upper(),
             playwright_status=playwright_status,
             playwright_mode=playwright_mode,
+            sbom_status=sbom_status,
+            sbom_mode=sbom_mode,
         )
         return 2
 
