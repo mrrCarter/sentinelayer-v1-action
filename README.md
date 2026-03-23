@@ -79,6 +79,8 @@ That's it. Open a PR and Omar Gate will:
 5. Upload full audit artifacts for download
 
 > **Required input:** `sentinelayer_token`. This action is a GitHub App bridge and authenticates against Sentinelayer API using that bearer token.
+>
+> **Compatibility note:** `openai_api_key`, `anthropic_api_key`, `google_api_key`, and `github_token` are legacy inputs from older action variants and are not required by this bridge action.
 
 ### Fastest Installer Setup (recommended)
 
@@ -110,13 +112,13 @@ aws secretsmanager get-secret-value --secret-id sentinelayer/prod/api-runtime --
 
 Copy the Quick Start YAML above into `.github/workflows/security-review.yml` in your repository.
 
-### Step 2: Add your API key as a repository secret
+### Step 2: Add your Sentinelayer token as a repository secret
 
 1. Go to your repo **Settings** > **Secrets and variables** > **Actions**
 2. Click **New repository secret**
-3. Add your API key (see [Choose Your LLM](#choose-your-llm) below for which key to add)
+3. Add `SENTINELAYER_TOKEN` (issued by Sentinelayer onboarding/dashboard, or synced from your runtime secret)
 
-> `GITHUB_TOKEN` is provided automatically by GitHub Actions — you do not need to create it as a secret. Just pass it as `${{ secrets.GITHUB_TOKEN }}`.
+> `GITHUB_TOKEN` is provided automatically by GitHub Actions and is not required by this bridge action input contract.
 
 ### Step 3: Open a pull request
 
@@ -124,68 +126,12 @@ That's it. Omar Gate triggers automatically on every PR.
 
 ---
 
-## Choose Your LLM
+## Runtime Model Routing
 
-Omar Gate supports multiple LLM providers. Pick one based on your needs:
+This action is a compatibility bridge that only forwards orchestration metadata to Sentinelayer API.  
+Model/provider routing is managed server-side by Sentinelayer runtime policy; it is not configured through this action input contract.
 
-### Model Comparison
-
-| Model | Provider | Quality | Cost | Speed | Best For |
-|-------|----------|:-------:|:----:|:-----:|----------|
-| `gpt-5.2-codex` | OpenAI | ★★★★★ | $$$ | Medium | Deep agentic audit, full codebase understanding |
-| `claude-opus-4-6` | Anthropic | ★★★★★ | $$$ | Medium | Nuanced analysis, architectural review |
-| `claude-sonnet-4-5` | Anthropic | ★★★★ | $$ | Fast | Strong balance of quality and cost |
-| `gpt-4.1` | OpenAI | ★★★★ | $$ | Fast | Reliable all-rounder, great default |
-| `gemini-2.5-pro` | Google | ★★★★ | $$ | Fast | Large context window, good for big repos |
-| `gpt-4.1-mini` | OpenAI | ★★★ | $ | Very Fast | Budget-friendly, frequent scans |
-| `gemini-2.5-flash` | Google | ★★★ | $ | Very Fast | Cheapest option with decent quality |
-
-**Cost estimates by codebase size:**
-
-| Repo Size | Files | Premium Model ($$$/scan) | Standard Model ($$/scan) | Budget Model ($/scan) |
-|-----------|------:|:------------------------:|:------------------------:|:---------------------:|
-| Small | <100 | ~$0.50 | ~$0.20 | ~$0.05 |
-| Medium | 100-500 | ~$2-5 | ~$1-2 | ~$0.25-0.50 |
-| Large | 500-2000 | ~$5-15 | ~$3-8 | ~$1-3 |
-| Monorepo | 2000+ | ~$15-30 | ~$8-15 | ~$3-8 |
-
-> Use budget models for frequent PR scans during development. Use premium models for release gates and security audits.
-
-### Provider Configuration
-
-**OpenAI (default)**
-```yaml
-- name: Omar Gate
-  uses: mrrCarter/sentinelayer-v1-action@v1
-  with:
-    github_token: ${{ secrets.GITHUB_TOKEN }}
-    openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-    llm_provider: openai
-    model: gpt-4.1              # or gpt-5.2-codex for deepest analysis
-    model_fallback: gpt-4.1-mini
-```
-
-**Anthropic**
-```yaml
-- name: Omar Gate
-  uses: mrrCarter/sentinelayer-v1-action@v1
-  with:
-    github_token: ${{ secrets.GITHUB_TOKEN }}
-    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-    llm_provider: anthropic
-    model: claude-sonnet-4-5     # or claude-opus-4-6 for deepest analysis
-```
-
-**Google**
-```yaml
-- name: Omar Gate
-  uses: mrrCarter/sentinelayer-v1-action@v1
-  with:
-    github_token: ${{ secrets.GITHUB_TOKEN }}
-    google_api_key: ${{ secrets.GOOGLE_API_KEY }}
-    llm_provider: google
-    model: gemini-2.5-pro        # or gemini-2.5-flash for budget
-```
+If you need custom model routing, configure it in your Sentinelayer runtime/control-plane settings rather than in `with:` inputs.
 
 ---
 
@@ -264,11 +210,11 @@ Use these in subsequent workflow steps:
 
 | Output | Description |
 |--------|-------------|
-| `gate_status` | `passed`, `blocked`, `bypassed`, or `error` |
+| `gate_status` | `passed`, `blocked`, or `error` |
 | `p0_count` / `p1_count` / `p2_count` / `p3_count` | Finding counts by severity |
 | `run_id` | Unique run identifier |
-| `estimated_cost_usd` | Estimated LLM cost for the run |
-| `findings_artifact` | Path to findings JSONL |
+| `scan_mode` | Effective scan mode used by the bridge |
+| `severity_gate` | Effective severity threshold used by the bridge |
 
 ---
 
@@ -278,54 +224,27 @@ Use these in subsequent workflow steps:
 
 | Input | Description |
 |-------|-------------|
-| `github_token` | GitHub token for fetching PR diffs and posting comments. Use `${{ secrets.GITHUB_TOKEN }}`. |
-| API key | At least one of: `openai_api_key`, `anthropic_api_key`, `google_api_key`. Without this, only deterministic scanning runs. |
+| `sentinelayer_token` | Sentinelayer API bearer token used for trigger + status polling. |
 
-### Scan Settings
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `severity_gate` | `P1` | Block threshold. `P0` = only criticals, `P1` = criticals + high, `P2` = medium+, `none` = report only |
-| `scan_mode` | `pr-diff` | `pr-diff` (fast, scans changed files + context), `deep` (full repo scan) |
-| `llm_failure_policy` | `block` | What happens if the LLM fails: `block` (fail-closed), `deterministic_only` (fall back to regex), `allow_with_warning` |
-
-### LLM Settings
+### Optional Inputs
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `llm_provider` | `openai` | `openai`, `anthropic`, `google`, `xai` |
-| `model` | `gpt-4.1` | Primary LLM model |
-| `model_fallback` | `gpt-4.1-mini` | Fallback if primary fails or exceeds quota |
-| `use_codex` | `true` | Enable Codex CLI for deep agentic audit (OpenAI only) |
-| `codex_model` | `gpt-5.2-codex` | Model for Codex CLI |
-| `codex_timeout` | `300` | Codex CLI timeout in seconds |
+| `status_poll_token` | empty (falls back to `sentinelayer_token`) | Optional separate token for status polling. |
+| `sentinelayer_api_url` | `https://api.sentinelayer.com` | Sentinelayer API base URL. |
+| `scan_mode` | `deep` | Scan command mapper (`baseline`, `deep`, `full-depth`). |
+| `severity_gate` | `P1` | Block threshold (`P0`, `P1`, `P2`, `none`). |
+| `provider_installation_id` | empty | Optional explicit GitHub App installation id. |
+| `command` | empty | Optional command override (example: `/omar baseline`). |
+| `sentinelayer_spec_hash` | empty | Optional spec hash binding. |
+| `sentinelayer_spec_id` | empty | Optional spec identifier binding. |
+| `spec_binding_mode` | `none` | `none`, `explicit`, `auto_discovered`. |
+| `wait_for_completion` | `true` | Wait for managed run terminal status before exiting. |
+| `wait_timeout_seconds` | `900` | Max wait time (seconds). |
+| `wait_poll_seconds` | `10` | Poll interval (seconds). |
+| `pr_number` | empty | Optional PR number override (`workflow_dispatch`). |
 
-### Rate Limiting
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `max_daily_scans` | `20` | Maximum scans per repo per day |
-| `min_scan_interval_minutes` | `2` | Cooldown between scans |
-| `rate_limit_fail_mode` | `closed` | `closed` (block on limit) or `open` (allow on limit) |
-
-### Security
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `fork_policy` | `block` | How to handle PRs from forks: `block`, `limited` (deterministic only), `allow` |
-| `approval_mode` | `pr_label` | Require label for scanning: `pr_label`, `always`, `manual` |
-| `approval_label` | `sentinelayer:approved` | Label that triggers scanning (when `approval_mode: pr_label`) |
-
-### Telemetry
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `telemetry` | `true` | Send anonymous usage metrics |
-| `telemetry_tier` | `1` | `1` = anonymous aggregates, `2` = includes repo metadata, `3` = includes finding summaries |
-| `share_metadata` | `false` | Share repo metadata with Sentinelayer |
-| `training_opt_in` | `false` | Allow findings to improve the model (never shares your code) |
-
-See [action.yml](action.yml) for all 30+ configuration options.
+See [action.yml](action.yml) for the authoritative input contract.
 
 ---
 
@@ -336,35 +255,28 @@ See [action.yml](action.yml) for all 30+ configuration options.
 - name: Omar Gate
   uses: mrrCarter/sentinelayer-v1-action@v1
   with:
-    github_token: ${{ secrets.GITHUB_TOKEN }}
-    openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+    sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
     severity_gate: P1
-    scan_mode: pr-diff
-    llm_failure_policy: block
-    fork_policy: block
+    scan_mode: deep
 ```
 
-### Report-Only Mode (No Blocking)
+### Report-Only Mode
 ```yaml
 - name: Omar Gate
   uses: mrrCarter/sentinelayer-v1-action@v1
   with:
-    github_token: ${{ secrets.GITHUB_TOKEN }}
-    openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+    sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
     severity_gate: none
-    scan_mode: pr-diff
+    scan_mode: deep
 ```
 
-### Budget Mode (Deterministic + Cheap LLM)
+### Async Mode (Do Not Wait for Completion)
 ```yaml
 - name: Omar Gate
   uses: mrrCarter/sentinelayer-v1-action@v1
   with:
-    github_token: ${{ secrets.GITHUB_TOKEN }}
-    openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-    model: gpt-4.1-mini
-    model_fallback: gpt-4.1-mini
-    use_codex: false
+    sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+    wait_for_completion: false
 ```
 
 ### Deep Scan (Nightly / Release Gate)
@@ -383,11 +295,10 @@ jobs:
         id: omar
         uses: mrrCarter/sentinelayer-v1-action@v1
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
           scan_mode: deep
-          model: gpt-5.2-codex
           severity_gate: P2
+          wait_timeout_seconds: 1800
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -395,28 +306,17 @@ jobs:
           path: .sentinelayer/runs/${{ steps.omar.outputs.run_id }}
 ```
 
-### With Claude (Anthropic)
-```yaml
-- name: Omar Gate
-  uses: mrrCarter/sentinelayer-v1-action@v1
-  with:
-    github_token: ${{ secrets.GITHUB_TOKEN }}
-    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-    llm_provider: anthropic
-    model: claude-sonnet-4-5
-```
-
 ---
 
 ## Troubleshooting
 
 ### "Illegal header value b'Bearer '"
-**Cause:** `github_token` was not passed to the action.
-**Fix:** Add `github_token: ${{ secrets.GITHUB_TOKEN }}` to your `with:` block.
+**Cause:** `sentinelayer_token` resolved to empty.
+**Fix:** Set `SENTINELAYER_TOKEN` in GitHub Actions secrets and pass `sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}`.
 
-### "Codex skipped (missing openai_api_key)"
-**Cause:** No LLM API key was provided. Only deterministic scanning ran.
-**Fix:** Add your API key as a repository secret and pass it in the `with:` block.
+### "API request failed [401]"
+**Cause:** Invalid/expired `SENTINELAYER_TOKEN` (or wrong API URL for the token scope).
+**Fix:** Rotate/reissue token, verify `sentinelayer_api_url`, and retry.
 
 ### 15,000+ findings on first run
 **Cause:** The deterministic scanner runs regex patterns across your entire codebase. Many findings are informational (P3) or low severity.
@@ -431,13 +331,13 @@ jobs:
 ## FAQ
 
 **Do you store my code?**
-Your repository is analyzed in your GitHub runner. SentinelLayer dashboard telemetry is opt-in by tier; Tier 1 is aggregate-only, Tier 2 includes metadata, and Tier 3 can include uploaded artifacts. LLM analysis sends a bounded context to your LLM provider using your own API key.
+Your repository is analyzed in your GitHub runner and orchestrated by Sentinelayer runtime services. Telemetry visibility follows your Sentinelayer tier/policy configuration.
 
 **What LLM models are used?**
-Primary analysis uses Codex CLI with `gpt-5.2-codex` for deep agentic audit. If Codex CLI is unavailable, falls back to `gpt-4.1` via the Responses API, then `gpt-4.1-mini` as secondary fallback. All models are configurable via `codex_model`, `model`, and `model_fallback` inputs.
+Model/provider routing is managed in Sentinelayer runtime policy and is not configured through this bridge action's `with:` inputs.
 
 **What about false positives?**
-SentinelLayer combines deterministic rules with LLM review and includes a `confidence` field per finding. Tune enforcement via `severity_gate`, and consider `llm_failure_policy=deterministic_only` for stricter determinism.
+SentinelLayer combines deterministic rules with managed deep review and includes confidence/risk context per finding. Tune enforcement via `severity_gate` and your server-side Sentinelayer policy profile.
 
 **Is it free?**
 See https://sentinelayer.com for current tier limits and pricing.
