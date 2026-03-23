@@ -61,6 +61,7 @@ jobs:
           sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
           scan_mode: deep
           severity_gate: P1
+          playwright_mode: baseline
 
       - name: Upload Artifacts
         if: always()
@@ -215,6 +216,8 @@ Use these in subsequent workflow steps:
 | `run_id` | Unique run identifier |
 | `scan_mode` | Effective scan mode used by the bridge |
 | `severity_gate` | Effective severity threshold used by the bridge |
+| `playwright_status` | Browser gate status: `skipped`, `passed`, or `failed` |
+| `playwright_mode` | Effective Playwright mode: `off`, `baseline`, or `audit` |
 
 ---
 
@@ -232,7 +235,7 @@ Use these in subsequent workflow steps:
 |-------|---------|-------------|
 | `status_poll_token` | empty (falls back to `sentinelayer_token`) | Optional separate token for status polling. |
 | `sentinelayer_api_url` | `https://api.sentinelayer.com` | Sentinelayer API base URL. |
-| `scan_mode` | `deep` | Scan command mapper (`baseline`, `deep`, `full-depth`). |
+| `scan_mode` | `deep` | Scan command mapper (`baseline`, `deep`, `audit`, `full-depth`). `audit` maps to `/omar full-depth`. |
 | `severity_gate` | `P1` | Block threshold (`P0`, `P1`, `P2`, `none`). |
 | `provider_installation_id` | empty | Optional explicit GitHub App installation id. |
 | `command` | empty | Optional command override (example: `/omar baseline`). |
@@ -243,6 +246,12 @@ Use these in subsequent workflow steps:
 | `wait_timeout_seconds` | `900` | Max wait time (seconds). |
 | `wait_poll_seconds` | `10` | Poll interval (seconds). |
 | `pr_number` | empty | Optional PR number override (`workflow_dispatch`). |
+| `playwright_mode` | `off` | Optional browser gate profile: `off`, `baseline`, `audit`. |
+| `playwright_node_version` | `20` | Node version used when `playwright_mode != off`. |
+| `playwright_base_url` | empty | Optional `PLAYWRIGHT_TEST_BASE_URL` override for test execution. |
+| `playwright_bootstrap` | `true` | Run `npm ci --ignore-scripts` + `npx playwright install --with-deps chromium` before Playwright command. |
+| `playwright_baseline_command` | `npm run test:e2e:baseline` | Command for PR baseline browser sweep. |
+| `playwright_audit_command` | `npm run test:e2e:audit` | Command for deep audit browser sweep. |
 
 See [action.yml](action.yml) for the authoritative input contract.
 
@@ -277,6 +286,30 @@ See [action.yml](action.yml) for the authoritative input contract.
   with:
     sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
     wait_for_completion: false
+```
+
+### PR Baseline with Playwright
+```yaml
+- name: Omar Gate
+  uses: mrrCarter/sentinelayer-v1-action@v1
+  with:
+    sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+    scan_mode: deep
+    severity_gate: P1
+    playwright_mode: baseline
+    playwright_baseline_command: npm run test:e2e:baseline
+```
+
+### Audit Mode with Deep Frontend E2E + Full-Depth Omar
+```yaml
+- name: Omar Gate
+  uses: mrrCarter/sentinelayer-v1-action@v1
+  with:
+    sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+    scan_mode: audit
+    severity_gate: P1
+    playwright_mode: audit
+    playwright_audit_command: npm run test:e2e:audit
 ```
 
 ### Deep Scan (Nightly / Release Gate)
@@ -317,6 +350,10 @@ jobs:
 ### "API request failed [401]"
 **Cause:** Invalid/expired `SENTINELAYER_TOKEN` (or wrong API URL for the token scope).
 **Fix:** Rotate/reissue token, verify `sentinelayer_api_url`, and retry.
+
+### "Playwright gate failed"
+**Cause:** Browser baseline/audit command failed in CI (missing deps, broken route, failed assertion, or wrong base URL).
+**Fix:** Check Playwright logs, confirm `playwright_*` commands, and set `playwright_base_url` when your test suite needs an explicit target host.
 
 ### 15,000+ findings on first run
 **Cause:** The deterministic scanner runs regex patterns across your entire codebase. Many findings are informational (P3) or low severity.

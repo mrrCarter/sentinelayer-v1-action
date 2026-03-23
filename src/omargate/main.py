@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -53,6 +54,11 @@ class BridgeConfig:
     wait_timeout_seconds: int
     wait_poll_seconds: int
     pr_number_override: int | None
+    playwright_mode: str
+    playwright_base_url: str
+    playwright_bootstrap: bool
+    playwright_baseline_command: str
+    playwright_audit_command: str
 
 
 def _write_output(name: str, value: str) -> None:
@@ -106,6 +112,15 @@ def _normalize_spec_binding_mode(value: str | None) -> str:
     if normalized in {"explicit", "auto_discovered"}:
         return normalized
     return "none"
+
+
+def _normalize_playwright_mode(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"baseline", "smoke", "pr"}:
+        return "baseline"
+    if normalized in {"audit", "deep", "full", "full-depth"}:
+        return "audit"
+    return "off"
 
 
 def _normalize_spec_sources(values: list[str]) -> list[str]:
@@ -273,6 +288,17 @@ def _load_config() -> BridgeConfig:
     wait_poll_seconds = max(5, _int_input("INPUT_WAIT_POLL_SECONDS", 10))
     pr_number_raw = str(os.environ.get("INPUT_PR_NUMBER") or "").strip()
     pr_number_override = int(pr_number_raw) if pr_number_raw.isdigit() else None
+    playwright_mode = _normalize_playwright_mode(
+        str(os.environ.get("INPUT_PLAYWRIGHT_MODE") or "").strip()
+    )
+    playwright_base_url = str(os.environ.get("INPUT_PLAYWRIGHT_BASE_URL") or "").strip()
+    playwright_bootstrap = _bool_input("INPUT_PLAYWRIGHT_BOOTSTRAP", True)
+    playwright_baseline_command = str(
+        os.environ.get("INPUT_PLAYWRIGHT_BASELINE_COMMAND") or "npm run test:e2e:baseline"
+    ).strip()
+    playwright_audit_command = str(
+        os.environ.get("INPUT_PLAYWRIGHT_AUDIT_COMMAND") or "npm run test:e2e:audit"
+    ).strip()
 
     missing = []
     if not token:
@@ -305,6 +331,11 @@ def _load_config() -> BridgeConfig:
         wait_timeout_seconds=wait_timeout_seconds,
         wait_poll_seconds=wait_poll_seconds,
         pr_number_override=pr_number_override,
+        playwright_mode=playwright_mode,
+        playwright_base_url=playwright_base_url,
+        playwright_bootstrap=playwright_bootstrap,
+        playwright_baseline_command=playwright_baseline_command,
+        playwright_audit_command=playwright_audit_command,
     )
 
 
@@ -371,6 +402,9 @@ def _command_for_scan_mode(scan_mode: str) -> str:
     if normalized in {"baseline", "baseline-only", "baseline_scan", "baseline-scan"}:
         return "/omar baseline"
     if normalized in {
+        "audit",
+        "audit-full",
+        "audit_full",
         "full-depth",
         "full_depth",
         "full-depth-13",
@@ -379,6 +413,51 @@ def _command_for_scan_mode(scan_mode: str) -> str:
     }:
         return "/omar full-depth"
     return "/omar deep-scan"
+
+
+def _run_shell(command: str, *, env: dict[str, str] | None = None) -> int:
+    completed = subprocess.run(command, shell=True, env=env, check=False)
+    return int(completed.returncode or 0)
+
+
+def _execute_playwright_gate(config: BridgeConfig) -> tuple[str, str]:
+    mode = str(config.playwright_mode or "off").strip().lower()
+    if mode == "off":
+        return "skipped", "Playwright gate disabled."
+
+    if mode == "audit":
+        command = str(config.playwright_audit_command or "").strip()
+    else:
+        command = str(config.playwright_baseline_command or "").strip()
+    if not command:
+        raise RuntimeError(f"Playwright mode '{mode}' is enabled but command is empty.")
+
+    env = os.environ.copy()
+    if config.playwright_base_url:
+        env["PLAYWRIGHT_TEST_BASE_URL"] = config.playwright_base_url
+        env.setdefault("BASE_URL", config.playwright_base_url)
+
+    started = time.time()
+    if config.playwright_bootstrap:
+        print("::notice::Playwright gate: bootstrapping npm dependencies and browser runtime.")
+        bootstrap_command = "npm ci --ignore-scripts && npx playwright install --with-deps chromium"
+        bootstrap_code = _run_shell(bootstrap_command, env=env)
+        if bootstrap_code != 0:
+            raise RuntimeError(
+                "Playwright bootstrap failed "
+                f"(command=`{bootstrap_command}`, exit_code={bootstrap_code})."
+            )
+
+    print(f"::notice::Playwright gate: executing mode={mode} command=`{command}`")
+    run_code = _run_shell(command, env=env)
+    duration = int(round(time.time() - started))
+    if run_code != 0:
+        raise RuntimeError(
+            "Playwright gate failed "
+            f"(mode={mode}, exit_code={run_code}, command=`{command}`)."
+        )
+    detail = f"Playwright mode `{mode}` passed in `{duration}s` using `{command}`."
+    return "passed", detail
 
 
 def _blocking_count(*, severity_gate: str, counts: dict[str, int]) -> int:
@@ -407,6 +486,8 @@ def _emit_outputs(
     run_id: str,
     scan_mode: str,
     severity_gate: str,
+    playwright_status: str,
+    playwright_mode: str,
 ) -> None:
     _write_output("gate_status", gate_status)
     _write_output("p0_count", str(int(counts.get("P0") or 0)))
@@ -416,6 +497,8 @@ def _emit_outputs(
     _write_output("run_id", run_id)
     _write_output("scan_mode", scan_mode)
     _write_output("severity_gate", severity_gate)
+    _write_output("playwright_status", playwright_status)
+    _write_output("playwright_mode", playwright_mode)
 
 
 def main() -> int:
@@ -424,8 +507,12 @@ def main() -> int:
         "Scan adjudication runs in Sentinelayer backend services."
     )
 
+    playwright_status = "skipped"
+    playwright_mode = "off"
     try:
         config = _load_config()
+        playwright_mode = config.playwright_mode
+        playwright_status, playwright_detail = _execute_playwright_gate(config)
         payload = json.loads(config.event_path.read_text(encoding="utf-8"))
         pr_number = _detect_pr_number(payload, fallback_pr_number=config.pr_number_override)
         command = config.command_override or _command_for_scan_mode(config.scan_mode)
@@ -501,6 +588,8 @@ def main() -> int:
             run_id=run_id or str(trigger_response.get("delivery_id") or "manual-trigger"),
             scan_mode=config.scan_mode,
             severity_gate=config.severity_gate,
+            playwright_status=playwright_status,
+            playwright_mode=playwright_mode,
         )
 
         run_url = f"{SENTINELAYER_WEB_BASE}/runs/{run_id}" if run_id else ""
@@ -522,6 +611,8 @@ def main() -> int:
             f"- Spec sources: `{len(config.spec_sources)}`",
             f"- Findings: `P0={counts['P0']} P1={counts['P1']} P2={counts['P2']} P3={counts['P3']}`",
             f"- Gate: `{gate_status}` (threshold `{config.severity_gate}`)",
+            f"- Playwright gate: `{playwright_status}` ({playwright_mode})",
+            f"- Playwright detail: {playwright_detail}",
         ]
         if run_url:
             summary_lines.append(f"- Run: {run_url}")
@@ -539,6 +630,8 @@ def main() -> int:
             run_id="error",
             scan_mode=str(os.environ.get("INPUT_SCAN_MODE") or "deep"),
             severity_gate=str(os.environ.get("INPUT_SEVERITY_GATE") or "P1").strip().upper(),
+            playwright_status=playwright_status,
+            playwright_mode=playwright_mode,
         )
         return 2
 

@@ -7,6 +7,7 @@ from omargate.main import (
     _command_for_scan_mode,
     _compute_spec_hash_from_sources,
     _detect_pr_number,
+    _normalize_playwright_mode,
     _normalize_spec_binding_mode,
     _normalize_spec_hash,
     _normalize_spec_sources,
@@ -54,8 +55,18 @@ def test_detect_pr_number_supports_multiple_event_shapes() -> None:
 
 def test_command_for_scan_mode_defaults_to_deep_scan() -> None:
     assert _command_for_scan_mode("baseline") == "/omar baseline"
+    assert _command_for_scan_mode("audit") == "/omar full-depth"
     assert _command_for_scan_mode("full-depth") == "/omar full-depth"
     assert _command_for_scan_mode("unknown") == "/omar deep-scan"
+
+
+def test_normalize_playwright_mode() -> None:
+    assert _normalize_playwright_mode("baseline") == "baseline"
+    assert _normalize_playwright_mode("pr") == "baseline"
+    assert _normalize_playwright_mode("audit") == "audit"
+    assert _normalize_playwright_mode("full-depth") == "audit"
+    assert _normalize_playwright_mode("off") == "off"
+    assert _normalize_playwright_mode("invalid") == "off"
 
 
 def test_blocking_count_honors_severity_gate() -> None:
