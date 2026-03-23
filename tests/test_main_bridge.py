@@ -8,6 +8,7 @@ from omargate.main import (
     _compute_spec_hash_from_sources,
     _detect_pr_number,
     _normalize_playwright_mode,
+    _parse_safe_command,
     _normalize_spec_binding_mode,
     _normalize_spec_hash,
     _normalize_spec_sources,
@@ -67,6 +68,20 @@ def test_normalize_playwright_mode() -> None:
     assert _normalize_playwright_mode("full-depth") == "audit"
     assert _normalize_playwright_mode("off") == "off"
     assert _normalize_playwright_mode("invalid") == "off"
+
+
+def test_parse_safe_command_blocks_shell_control_tokens() -> None:
+    assert _parse_safe_command("npm run test:e2e:baseline") == [
+        "npm",
+        "run",
+        "test:e2e:baseline",
+    ]
+    try:
+        _parse_safe_command("npm run test:e2e:baseline && rm -rf /")
+    except RuntimeError as exc:
+        assert "forbidden shell control tokens" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for forbidden shell control tokens")
 
 
 def test_blocking_count_honors_severity_gate() -> None:

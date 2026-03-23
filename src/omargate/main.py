@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -415,8 +416,33 @@ def _command_for_scan_mode(scan_mode: str) -> str:
     return "/omar deep-scan"
 
 
-def _run_shell(command: str, *, env: dict[str, str] | None = None) -> int:
-    completed = subprocess.run(command, shell=True, env=env, check=False)
+def _parse_safe_command(command: str) -> list[str]:
+    raw = str(command or "").strip()
+    if not raw:
+        raise RuntimeError("Playwright command is empty.")
+    try:
+        args = shlex.split(raw, posix=os.name != "nt")
+    except ValueError as exc:
+        raise RuntimeError(f"Invalid Playwright command syntax: {exc}") from exc
+    if not args:
+        raise RuntimeError("Playwright command resolved to empty arguments.")
+    forbidden_tokens = {"&&", "||", "|", ";", ">", "<"}
+    if any(token in forbidden_tokens for token in args):
+        raise RuntimeError(
+            "Playwright command contains forbidden shell control tokens. "
+            "Use a single executable command with arguments."
+        )
+    return args
+
+
+def _run_command(command: str, *, env: dict[str, str] | None = None) -> int:
+    args = _parse_safe_command(command)
+    completed = subprocess.run(args, shell=False, env=env, check=False)
+    return int(completed.returncode or 0)
+
+
+def _run_command_args(args: list[str], *, env: dict[str, str] | None = None) -> int:
+    completed = subprocess.run(args, shell=False, env=env, check=False)
     return int(completed.returncode or 0)
 
 
@@ -440,16 +466,25 @@ def _execute_playwright_gate(config: BridgeConfig) -> tuple[str, str]:
     started = time.time()
     if config.playwright_bootstrap:
         print("::notice::Playwright gate: bootstrapping npm dependencies and browser runtime.")
-        bootstrap_command = "npm ci --ignore-scripts && npx playwright install --with-deps chromium"
-        bootstrap_code = _run_shell(bootstrap_command, env=env)
-        if bootstrap_code != 0:
+        install_code = _run_command_args(["npm", "ci", "--ignore-scripts"], env=env)
+        if install_code != 0:
             raise RuntimeError(
                 "Playwright bootstrap failed "
-                f"(command=`{bootstrap_command}`, exit_code={bootstrap_code})."
+                f"(command=`npm ci --ignore-scripts`, exit_code={install_code})."
+            )
+        browser_code = _run_command_args(
+            ["npx", "playwright", "install", "--with-deps", "chromium"],
+            env=env,
+        )
+        if browser_code != 0:
+            raise RuntimeError(
+                "Playwright bootstrap failed "
+                "(command=`npx playwright install --with-deps chromium`, "
+                f"exit_code={browser_code})."
             )
 
     print(f"::notice::Playwright gate: executing mode={mode} command=`{command}`")
-    run_code = _run_shell(command, env=env)
+    run_code = _run_command(command, env=env)
     duration = int(round(time.time() - started))
     if run_code != 0:
         raise RuntimeError(
