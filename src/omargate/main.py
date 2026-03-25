@@ -411,6 +411,35 @@ def _api_json_request(
         raise RuntimeError(f"API request failed [{url}]: {exc}") from exc
 
 
+def _github_api_request(
+    *,
+    method: str,
+    url: str,
+    token: str,
+    payload: dict[str, Any] | None = None,
+) -> Any:
+    body: bytes | None = None
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": f"sentinelayer-compat-action/{ACTION_VERSION}",
+    }
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(url=url, method=method, data=body, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"GitHub API request failed [{exc.code}] {url}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"GitHub API request failed [{url}]: {exc}") from exc
+
+
 def _detect_pr_number(payload: dict[str, Any], *, fallback_pr_number: int | None = None) -> int:
     if fallback_pr_number and fallback_pr_number > 0:
         return fallback_pr_number
@@ -756,6 +785,116 @@ def _terminal_status(status: str) -> bool:
     return normalized in {"completed", "failed", "error", "cancelled", "blocked"}
 
 
+def _gate_scope_text(severity_gate: str) -> str:
+    gate = str(severity_gate or "P1").strip().upper()
+    if gate == "P0":
+        return "blocks P0"
+    if gate == "P2":
+        return "blocks P0, P1, P2"
+    if gate == "NONE":
+        return "does not block"
+    return "blocks P0, P1"
+
+
+def _render_omar_gate_comment(
+    *,
+    gate_status: str,
+    severity_gate: str,
+    scan_mode: str,
+    counts: dict[str, int],
+    elapsed_seconds: int | None,
+    run_url: str,
+) -> str:
+    status_value = str(gate_status or "error").strip().lower()
+    if status_value == "passed":
+        title = "🛡️ Omar Gate: ✅ PASSED"
+    elif status_value == "blocked":
+        title = "🛡️ Omar Gate: ❌ BLOCKED"
+    else:
+        title = "🛡️ Omar Gate: ⚠️ ERROR"
+
+    p0 = int(counts.get("P0") or 0)
+    p1 = int(counts.get("P1") or 0)
+    p2 = int(counts.get("P2") or 0)
+    p3 = int(counts.get("P3") or 0)
+    gate_scope = _gate_scope_text(severity_gate=severity_gate)
+    duration = f"{int(elapsed_seconds)}s" if elapsed_seconds is not None else "n/a"
+
+    result_label = "Passed"
+    if status_value == "blocked":
+        result_label = "Blocked"
+    elif status_value == "error":
+        result_label = "Error"
+
+    lines = [
+        "<!-- omar-gate-summary -->",
+        title,
+        f"Gate: `{str(severity_gate or 'P1').upper()}` ({gate_scope})",
+        f"Policy: `omar@v1` • Scan: `{scan_mode}`",
+        f"Duration: `{duration}` • LLM: `managed`",
+        "",
+        (
+            f"Result: {result_label} (severity_gate={str(severity_gate or 'P1').upper()}): "
+            f"Counts: P0={p0}, P1={p1}, P2={p2}, P3={p3}"
+        ),
+        "",
+        "| Severity | Count | Blocks Merge? |",
+        "|---|---:|---|",
+        f"| P0 (Critical) | {p0} | {'Yes' if str(severity_gate).upper() in {'P0', 'P1', 'P2'} else 'No'} |",
+        f"| P1 (High) | {p1} | {'Yes' if str(severity_gate).upper() in {'P1', 'P2'} else 'No'} |",
+        f"| P2 (Medium) | {p2} | {'Yes' if str(severity_gate).upper() == 'P2' else 'No'} |",
+        f"| P3 (Low) | {p3} | No |",
+    ]
+    if run_url:
+        lines.extend(["", f"[View Full Report]({run_url})"])
+    lines.append("<!-- /omar-gate-summary -->")
+    return "\n".join(lines) + "\n"
+
+
+def _upsert_omar_gate_comment(
+    *,
+    github_token: str,
+    repo_full_name: str,
+    pr_number: int,
+    body: str,
+) -> None:
+    marker = "<!-- omar-gate-summary -->"
+    comments_url = (
+        f"https://api.github.com/repos/{repo_full_name}/issues/{pr_number}/comments?per_page=100"
+    )
+    comments = _github_api_request(
+        method="GET",
+        url=comments_url,
+        token=github_token,
+    )
+    if isinstance(comments, list):
+        for comment in reversed(comments):
+            if not isinstance(comment, dict):
+                continue
+            existing_body = str(comment.get("body") or "")
+            if marker not in existing_body:
+                continue
+            comment_id = comment.get("id")
+            if not isinstance(comment_id, int) or comment_id <= 0:
+                continue
+            update_url = f"https://api.github.com/repos/{repo_full_name}/issues/comments/{comment_id}"
+            _github_api_request(
+                method="PATCH",
+                url=update_url,
+                token=github_token,
+                payload={"body": body},
+            )
+            return
+
+    create_url = f"https://api.github.com/repos/{repo_full_name}/issues/{pr_number}/comments"
+    _github_api_request(
+        method="POST",
+        url=create_url,
+        token=github_token,
+        payload={"body": body},
+    )
+
+
 def _emit_outputs(
     *,
     gate_status: str,
@@ -869,6 +1008,7 @@ def main() -> int:
         counts = {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
         status = str(trigger_response.get("status") or "accepted").strip().lower()
         progress = "queued"
+        elapsed_seconds: int | None = None
 
         if config.wait_for_completion and run_id:
             deadline = time.time() + float(config.wait_timeout_seconds)
@@ -881,6 +1021,9 @@ def main() -> int:
                 )
                 status = str(status_payload.get("status") or "queued").strip().lower()
                 progress = str(status_payload.get("progress_label") or "").strip() or status
+                raw_elapsed = status_payload.get("elapsed_seconds")
+                if isinstance(raw_elapsed, (int, float)):
+                    elapsed_seconds = int(raw_elapsed)
                 payload_counts = status_payload.get("severity_counts")
                 if isinstance(payload_counts, dict):
                     counts = {
@@ -949,6 +1092,32 @@ def main() -> int:
             summary_lines.append(f"- Run: {run_url}")
             summary_lines.append(f"- Evidence: {evidence_url}")
         _append_summary("\n".join(summary_lines) + "\n")
+
+        github_token = str(
+            os.environ.get("INPUT_GITHUB_TOKEN")
+            or os.environ.get("GITHUB_TOKEN")
+            or ""
+        ).strip()
+        if github_token:
+            try:
+                comment_body = _render_omar_gate_comment(
+                    gate_status=gate_status,
+                    severity_gate=config.severity_gate,
+                    scan_mode=config.scan_mode,
+                    counts=counts,
+                    elapsed_seconds=elapsed_seconds,
+                    run_url=run_url,
+                )
+                _upsert_omar_gate_comment(
+                    github_token=github_token,
+                    repo_full_name=config.repo_full_name,
+                    pr_number=pr_number,
+                    body=comment_body,
+                )
+            except Exception as comment_exc:
+                print(f"::warning::Failed to upsert Omar Gate PR comment: {comment_exc}")
+        else:
+            print("::notice::Skipping Omar Gate PR comment upsert because no GitHub token is available.")
 
         if run_id:
             print(f"::notice::Sentinelayer run ready: {run_id}")

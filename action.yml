@@ -10,6 +10,10 @@ inputs:
     description: 'Sentinelayer service token used to authorize run orchestration'
     required: true
     default: ''
+  github_token:
+    description: 'Optional token used to upsert Omar Gate PR summary comments (defaults to github.token)'
+    required: false
+    default: ''
   status_poll_token:
     description: 'Optional token for status polling when wait_for_completion=true'
     required: false
@@ -219,7 +223,9 @@ runs:
       working-directory: ${{ github.workspace }}
       env:
         SENTINELAYER_TOKEN: ${{ inputs.sentinelayer_token }}
+        GITHUB_TOKEN: ${{ inputs.github_token || github.token }}
         INPUT_SENTINELAYER_TOKEN: ${{ inputs.sentinelayer_token }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
         INPUT_STATUS_POLL_TOKEN: ${{ inputs.status_poll_token }}
         INPUT_SENTINELAYER_API_URL: ${{ inputs.sentinelayer_api_url }}
         INPUT_SCAN_MODE: ${{ inputs.scan_mode }}

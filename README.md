@@ -239,6 +239,7 @@ Use these in subsequent workflow steps:
 | Input | Default | Description |
 |-------|---------|-------------|
 | `status_poll_token` | empty (falls back to `sentinelayer_token`) | Optional separate token for status polling. |
+| `github_token` | empty (falls back to `github.token`) | Optional token used to upsert the Omar Gate PR summary comment. |
 | `sentinelayer_api_url` | `https://api.sentinelayer.com` | Sentinelayer API base URL. |
 | `scan_mode` | `deep` | Scan command mapper (`baseline`, `deep`, `audit`, `full-depth`). `audit` maps to `/omar full-depth`. |
 | `severity_gate` | `P1` | Block threshold (`P0`, `P1`, `P2`, `none`). |
