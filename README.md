@@ -7,7 +7,7 @@
 [![Tests: 186 passing](https://img.shields.io/badge/tests-186%20passing-brightgreen)](https://github.com/mrrCarter/sentinelayer-v1-action/actions/workflows/quality-gates.yml)
 [![Marketplace](https://img.shields.io/badge/GitHub-Marketplace-blue)](https://github.com/marketplace?query=sentinelayer)
 
-Omar Gate runs a 7-layer security analysis when your workflow invokes it (recommended: explicit PR comment commands) — combining deterministic pattern scanning, codebase-aware ingestion, and deep AI-powered code review — then blocks the merge if critical vulnerabilities are found.
+Omar Gate runs a 7-layer security analysis on every pull request — combining deterministic pattern scanning, codebase-aware ingestion, and deep AI-powered code review — then blocks the merge if critical vulnerabilities are found.
 
 Built by engineers, for engineers. No vendor lock-in. Bring your own LLM.
 
@@ -40,8 +40,8 @@ Create `.github/workflows/security-review.yml` in your repository:
 name: Security Review
 
 on:
-  issue_comment:
-    types: [created]
+  pull_request:
+    types: [opened, synchronize]
 
 permissions:
   contents: read
@@ -50,10 +50,6 @@ permissions:
 
 jobs:
   security-review:
-    if: >
-      github.event.issue.pull_request &&
-      startsWith(github.event.comment.body, '/omar') &&
-      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -63,8 +59,6 @@ jobs:
         uses: mrrCarter/sentinelayer-v1-action@v1
         with:
           sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
-          pr_number: ${{ github.event.issue.number }}
-          command: ${{ github.event.comment.body }}
           scan_mode: deep
           severity_gate: P1
           model_training_intent: off
@@ -80,7 +74,7 @@ jobs:
           if-no-files-found: warn
 ```
 
-That's it. Open a PR, then comment `/omar` (or `/omar baseline`, `/omar audit p0`) and Omar Gate will:
+That's it. Open a PR and Omar Gate will:
 1. Scan your codebase for secrets, vulnerabilities, and misconfigurations
 2. Run AI-powered deep analysis on high-risk files
 3. Post a detailed security report as a PR comment
@@ -129,9 +123,9 @@ Copy the Quick Start YAML above into `.github/workflows/security-review.yml` in 
 
 > `GITHUB_TOKEN` is provided automatically by GitHub Actions and is not required by this bridge action input contract.
 
-### Step 3: Open a pull request and trigger by comment
+### Step 3: Open a pull request
 
-Comment `/omar` on the PR to trigger Omar Gate on demand.
+That's it. Omar Gate triggers automatically on every PR.
 
 ---
 
@@ -447,9 +441,9 @@ See [Supply-Chain Attestation Guide](docs/supply-chain-attestation.md) for an en
 **Cause:** The deterministic scanner runs regex patterns across your entire codebase. Many findings are informational (P3) or low severity.
 **Fix:** This is expected on the first scan. Focus on P0/P1 findings. Use `severity_gate: P1` to only block on critical issues. Subsequent scans on PRs will focus on changed files.
 
-### Action doesn't trigger on comment command
-**Cause:** The workflow file must exist on the target branch and the comment must start with `/omar` on a PR thread.
-**Fix:** Commit the workflow file, open the PR, then comment `/omar` (or another allowed command variant).
+### Action doesn't trigger on PR
+**Cause:** The workflow file must exist on the PR branch. If you're adding it for the first time, it needs to be part of the PR itself.
+**Fix:** Commit the workflow file to your branch, push, and open the PR. The action will trigger.
 
 ---
 
