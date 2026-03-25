@@ -10,6 +10,33 @@ permissions:
   contents: read
 
 jobs:
+  omar-gate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Omar Gate
+        id: omar
+        uses: ./
+        with:
+          sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+          scan_mode: deep
+          severity_gate: P1
+
+      - name: Upload Omar artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omar-${{ steps.omar.outputs.run_id }}
+          path: .sentinelayer/runs/${{ steps.omar.outputs.run_id }}
+          if-no-files-found: warn
+
   quality-gates:
     runs-on: ubuntu-22.04
     steps:
