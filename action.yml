@@ -10,10 +10,6 @@ inputs:
     description: 'Sentinelayer service token used to authorize run orchestration'
     required: true
     default: ''
-  github_token:
-    description: 'Optional token used to upsert Omar Gate PR summary comments (defaults to github.token)'
-    required: false
-    default: ''
   status_poll_token:
     description: 'Optional token for status polling when wait_for_completion=true'
     required: false
@@ -66,10 +62,6 @@ inputs:
     description: 'Optional PR number override (useful for workflow_dispatch)'
     required: false
     default: ''
-  model_training_intent:
-    description: 'Optional training context hint: off, train, or parameter-golf'
-    required: false
-    default: 'off'
   playwright_mode:
     description: 'Optional Playwright profile: off, baseline, or audit'
     required: false
@@ -152,9 +144,6 @@ outputs:
   sbom_mode:
     description: 'Effective SBOM mode used by this run'
     value: ${{ steps.omar.outputs.sbom_mode }}
-  model_training_intent:
-    description: 'Effective model training intent context sent to Sentinelayer API'
-    value: ${{ steps.omar.outputs.model_training_intent }}
 
 runs:
   using: 'composite'
@@ -223,9 +212,7 @@ runs:
       working-directory: ${{ github.workspace }}
       env:
         SENTINELAYER_TOKEN: ${{ inputs.sentinelayer_token }}
-        GITHUB_TOKEN: ${{ inputs.github_token || github.token }}
         INPUT_SENTINELAYER_TOKEN: ${{ inputs.sentinelayer_token }}
-        INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
         INPUT_STATUS_POLL_TOKEN: ${{ inputs.status_poll_token }}
         INPUT_SENTINELAYER_API_URL: ${{ inputs.sentinelayer_api_url }}
         INPUT_SCAN_MODE: ${{ inputs.scan_mode }}
@@ -239,7 +226,6 @@ runs:
         INPUT_WAIT_TIMEOUT_SECONDS: ${{ inputs.wait_timeout_seconds }}
         INPUT_WAIT_POLL_SECONDS: ${{ inputs.wait_poll_seconds }}
         INPUT_PR_NUMBER: ${{ inputs.pr_number }}
-        INPUT_MODEL_TRAINING_INTENT: ${{ inputs.model_training_intent }}
         INPUT_PLAYWRIGHT_MODE: ${{ steps.playwright_mode.outputs.effective }}
         INPUT_PLAYWRIGHT_BASE_URL: ${{ inputs.playwright_base_url }}
         INPUT_PLAYWRIGHT_BOOTSTRAP: ${{ inputs.playwright_bootstrap }}

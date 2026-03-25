@@ -61,7 +61,6 @@ class BridgeConfig:
     wait_timeout_seconds: int
     wait_poll_seconds: int
     pr_number_override: int | None
-    model_training_intent: str
     playwright_mode: str
     playwright_base_url: str
     playwright_bootstrap: bool
@@ -142,15 +141,6 @@ def _normalize_sbom_mode(value: str | None) -> str:
         return "baseline"
     if normalized in {"audit", "deep", "full", "full-depth"}:
         return "audit"
-    return "off"
-
-
-def _normalize_model_training_intent(value: str | None) -> str:
-    normalized = str(value or "").strip().lower().replace("_", "-")
-    if normalized in {"1", "true", "yes", "on", "train", "training", "model-training"}:
-        return "train"
-    if normalized in {"parameter-golf", "param-golf", "pg"}:
-        return "parameter-golf"
     return "off"
 
 
@@ -319,9 +309,6 @@ def _load_config() -> BridgeConfig:
     wait_poll_seconds = max(5, _int_input("INPUT_WAIT_POLL_SECONDS", 10))
     pr_number_raw = str(os.environ.get("INPUT_PR_NUMBER") or "").strip()
     pr_number_override = int(pr_number_raw) if pr_number_raw.isdigit() else None
-    model_training_intent = _normalize_model_training_intent(
-        str(os.environ.get("INPUT_MODEL_TRAINING_INTENT") or "").strip()
-    )
     playwright_mode = _normalize_playwright_mode(
         str(os.environ.get("INPUT_PLAYWRIGHT_MODE") or "").strip()
     )
@@ -373,7 +360,6 @@ def _load_config() -> BridgeConfig:
         wait_timeout_seconds=wait_timeout_seconds,
         wait_poll_seconds=wait_poll_seconds,
         pr_number_override=pr_number_override,
-        model_training_intent=model_training_intent,
         playwright_mode=playwright_mode,
         playwright_base_url=playwright_base_url,
         playwright_bootstrap=playwright_bootstrap,
@@ -409,35 +395,6 @@ def _api_json_request(
         raise RuntimeError(f"API request failed [{exc.code}] {url}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"API request failed [{url}]: {exc}") from exc
-
-
-def _github_api_request(
-    *,
-    method: str,
-    url: str,
-    token: str,
-    payload: dict[str, Any] | None = None,
-) -> Any:
-    body: bytes | None = None
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": f"sentinelayer-compat-action/{ACTION_VERSION}",
-    }
-    if payload is not None:
-        body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(url=url, method=method, data=body, headers=headers)
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            raw = response.read().decode("utf-8")
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"GitHub API request failed [{exc.code}] {url}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"GitHub API request failed [{url}]: {exc}") from exc
 
 
 def _detect_pr_number(payload: dict[str, Any], *, fallback_pr_number: int | None = None) -> int:
@@ -785,116 +742,6 @@ def _terminal_status(status: str) -> bool:
     return normalized in {"completed", "failed", "error", "cancelled", "blocked"}
 
 
-def _gate_scope_text(severity_gate: str) -> str:
-    gate = str(severity_gate or "P1").strip().upper()
-    if gate == "P0":
-        return "blocks P0"
-    if gate == "P2":
-        return "blocks P0, P1, P2"
-    if gate == "NONE":
-        return "does not block"
-    return "blocks P0, P1"
-
-
-def _render_omar_gate_comment(
-    *,
-    gate_status: str,
-    severity_gate: str,
-    scan_mode: str,
-    counts: dict[str, int],
-    elapsed_seconds: int | None,
-    run_url: str,
-) -> str:
-    status_value = str(gate_status or "error").strip().lower()
-    if status_value == "passed":
-        title = "🛡️ Omar Gate: ✅ PASSED"
-    elif status_value == "blocked":
-        title = "🛡️ Omar Gate: ❌ BLOCKED"
-    else:
-        title = "🛡️ Omar Gate: ⚠️ ERROR"
-
-    p0 = int(counts.get("P0") or 0)
-    p1 = int(counts.get("P1") or 0)
-    p2 = int(counts.get("P2") or 0)
-    p3 = int(counts.get("P3") or 0)
-    gate_scope = _gate_scope_text(severity_gate=severity_gate)
-    duration = f"{int(elapsed_seconds)}s" if elapsed_seconds is not None else "n/a"
-
-    result_label = "Passed"
-    if status_value == "blocked":
-        result_label = "Blocked"
-    elif status_value == "error":
-        result_label = "Error"
-
-    lines = [
-        "<!-- omar-gate-summary -->",
-        title,
-        f"Gate: `{str(severity_gate or 'P1').upper()}` ({gate_scope})",
-        f"Policy: `omar@v1` • Scan: `{scan_mode}`",
-        f"Duration: `{duration}` • LLM: `managed`",
-        "",
-        (
-            f"Result: {result_label} (severity_gate={str(severity_gate or 'P1').upper()}): "
-            f"Counts: P0={p0}, P1={p1}, P2={p2}, P3={p3}"
-        ),
-        "",
-        "| Severity | Count | Blocks Merge? |",
-        "|---|---:|---|",
-        f"| P0 (Critical) | {p0} | {'Yes' if str(severity_gate).upper() in {'P0', 'P1', 'P2'} else 'No'} |",
-        f"| P1 (High) | {p1} | {'Yes' if str(severity_gate).upper() in {'P1', 'P2'} else 'No'} |",
-        f"| P2 (Medium) | {p2} | {'Yes' if str(severity_gate).upper() == 'P2' else 'No'} |",
-        f"| P3 (Low) | {p3} | No |",
-    ]
-    if run_url:
-        lines.extend(["", f"[View Full Report]({run_url})"])
-    lines.append("<!-- /omar-gate-summary -->")
-    return "\n".join(lines) + "\n"
-
-
-def _upsert_omar_gate_comment(
-    *,
-    github_token: str,
-    repo_full_name: str,
-    pr_number: int,
-    body: str,
-) -> None:
-    marker = "<!-- omar-gate-summary -->"
-    comments_url = (
-        f"https://api.github.com/repos/{repo_full_name}/issues/{pr_number}/comments?per_page=100"
-    )
-    comments = _github_api_request(
-        method="GET",
-        url=comments_url,
-        token=github_token,
-    )
-    if isinstance(comments, list):
-        for comment in reversed(comments):
-            if not isinstance(comment, dict):
-                continue
-            existing_body = str(comment.get("body") or "")
-            if marker not in existing_body:
-                continue
-            comment_id = comment.get("id")
-            if not isinstance(comment_id, int) or comment_id <= 0:
-                continue
-            update_url = f"https://api.github.com/repos/{repo_full_name}/issues/comments/{comment_id}"
-            _github_api_request(
-                method="PATCH",
-                url=update_url,
-                token=github_token,
-                payload={"body": body},
-            )
-            return
-
-    create_url = f"https://api.github.com/repos/{repo_full_name}/issues/{pr_number}/comments"
-    _github_api_request(
-        method="POST",
-        url=create_url,
-        token=github_token,
-        payload={"body": body},
-    )
-
-
 def _emit_outputs(
     *,
     gate_status: str,
@@ -906,7 +753,6 @@ def _emit_outputs(
     playwright_mode: str,
     sbom_status: str,
     sbom_mode: str,
-    model_training_intent: str,
 ) -> None:
     _write_output("gate_status", gate_status)
     _write_output("p0_count", str(int(counts.get("P0") or 0)))
@@ -920,7 +766,6 @@ def _emit_outputs(
     _write_output("playwright_mode", playwright_mode)
     _write_output("sbom_status", sbom_status)
     _write_output("sbom_mode", sbom_mode)
-    _write_output("model_training_intent", model_training_intent)
 
 
 def main() -> int:
@@ -935,12 +780,10 @@ def main() -> int:
     sbom_status = "skipped"
     sbom_mode = "off"
     sbom_detail = "SBOM gate disabled."
-    model_training_intent = "off"
     try:
         config = _load_config()
         playwright_mode = config.playwright_mode
         sbom_mode = config.sbom_mode
-        model_training_intent = config.model_training_intent
         try:
             playwright_status, playwright_detail = _execute_playwright_gate(config)
         except Exception as playwright_exc:
@@ -971,44 +814,19 @@ def main() -> int:
         trigger_payload["spec_binding_mode"] = config.spec_binding_mode
         if config.spec_sources:
             trigger_payload["spec_sources"] = config.spec_sources
-        if config.model_training_intent != "off":
-            trigger_payload["model_training_intent"] = config.model_training_intent
 
         trigger_url = f"{config.api_url}/api/v1/github-app/trigger"
-        try:
-            trigger_response = _api_json_request(
-                method="POST",
-                url=trigger_url,
-                token=config.token,
-                payload=trigger_payload,
-            )
-        except RuntimeError as exc:
-            # Backward compatibility for older API versions that reject unknown optional fields.
-            if (
-                config.model_training_intent != "off"
-                and "[400]" in str(exc)
-                and "model_training_intent" in trigger_payload
-            ):
-                legacy_payload = dict(trigger_payload)
-                legacy_payload.pop("model_training_intent", None)
-                print(
-                    "::notice::Sentinelayer API rejected optional model_training_intent; "
-                    "retrying trigger without it."
-                )
-                trigger_response = _api_json_request(
-                    method="POST",
-                    url=trigger_url,
-                    token=config.token,
-                    payload=legacy_payload,
-                )
-            else:
-                raise
+        trigger_response = _api_json_request(
+            method="POST",
+            url=trigger_url,
+            token=config.token,
+            payload=trigger_payload,
+        )
 
         run_id = str(trigger_response.get("investigation_run_id") or "").strip()
         counts = {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
         status = str(trigger_response.get("status") or "accepted").strip().lower()
         progress = "queued"
-        elapsed_seconds: int | None = None
 
         if config.wait_for_completion and run_id:
             deadline = time.time() + float(config.wait_timeout_seconds)
@@ -1021,9 +839,6 @@ def main() -> int:
                 )
                 status = str(status_payload.get("status") or "queued").strip().lower()
                 progress = str(status_payload.get("progress_label") or "").strip() or status
-                raw_elapsed = status_payload.get("elapsed_seconds")
-                if isinstance(raw_elapsed, (int, float)):
-                    elapsed_seconds = int(raw_elapsed)
                 payload_counts = status_payload.get("severity_counts")
                 if isinstance(payload_counts, dict):
                     counts = {
@@ -1060,7 +875,6 @@ def main() -> int:
             playwright_mode=playwright_mode,
             sbom_status=sbom_status,
             sbom_mode=sbom_mode,
-            model_training_intent=model_training_intent,
         )
 
         run_url = f"{SENTINELAYER_WEB_BASE}/runs/{run_id}" if run_id else ""
@@ -1086,38 +900,11 @@ def main() -> int:
             f"- Playwright detail: {playwright_detail}",
             f"- SBOM gate: `{sbom_status}` ({sbom_mode})",
             f"- SBOM detail: {sbom_detail}",
-            f"- Model training intent: `{model_training_intent}`",
         ]
         if run_url:
             summary_lines.append(f"- Run: {run_url}")
             summary_lines.append(f"- Evidence: {evidence_url}")
         _append_summary("\n".join(summary_lines) + "\n")
-
-        github_token = str(
-            os.environ.get("INPUT_GITHUB_TOKEN")
-            or os.environ.get("GITHUB_TOKEN")
-            or ""
-        ).strip()
-        if github_token:
-            try:
-                comment_body = _render_omar_gate_comment(
-                    gate_status=gate_status,
-                    severity_gate=config.severity_gate,
-                    scan_mode=config.scan_mode,
-                    counts=counts,
-                    elapsed_seconds=elapsed_seconds,
-                    run_url=run_url,
-                )
-                _upsert_omar_gate_comment(
-                    github_token=github_token,
-                    repo_full_name=config.repo_full_name,
-                    pr_number=pr_number,
-                    body=comment_body,
-                )
-            except Exception as comment_exc:
-                print(f"::warning::Failed to upsert Omar Gate PR comment: {comment_exc}")
-        else:
-            print("::notice::Skipping Omar Gate PR comment upsert because no GitHub token is available.")
 
         if run_id:
             print(f"::notice::Sentinelayer run ready: {run_id}")
@@ -1134,7 +921,6 @@ def main() -> int:
             playwright_mode=playwright_mode,
             sbom_status=sbom_status,
             sbom_mode=sbom_mode,
-            model_training_intent=model_training_intent,
         )
         return 2
 

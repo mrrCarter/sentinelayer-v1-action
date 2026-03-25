@@ -61,7 +61,6 @@ jobs:
           sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
           scan_mode: deep
           severity_gate: P1
-          model_training_intent: off
           playwright_mode: baseline
           sbom_mode: baseline
 
@@ -222,7 +221,6 @@ Use these in subsequent workflow steps:
 | `playwright_mode` | Effective Playwright mode: `off`, `baseline`, or `audit` |
 | `sbom_status` | SBOM gate status: `skipped`, `passed`, or `failed` |
 | `sbom_mode` | Effective SBOM mode: `off`, `baseline`, or `audit` |
-| `model_training_intent` | Effective training context hint sent to Sentinelayer API (`off`, `train`, `parameter-golf`) |
 
 ---
 
@@ -239,7 +237,6 @@ Use these in subsequent workflow steps:
 | Input | Default | Description |
 |-------|---------|-------------|
 | `status_poll_token` | empty (falls back to `sentinelayer_token`) | Optional separate token for status polling. |
-| `github_token` | empty (falls back to `github.token`) | Optional token used to upsert the Omar Gate PR summary comment. |
 | `sentinelayer_api_url` | `https://api.sentinelayer.com` | Sentinelayer API base URL. |
 | `scan_mode` | `deep` | Scan command mapper (`baseline`, `deep`, `audit`, `full-depth`). `audit` maps to `/omar full-depth`. |
 | `severity_gate` | `P1` | Block threshold (`P0`, `P1`, `P2`, `none`). |
@@ -252,7 +249,6 @@ Use these in subsequent workflow steps:
 | `wait_timeout_seconds` | `900` | Max wait time (seconds). |
 | `wait_poll_seconds` | `10` | Poll interval (seconds). |
 | `pr_number` | empty | Optional PR number override (`workflow_dispatch`). |
-| `model_training_intent` | `off` | Optional training context hint for Sentinelayer API (`off`, `train`, `parameter-golf`). |
 | `playwright_mode` | `off` | Optional browser gate profile: `off`, `baseline`, `audit`. |
 | `playwright_node_version` | `20` | Node version used when `playwright_mode != off`. |
 | `playwright_base_url` | empty | Optional `PLAYWRIGHT_TEST_BASE_URL` override for test execution. |
@@ -322,17 +318,6 @@ See [action.yml](action.yml) for the authoritative input contract.
     severity_gate: P1
     playwright_mode: baseline
     sbom_mode: baseline
-```
-
-### Parameter Golf / Model-Training Assignment Context
-```yaml
-- name: Omar Gate
-  uses: mrrCarter/sentinelayer-v1-action@v1
-  with:
-    sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
-    scan_mode: deep
-    severity_gate: P1
-    model_training_intent: parameter-golf
 ```
 
 ### Audit Mode with Deep Frontend E2E + Full-Depth Omar
