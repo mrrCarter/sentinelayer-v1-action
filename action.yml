@@ -62,6 +62,10 @@ inputs:
     description: 'Optional PR number override (useful for workflow_dispatch)'
     required: false
     default: ''
+  model_training_intent:
+    description: 'Optional training context hint: off, train, or parameter-golf'
+    required: false
+    default: 'off'
   playwright_mode:
     description: 'Optional Playwright profile: off, baseline, or audit'
     required: false
@@ -144,6 +148,9 @@ outputs:
   sbom_mode:
     description: 'Effective SBOM mode used by this run'
     value: ${{ steps.omar.outputs.sbom_mode }}
+  model_training_intent:
+    description: 'Effective model training intent context sent to Sentinelayer API'
+    value: ${{ steps.omar.outputs.model_training_intent }}
 
 runs:
   using: 'composite'
@@ -226,6 +233,7 @@ runs:
         INPUT_WAIT_TIMEOUT_SECONDS: ${{ inputs.wait_timeout_seconds }}
         INPUT_WAIT_POLL_SECONDS: ${{ inputs.wait_poll_seconds }}
         INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+        INPUT_MODEL_TRAINING_INTENT: ${{ inputs.model_training_intent }}
         INPUT_PLAYWRIGHT_MODE: ${{ steps.playwright_mode.outputs.effective }}
         INPUT_PLAYWRIGHT_BASE_URL: ${{ inputs.playwright_base_url }}
         INPUT_PLAYWRIGHT_BOOTSTRAP: ${{ inputs.playwright_bootstrap }}

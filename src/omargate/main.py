@@ -61,6 +61,7 @@ class BridgeConfig:
     wait_timeout_seconds: int
     wait_poll_seconds: int
     pr_number_override: int | None
+    model_training_intent: str
     playwright_mode: str
     playwright_base_url: str
     playwright_bootstrap: bool
@@ -141,6 +142,15 @@ def _normalize_sbom_mode(value: str | None) -> str:
         return "baseline"
     if normalized in {"audit", "deep", "full", "full-depth"}:
         return "audit"
+    return "off"
+
+
+def _normalize_model_training_intent(value: str | None) -> str:
+    normalized = str(value or "").strip().lower().replace("_", "-")
+    if normalized in {"1", "true", "yes", "on", "train", "training", "model-training"}:
+        return "train"
+    if normalized in {"parameter-golf", "param-golf", "pg"}:
+        return "parameter-golf"
     return "off"
 
 
@@ -309,6 +319,9 @@ def _load_config() -> BridgeConfig:
     wait_poll_seconds = max(5, _int_input("INPUT_WAIT_POLL_SECONDS", 10))
     pr_number_raw = str(os.environ.get("INPUT_PR_NUMBER") or "").strip()
     pr_number_override = int(pr_number_raw) if pr_number_raw.isdigit() else None
+    model_training_intent = _normalize_model_training_intent(
+        str(os.environ.get("INPUT_MODEL_TRAINING_INTENT") or "").strip()
+    )
     playwright_mode = _normalize_playwright_mode(
         str(os.environ.get("INPUT_PLAYWRIGHT_MODE") or "").strip()
     )
@@ -360,6 +373,7 @@ def _load_config() -> BridgeConfig:
         wait_timeout_seconds=wait_timeout_seconds,
         wait_poll_seconds=wait_poll_seconds,
         pr_number_override=pr_number_override,
+        model_training_intent=model_training_intent,
         playwright_mode=playwright_mode,
         playwright_base_url=playwright_base_url,
         playwright_bootstrap=playwright_bootstrap,
@@ -753,6 +767,7 @@ def _emit_outputs(
     playwright_mode: str,
     sbom_status: str,
     sbom_mode: str,
+    model_training_intent: str,
 ) -> None:
     _write_output("gate_status", gate_status)
     _write_output("p0_count", str(int(counts.get("P0") or 0)))
@@ -766,6 +781,7 @@ def _emit_outputs(
     _write_output("playwright_mode", playwright_mode)
     _write_output("sbom_status", sbom_status)
     _write_output("sbom_mode", sbom_mode)
+    _write_output("model_training_intent", model_training_intent)
 
 
 def main() -> int:
@@ -780,10 +796,12 @@ def main() -> int:
     sbom_status = "skipped"
     sbom_mode = "off"
     sbom_detail = "SBOM gate disabled."
+    model_training_intent = "off"
     try:
         config = _load_config()
         playwright_mode = config.playwright_mode
         sbom_mode = config.sbom_mode
+        model_training_intent = config.model_training_intent
         try:
             playwright_status, playwright_detail = _execute_playwright_gate(config)
         except Exception as playwright_exc:
@@ -814,14 +832,38 @@ def main() -> int:
         trigger_payload["spec_binding_mode"] = config.spec_binding_mode
         if config.spec_sources:
             trigger_payload["spec_sources"] = config.spec_sources
+        if config.model_training_intent != "off":
+            trigger_payload["model_training_intent"] = config.model_training_intent
 
         trigger_url = f"{config.api_url}/api/v1/github-app/trigger"
-        trigger_response = _api_json_request(
-            method="POST",
-            url=trigger_url,
-            token=config.token,
-            payload=trigger_payload,
-        )
+        try:
+            trigger_response = _api_json_request(
+                method="POST",
+                url=trigger_url,
+                token=config.token,
+                payload=trigger_payload,
+            )
+        except RuntimeError as exc:
+            # Backward compatibility for older API versions that reject unknown optional fields.
+            if (
+                config.model_training_intent != "off"
+                and "[400]" in str(exc)
+                and "model_training_intent" in trigger_payload
+            ):
+                legacy_payload = dict(trigger_payload)
+                legacy_payload.pop("model_training_intent", None)
+                print(
+                    "::notice::Sentinelayer API rejected optional model_training_intent; "
+                    "retrying trigger without it."
+                )
+                trigger_response = _api_json_request(
+                    method="POST",
+                    url=trigger_url,
+                    token=config.token,
+                    payload=legacy_payload,
+                )
+            else:
+                raise
 
         run_id = str(trigger_response.get("investigation_run_id") or "").strip()
         counts = {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
@@ -875,6 +917,7 @@ def main() -> int:
             playwright_mode=playwright_mode,
             sbom_status=sbom_status,
             sbom_mode=sbom_mode,
+            model_training_intent=model_training_intent,
         )
 
         run_url = f"{SENTINELAYER_WEB_BASE}/runs/{run_id}" if run_id else ""
@@ -900,6 +943,7 @@ def main() -> int:
             f"- Playwright detail: {playwright_detail}",
             f"- SBOM gate: `{sbom_status}` ({sbom_mode})",
             f"- SBOM detail: {sbom_detail}",
+            f"- Model training intent: `{model_training_intent}`",
         ]
         if run_url:
             summary_lines.append(f"- Run: {run_url}")
@@ -921,6 +965,7 @@ def main() -> int:
             playwright_mode=playwright_mode,
             sbom_status=sbom_status,
             sbom_mode=sbom_mode,
+            model_training_intent=model_training_intent,
         )
         return 2
 

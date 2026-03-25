@@ -7,7 +7,7 @@
 [![Tests: 186 passing](https://img.shields.io/badge/tests-186%20passing-brightgreen)](https://github.com/mrrCarter/sentinelayer-v1-action/actions/workflows/quality-gates.yml)
 [![Marketplace](https://img.shields.io/badge/GitHub-Marketplace-blue)](https://github.com/marketplace?query=sentinelayer)
 
-Omar Gate runs a 7-layer security analysis on every pull request — combining deterministic pattern scanning, codebase-aware ingestion, and deep AI-powered code review — then blocks the merge if critical vulnerabilities are found.
+Omar Gate runs a 7-layer security analysis when your workflow invokes it (recommended: explicit PR comment commands) — combining deterministic pattern scanning, codebase-aware ingestion, and deep AI-powered code review — then blocks the merge if critical vulnerabilities are found.
 
 Built by engineers, for engineers. No vendor lock-in. Bring your own LLM.
 
@@ -40,8 +40,8 @@ Create `.github/workflows/security-review.yml` in your repository:
 name: Security Review
 
 on:
-  pull_request:
-    types: [opened, synchronize]
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: read
@@ -50,6 +50,10 @@ permissions:
 
 jobs:
   security-review:
+    if: >
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/omar') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,8 +63,11 @@ jobs:
         uses: mrrCarter/sentinelayer-v1-action@v1
         with:
           sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+          pr_number: ${{ github.event.issue.number }}
+          command: ${{ github.event.comment.body }}
           scan_mode: deep
           severity_gate: P1
+          model_training_intent: off
           playwright_mode: baseline
           sbom_mode: baseline
 
@@ -73,7 +80,7 @@ jobs:
           if-no-files-found: warn
 ```
 
-That's it. Open a PR and Omar Gate will:
+That's it. Open a PR, then comment `/omar` (or `/omar baseline`, `/omar audit p0`) and Omar Gate will:
 1. Scan your codebase for secrets, vulnerabilities, and misconfigurations
 2. Run AI-powered deep analysis on high-risk files
 3. Post a detailed security report as a PR comment
@@ -122,9 +129,9 @@ Copy the Quick Start YAML above into `.github/workflows/security-review.yml` in 
 
 > `GITHUB_TOKEN` is provided automatically by GitHub Actions and is not required by this bridge action input contract.
 
-### Step 3: Open a pull request
+### Step 3: Open a pull request and trigger by comment
 
-That's it. Omar Gate triggers automatically on every PR.
+Comment `/omar` on the PR to trigger Omar Gate on demand.
 
 ---
 
@@ -221,6 +228,7 @@ Use these in subsequent workflow steps:
 | `playwright_mode` | Effective Playwright mode: `off`, `baseline`, or `audit` |
 | `sbom_status` | SBOM gate status: `skipped`, `passed`, or `failed` |
 | `sbom_mode` | Effective SBOM mode: `off`, `baseline`, or `audit` |
+| `model_training_intent` | Effective training context hint sent to Sentinelayer API (`off`, `train`, `parameter-golf`) |
 
 ---
 
@@ -249,6 +257,7 @@ Use these in subsequent workflow steps:
 | `wait_timeout_seconds` | `900` | Max wait time (seconds). |
 | `wait_poll_seconds` | `10` | Poll interval (seconds). |
 | `pr_number` | empty | Optional PR number override (`workflow_dispatch`). |
+| `model_training_intent` | `off` | Optional training context hint for Sentinelayer API (`off`, `train`, `parameter-golf`). |
 | `playwright_mode` | `off` | Optional browser gate profile: `off`, `baseline`, `audit`. |
 | `playwright_node_version` | `20` | Node version used when `playwright_mode != off`. |
 | `playwright_base_url` | empty | Optional `PLAYWRIGHT_TEST_BASE_URL` override for test execution. |
@@ -318,6 +327,17 @@ See [action.yml](action.yml) for the authoritative input contract.
     severity_gate: P1
     playwright_mode: baseline
     sbom_mode: baseline
+```
+
+### Parameter Golf / Model-Training Assignment Context
+```yaml
+- name: Omar Gate
+  uses: mrrCarter/sentinelayer-v1-action@v1
+  with:
+    sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+    scan_mode: deep
+    severity_gate: P1
+    model_training_intent: parameter-golf
 ```
 
 ### Audit Mode with Deep Frontend E2E + Full-Depth Omar
@@ -427,9 +447,9 @@ See [Supply-Chain Attestation Guide](docs/supply-chain-attestation.md) for an en
 **Cause:** The deterministic scanner runs regex patterns across your entire codebase. Many findings are informational (P3) or low severity.
 **Fix:** This is expected on the first scan. Focus on P0/P1 findings. Use `severity_gate: P1` to only block on critical issues. Subsequent scans on PRs will focus on changed files.
 
-### Action doesn't trigger on PR
-**Cause:** The workflow file must exist on the PR branch. If you're adding it for the first time, it needs to be part of the PR itself.
-**Fix:** Commit the workflow file to your branch, push, and open the PR. The action will trigger.
+### Action doesn't trigger on comment command
+**Cause:** The workflow file must exist on the target branch and the comment must start with `/omar` on a PR thread.
+**Fix:** Commit the workflow file, open the PR, then comment `/omar` (or another allowed command variant).
 
 ---
 

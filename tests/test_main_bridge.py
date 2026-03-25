@@ -12,6 +12,7 @@ from omargate.main import (
     _detect_pr_number,
     _execute_playwright_gate,
     _execute_sbom_gate,
+    _normalize_model_training_intent,
     _normalize_playwright_mode,
     _normalize_sbom_mode,
     _normalize_spec_binding_mode,
@@ -32,6 +33,7 @@ def _bridge_config(
     sbom_bootstrap: bool = True,
     sbom_baseline_command: str = "",
     sbom_audit_command: str = "",
+    model_training_intent: str = "off",
 ) -> BridgeConfig:
     event_path = tmp_path / "event.json"
     event_path.write_text('{"pull_request":{"number":42}}', encoding="utf-8")
@@ -54,6 +56,7 @@ def _bridge_config(
         wait_timeout_seconds=900,
         wait_poll_seconds=10,
         pr_number_override=42,
+        model_training_intent=model_training_intent,
         playwright_mode=playwright_mode,
         playwright_base_url=playwright_base_url,
         playwright_bootstrap=playwright_bootstrap,
@@ -129,6 +132,15 @@ def test_normalize_sbom_mode() -> None:
     assert _normalize_sbom_mode("full-depth") == "audit"
     assert _normalize_sbom_mode("off") == "off"
     assert _normalize_sbom_mode("invalid") == "off"
+
+
+def test_normalize_model_training_intent() -> None:
+    assert _normalize_model_training_intent("true") == "train"
+    assert _normalize_model_training_intent("training") == "train"
+    assert _normalize_model_training_intent("parameter_golf") == "parameter-golf"
+    assert _normalize_model_training_intent("pg") == "parameter-golf"
+    assert _normalize_model_training_intent("off") == "off"
+    assert _normalize_model_training_intent("unknown") == "off"
 
 
 def test_parse_safe_command_blocks_shell_control_tokens() -> None:
@@ -336,3 +348,75 @@ def test_main_sets_sbom_status_failed_when_gate_errors(
     assert outputs["gate_status"] == "error"
     assert outputs["sbom_status"] == "failed"
     assert outputs["sbom_mode"] == "audit"
+
+
+def test_main_includes_model_training_intent_in_trigger_payload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = _bridge_config(tmp_path, model_training_intent="parameter-golf")
+    trigger_payloads: list[dict[str, object]] = []
+
+    def _fake_api_json_request(
+        *, method: str, url: str, token: str, payload: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        if method == "POST":
+            trigger_payloads.append(dict(payload or {}))
+            return {"investigation_run_id": "run-123", "status": "accepted"}
+        return {
+            "status": "completed",
+            "progress_label": "done",
+            "severity_counts": {"P0": 0, "P1": 0, "P2": 0, "P3": 0},
+        }
+
+    output_path = tmp_path / "github_output.txt"
+    monkeypatch.setattr("omargate.main._load_config", lambda: config)
+    monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._execute_sbom_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._api_json_request", _fake_api_json_request)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+
+    exit_code = main()
+    assert exit_code == 0
+    assert len(trigger_payloads) == 1
+    assert trigger_payloads[0]["model_training_intent"] == "parameter-golf"
+
+    outputs = {}
+    for line in output_path.read_text(encoding="utf-8").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        outputs[key] = value
+    assert outputs["model_training_intent"] == "parameter-golf"
+
+
+def test_main_retries_without_model_training_intent_on_400(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = _bridge_config(tmp_path, model_training_intent="train")
+    trigger_payloads: list[dict[str, object]] = []
+
+    def _fake_api_json_request(
+        *, method: str, url: str, token: str, payload: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        if method == "POST":
+            snapshot = dict(payload or {})
+            trigger_payloads.append(snapshot)
+            if len(trigger_payloads) == 1:
+                raise RuntimeError("API request failed [400] https://api.example: unknown field")
+            return {"investigation_run_id": "run-123", "status": "accepted"}
+        return {
+            "status": "completed",
+            "progress_label": "done",
+            "severity_counts": {"P0": 0, "P1": 0, "P2": 0, "P3": 0},
+        }
+
+    monkeypatch.setattr("omargate.main._load_config", lambda: config)
+    monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._execute_sbom_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._api_json_request", _fake_api_json_request)
+
+    exit_code = main()
+    assert exit_code == 0
+    assert len(trigger_payloads) == 2
+    assert trigger_payloads[0]["model_training_intent"] == "train"
+    assert "model_training_intent" not in trigger_payloads[1]
