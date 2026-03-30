@@ -132,6 +132,16 @@ aws secretsmanager get-secret-value --secret-id sentinelayer/prod/api-runtime --
 | gh secret set SENTINELAYER_TOKEN --org <your-org> --visibility all
 ```
 
+For a safer end-to-end validation (AWS secret key + ECS binding + API acceptance + optional GitHub sync), run:
+
+```powershell
+pwsh .\scripts\audit_sentinelayer_token_contract.ps1 `
+  -SyncGitHubSecrets `
+  -Repos <owner/repo>
+```
+
+This script lives in the `sentinellayer-aws-terraform` repository.
+
 ---
 
 ## Setup (3 Steps)
