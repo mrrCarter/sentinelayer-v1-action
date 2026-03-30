@@ -124,23 +124,13 @@ Manual fallback if you need to recover/reseed the token:
 3. Confirm your workflow maps:
    - `sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}`
 
-If you self-host and keep runtime values in AWS Secrets Manager, sync the same runtime token key to GitHub:
+BYOK fallback for end users (no Sentinelayer token):
 
-```bash
-aws secretsmanager get-secret-value --secret-id sentinelayer/prod/api-runtime --query SecretString --output text \
-| jq -r '.sentinelayer_token' \
-| gh secret set SENTINELAYER_TOKEN --org <your-org> --visibility all
-```
+1. Skip this bridge action in your workflow.
+2. Run your agent directly with provider credentials (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `GOOGLE_API_KEY`).
+3. Keep Sentinelayer-generated docs/prompts, but do not wire `sentinelayer_token` in this mode.
 
-For a safer end-to-end validation (AWS secret key + ECS binding + API acceptance + optional GitHub sync), run:
-
-```powershell
-pwsh .\scripts\audit_sentinelayer_token_contract.ps1 `
-  -SyncGitHubSecrets `
-  -Repos <owner/repo>
-```
-
-This script lives in the `sentinellayer-aws-terraform` repository.
+AWS secret sync/audit runbooks are internal self-hosted operator workflows and live in `sentinellayer-aws-terraform`.
 
 ---
 
