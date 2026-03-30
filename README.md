@@ -84,6 +84,25 @@ That's it. Open a PR and Omar Gate will:
 >
 > **Compatibility note:** `openai_api_key`, `anthropic_api_key`, `google_api_key`, and `github_token` are legacy inputs from older action variants and are not required by this bridge action.
 
+### Why `SENTINELAYER_TOKEN` is required
+
+`sentinelayer_token` is the trust contract between your workflow and Sentinelayer API.  
+Without it, the bridge cannot trigger scans or poll run status, and Omar Gate fails closed.
+
+- `GITHUB_TOKEN` is GitHub-scoped and cannot authenticate to Sentinelayer API.
+- `SENTINELAYER_TOKEN` is Sentinelayer-scoped and should be stored only in Actions secrets.
+- Keep one canonical token per environment and rotate it on your security cadence.
+
+### Preferred setup: no-copy CLI bootstrap
+
+Use the Sentinelayer scaffold CLI to avoid manual token copy/paste:
+
+```bash
+npx create-sentinelayer@latest my-agent-app
+```
+
+The CLI opens browser auth, issues a bootstrap token, writes `.env`, and can inject `SENTINELAYER_TOKEN` into your repo secrets automatically.
+
 ### Fastest Installer Setup (recommended)
 
 Use one organization-level Actions secret and reuse it across repos:
@@ -97,6 +116,13 @@ Or scope it to selected repos:
 ```bash
 gh secret set SENTINELAYER_TOKEN --org <your-org> --repos repo-a,repo-b
 ```
+
+Manual fallback if you need to recover/reseed the token:
+
+1. Open Sentinelayer dashboard -> **Settings** -> **API Access** and issue a new token.
+2. Store it in repo/org Actions secrets as `SENTINELAYER_TOKEN`.
+3. Confirm your workflow maps:
+   - `sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}`
 
 If you self-host and keep runtime values in AWS Secrets Manager, sync the same runtime token key to GitHub:
 
@@ -118,7 +144,7 @@ Copy the Quick Start YAML above into `.github/workflows/security-review.yml` in 
 
 1. Go to your repo **Settings** > **Secrets and variables** > **Actions**
 2. Click **New repository secret**
-3. Add `SENTINELAYER_TOKEN` (issued by Sentinelayer onboarding/dashboard, or synced from your runtime secret)
+3. Add `SENTINELAYER_TOKEN` (issued by Sentinelayer dashboard/API Access, CLI bootstrap, or synced from your runtime secret)
 
 > `GITHUB_TOKEN` is provided automatically by GitHub Actions and is not required by this bridge action input contract.
 
