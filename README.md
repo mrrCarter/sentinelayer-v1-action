@@ -9,6 +9,8 @@
 
 Omar Gate runs a 7-layer security analysis on every pull request — combining deterministic pattern scanning, codebase-aware ingestion, and deep AI-powered code review — then blocks the merge if critical vulnerabilities are found.
 
+By default, this Action is the automatic PR gate surface. Extended deep-audit orchestration in the GitHub App is comment-invoked (manual), not auto-started on every PR.
+
 Built by engineers, for engineers. No vendor lock-in. Bring your own LLM.
 
 ## Recommended: Start with Spec Builder
@@ -151,6 +153,39 @@ Copy the Quick Start YAML above into `.github/workflows/security-review.yml` in 
 ### Step 3: Open a pull request
 
 That's it. Omar Gate triggers automatically on every PR.
+
+---
+
+## Invocation Model (Automatic vs Manual)
+
+Use this model to keep PR noise low while preserving deep audit capability:
+
+- Automatic on every PR: Omar Gate check run from this action (`scan_mode` + `severity_gate` policy).
+- Manual on demand: PR comment commands for baseline refresh, deeper scans, and fix planning.
+
+If your repo has the Sentinelayer GitHub App installed, post one of these PR comments:
+
+| PR Comment | What it does |
+|---|---|
+| `/omar baseline` | Runs baseline-only memory/context refresh for the PR/repo scope. |
+| `/omar deep-scan` | Runs the standard deep review profile over changed and related high-risk scope. |
+| `/omar full-depth` | Runs full-depth audit orchestration with broader persona/domain coverage. |
+| `/omar fix-plan` | Produces remediation plan artifacts based on current findings and policies. |
+| `/omar report` | Publishes a dashboard-linked report package for reviewer/HITL handoff. |
+
+Examples:
+
+```bash
+gh pr comment <pr-number> --body "/omar deep-scan"
+gh pr comment <pr-number> --body "/omar fix-plan"
+```
+
+Notes:
+- `scan_mode: baseline|deep|audit|full-depth` in the action maps to Omar commands under the hood.
+- `scan_mode: audit` maps to `/omar full-depth`.
+- Keep branch protection tied to the Omar Gate check for merge control; use comment commands for extra depth.
+
+See also: [Comment Command Reference](docs/comment-command-reference.md).
 
 ---
 
@@ -456,6 +491,11 @@ See [Supply-Chain Attestation Guide](docs/supply-chain-attestation.md) for an en
 ### Action doesn't trigger on PR
 **Cause:** The workflow file must exist on the PR branch. If you're adding it for the first time, it needs to be part of the PR itself.
 **Fix:** Commit the workflow file to your branch, push, and open the PR. The action will trigger.
+
+### PR comment command does nothing
+**Cause:** GitHub App not installed on the repo/org, webhook delivery disabled, or comment command not recognized.
+**Fix:** Install Sentinelayer GitHub App, verify repo access and webhook health, then retry with one of:
+`/omar baseline`, `/omar deep-scan`, `/omar full-depth`, `/omar fix-plan`, `/omar report`.
 
 ---
 
