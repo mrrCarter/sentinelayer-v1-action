@@ -106,6 +106,18 @@ inputs:
     description: 'Optional command override for sbom_mode=audit (empty uses default CycloneDX generation profile)'
     required: false
     default: ''
+  local_gates_enabled:
+    description: 'When true, run the action-local Omar Gate 2.0 gate runner (static + security) before the backend bridge. Writes FINDINGS.jsonl to local_gates_output_dir.'
+    required: false
+    default: 'false'
+  local_gates_output_dir:
+    description: 'Directory for FINDINGS.jsonl emitted by the local gate runner (when local_gates_enabled=true)'
+    required: false
+    default: '.omargate/local'
+  local_gates_fail_severity:
+    description: 'Minimum severity that causes the local gate runner to exit non-zero: P0, P1, P2, P3, or never'
+    required: false
+    default: 'P1'
 
 outputs:
   gate_status:
@@ -144,6 +156,12 @@ outputs:
   sbom_mode:
     description: 'Effective SBOM mode used by this run'
     value: ${{ steps.omar.outputs.sbom_mode }}
+  local_gates_status:
+    description: 'Status of the action-local Omar Gate 2.0 gate runner: skipped, passed, or blocked'
+    value: ${{ steps.local_gates.outputs.status }}
+  local_gates_findings_path:
+    description: 'Absolute path to FINDINGS.jsonl emitted by the local gate runner (empty when skipped)'
+    value: ${{ steps.local_gates.outputs.findings_path }}
 
 runs:
   using: 'composite'
@@ -152,6 +170,68 @@ runs:
       uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
       with:
         python-version: '3.11'
+
+    - name: Run local Omar Gate 2.0 gates
+      id: local_gates
+      if: ${{ inputs.local_gates_enabled == 'true' }}
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        INPUT_LOCAL_GATES_OUTPUT_DIR: ${{ inputs.local_gates_output_dir }}
+        INPUT_LOCAL_GATES_FAIL_SEVERITY: ${{ inputs.local_gates_fail_severity }}
+      run: |
+        set -euo pipefail
+        action_dir="${{ github.action_path }}"
+        output_dir="${INPUT_LOCAL_GATES_OUTPUT_DIR:-.omargate/local}"
+        fail_sev="${INPUT_LOCAL_GATES_FAIL_SEVERITY:-P1}"
+        findings_path="${GITHUB_WORKSPACE}/${output_dir}/FINDINGS.jsonl"
+        summary_path="${GITHUB_WORKSPACE}/${output_dir}/SUMMARY.json"
+        mkdir -p "${GITHUB_WORKSPACE}/${output_dir}"
+
+        set +e
+        PYTHONPATH="${action_dir}/src" python -m omargate.local_gates \
+          --path . \
+          --output-dir "${GITHUB_WORKSPACE}/${output_dir}" \
+          --fail-severity "${fail_sev}" \
+          --json-summary \
+          > "${summary_path}"
+        rc=$?
+        set -e
+
+        status="passed"
+        if [ "${rc}" -eq 1 ]; then
+          status="blocked"
+        elif [ "${rc}" -ne 0 ]; then
+          status="error"
+        fi
+
+        echo "status=${status}" >> "${GITHUB_OUTPUT}"
+        echo "findings_path=${findings_path}" >> "${GITHUB_OUTPUT}"
+
+        # Surface the summary in the Step Summary for quick review
+        {
+          echo "### Omar Gate 2.0 — Local gates"
+          echo ""
+          echo "Status: \`${status}\` (rc=${rc}, fail_severity=${fail_sev})"
+          echo ""
+          echo '```json'
+          cat "${summary_path}" || true
+          echo ''
+          echo '```'
+        } >> "${GITHUB_STEP_SUMMARY}"
+
+        if [ "${rc}" -eq 1 ]; then
+          echo "::warning::Local gates blocked: at least one finding at or above ${fail_sev}. See FINDINGS.jsonl at ${findings_path}."
+        elif [ "${rc}" -ne 0 ]; then
+          echo "::error::Local gates runner errored (rc=${rc}). See step output."
+          exit ${rc}
+        fi
+
+        # The FINDINGS.jsonl + SUMMARY.json are written to the user's workspace
+        # (\${GITHUB_WORKSPACE}/\${output_dir}) so downstream workflow steps can
+        # upload them as artifacts, parse them, or attach them to a PR comment.
+        # This action doesn't upload by itself — leaves that choice to the
+        # composing workflow.
 
     - name: Normalize Playwright mode
       id: playwright_mode
