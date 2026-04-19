@@ -9,9 +9,6 @@ from pathlib import Path
 
 from omargate.gates.policy import (
     DEFAULT_POLICY,
-    ForbidPattern,
-    GateToggle,
-    PolicyConfig,
     PolicyLoadError,
     SCHEMA_VERSION,
     load_policy,
