@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from omargate.gates import Gate, GateContext, GateResult, run_gates
+from omargate.gates import GateContext, GateResult, run_gates
 from omargate.gates.findings import Finding, serialize_findings
 from omargate.gates.static import (
     StaticAnalysisGate,
