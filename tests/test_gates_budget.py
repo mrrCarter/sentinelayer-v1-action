@@ -6,7 +6,6 @@ import unittest
 
 from omargate.gates.budget import (
     QuotaState,
-    RateLimitHeaders,
     TokenBudgetTracker,
     parse_rate_limit_headers,
 )
