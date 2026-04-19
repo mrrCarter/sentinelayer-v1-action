@@ -13,7 +13,6 @@ import unittest
 from pathlib import Path
 
 from omargate.gates import GateContext
-from omargate.gates.findings import Finding
 from omargate.gates.security import (
     SecurityScanGate,
     _extract_cvss_numeric,
