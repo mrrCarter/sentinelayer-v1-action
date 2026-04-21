@@ -24,7 +24,6 @@ strict=True so jailbroken LLM output can't exfiltrate or clobber the host.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field

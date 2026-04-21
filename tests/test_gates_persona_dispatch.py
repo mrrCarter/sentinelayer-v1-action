@@ -213,10 +213,9 @@ class DispatchPersonasTests(unittest.TestCase):
             dry_run=True,
             per_persona_max_files=5,
         )
-        captured_files: list[list[str]] = []
-        original = __import__("omargate.gates.persona_dispatch", fromlist=["_spawn_persona_cli"])
-        # Since dry_run, _spawn_persona_cli isn't called — but the cap is
-        # applied before the spawn, so we assert via a non-dry-run call instead.
+        # dry_run skips the spawn, so assert the bucket build still ran and
+        # the cap didn't blow up with 100 files; argv-level cap enforcement
+        # is covered by SpawnPersonaCliArgsTests.
         result = dispatch_personas(findings, ownership, config)
         self.assertEqual(result.personas_invoked, ["backend"])
 

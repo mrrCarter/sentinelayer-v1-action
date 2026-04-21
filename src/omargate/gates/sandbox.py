@@ -23,13 +23,11 @@ Violation reporting:
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
 
 from .static import _scrubbed_env  # reuse the env hardening from static gate
 

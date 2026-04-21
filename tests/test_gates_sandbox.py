@@ -9,9 +9,7 @@ from unittest.mock import patch
 
 from omargate.gates.sandbox import (
     SandboxConfig,
-    SandboxResult,
     SandboxUnavailable,
-    Violation,
     _build_sbpl_profile,
     _parse_violations,
     _wrap_bwrap,

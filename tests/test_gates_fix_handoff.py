@@ -7,7 +7,6 @@ import unittest
 from omargate.gates.findings import Finding
 from omargate.gates.fix_handoff import (
     DEFAULT_PER_BUILD_FIX_LIMIT,
-    FixCommand,
     build_fix_plan,
     compose_followup_pr_body,
     parse_fix_command,
