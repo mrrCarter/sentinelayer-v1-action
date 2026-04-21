@@ -24,7 +24,6 @@ strict=True so jailbroken LLM output can't exfiltrate or clobber the host.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -64,6 +63,7 @@ KNOWN_PERSONAS = frozenset(
 DEFAULT_BLOCKING_SEVERITIES: tuple[Severity, ...] = ("P0", "P1")
 DEFAULT_PER_PERSONA_MAX_FILES = 50
 DEFAULT_TIMEOUT_S = 300
+DEFAULT_PERSONA_MODE = "audit"
 
 
 @dataclass(frozen=True)
@@ -78,6 +78,11 @@ class PersonaDispatchConfig:
     timeout_s: int = DEFAULT_TIMEOUT_S
     strict_sandbox: bool = False             # reserved for #A5 integration
     dry_run: bool = False                    # skip the subprocess call
+    mode: str = DEFAULT_PERSONA_MODE         # "audit" or "codegen" — passed to
+                                             # create-sentinelayer persona run
+                                             # via --mode. Audit is the default
+                                             # for baseline review; codegen is
+                                             # the /omar fix path (#A26).
 
 
 @dataclass
@@ -179,16 +184,23 @@ def _spawn_persona_cli(
     persona: str,
     files: list[str],
 ) -> tuple[int, str, str]:
+    # create-sentinelayer exposes the persona dispatch as a named subcommand
+    # (`persona run <id>`) rather than a slash-prefixed alias. See #399 for
+    # the CLI shape; the mode flag selects between audit (read-only findings)
+    # and codegen (attaches allowed-tools + prompt suffix plan).
     args = [
         str(config.cli_path),
-        "/persona",
+        "persona",
+        "run",
         persona,
+        "--mode",
+        str(config.mode or DEFAULT_PERSONA_MODE),
         "--path",
         str(config.repo_root),
-        "--files",
-        ",".join(files),
-        "--json",
     ]
+    if files:
+        args.extend(["--files", ",".join(files)])
+    args.append("--json")
     try:
         proc = subprocess.run(
             args,

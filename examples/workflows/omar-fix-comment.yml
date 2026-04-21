@@ -9,11 +9,14 @@
 #   2. Invokes `omargate.fix_handoff_cli` to parse the command, check the
 #      per-build rate limit, resolve the target finding, and emit a
 #      persona-codegen dispatch plan.
-#   3. Spawns `create-sentinelayer /persona <id> --mode codegen` with the
-#      plan's file list and prompt context (real implementation left as a
-#      TODO — wire up once create-sentinelayer's codegen mode is published).
-#   4. Opens a follow-up PR with the persona's diff, using the body from
-#      `compose_followup_pr_body`.
+#   3. Spawns `create-sentinelayer persona run <id> --mode codegen` with the
+#      plan's file list. The codegen subcommand returns the deterministic
+#      baseline findings plus a mode_config envelope (allowed-tools +
+#      prompt suffix) that downstream LLM orchestration consumes.
+#   4. Cuts a follow-up branch, persists the plan envelope as a commit
+#      artifact, and opens a draft PR using `followup_pr_body`. The branch
+#      is the handoff point: a downstream LLM-authoring job (with API keys
+#      and `write` permission) consumes the envelope and pushes the diff.
 #
 # Security posture: only users with `write` or `admin` permission on the
 # repo can trigger the fix handoff. Deny-by-default for everyone else.
@@ -128,7 +131,7 @@ jobs:
                   : '',
               '',
               plan.plan
-                ? `_Codegen spawn + follow-up PR step is repo-specific — see the TODO in this workflow._`
+                ? `_Opening follow-up branch \`${plan.plan.branch_name}\`; codegen envelope will follow._`
                 : '_No-op._',
             ].filter(Boolean);
             await github.rest.issues.createComment({
@@ -138,9 +141,77 @@ jobs:
               body: lines.join('\n'),
             });
 
-      # TODO: Spawn create-sentinelayer in codegen mode with the plan's
-      # files and prompt_context; commit the diff on plan.branch_name;
-      # open a follow-up PR with plan.followup_pr_body. Left for the
-      # next PR because create-sentinelayer's codegen CLI is still behind
-      # the #A27 persona-mode selector that hasn't been wired into
-      # runtime dispatch yet.
+      - name: Setup Node (for create-sentinelayer CLI)
+        if: steps.plan.outputs.plan_file
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Spawn codegen envelope via create-sentinelayer
+        if: steps.plan.outputs.plan_file
+        id: codegen
+        shell: bash
+        env:
+          PLAN_FILE: ${{ steps.plan.outputs.plan_file }}
+        run: |
+          set -euo pipefail
+          accepted="$(python -c 'import json,os,sys; sys.exit(0 if json.load(open(os.environ["PLAN_FILE"])).get("plan") else 1)')" || {
+            echo "::notice::No plan emitted — skipping codegen spawn."
+            echo "skipped=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          persona="$(python -c 'import json,os; print(json.load(open(os.environ["PLAN_FILE"]))["plan"]["persona"])')"
+          files_csv="$(python -c 'import json,os; print(",".join(json.load(open(os.environ["PLAN_FILE"]))["plan"]["files"]))')"
+          branch="$(python -c 'import json,os; print(json.load(open(os.environ["PLAN_FILE"]))["plan"]["branch_name"])')"
+          echo "persona=${persona}" >> "$GITHUB_OUTPUT"
+          echo "files_csv=${files_csv}" >> "$GITHUB_OUTPUT"
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+          # Envelope = findings array + mode_config (allowedTools, promptSuffix)
+          # the LLM edit loop consumes. Writing to .omargate/ so it ships
+          # with the follow-up branch for the downstream authoring job.
+          mkdir -p "${GITHUB_WORKSPACE}/.omargate"
+          if [ -n "${files_csv}" ]; then
+            npx --yes create-sentinelayer persona run "${persona}" \
+              --mode codegen \
+              --path "${GITHUB_WORKSPACE}" \
+              --files "${files_csv}" \
+              --json > "${GITHUB_WORKSPACE}/.omargate/codegen-envelope.json"
+          else
+            npx --yes create-sentinelayer persona run "${persona}" \
+              --mode codegen \
+              --path "${GITHUB_WORKSPACE}" \
+              --json > "${GITHUB_WORKSPACE}/.omargate/codegen-envelope.json"
+          fi
+          echo "envelope=${GITHUB_WORKSPACE}/.omargate/codegen-envelope.json" >> "$GITHUB_OUTPUT"
+          echo "skipped=0" >> "$GITHUB_OUTPUT"
+
+      - name: Cut follow-up branch and open draft PR
+        if: steps.codegen.outputs.skipped == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN_FILE: ${{ steps.plan.outputs.plan_file }}
+          BRANCH: ${{ steps.codegen.outputs.branch }}
+          PERSONA: ${{ steps.codegen.outputs.persona }}
+          ENVELOPE: ${{ steps.codegen.outputs.envelope }}
+          SOURCE_PR: ${{ github.event.issue.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "omar-gate-bot"
+          git config user.email "omar-gate-bot@users.noreply.github.com"
+          git switch -c "${BRANCH}"
+          # The envelope commit is the handoff point. A downstream job
+          # (with API creds) consumes .omargate/codegen-envelope.json,
+          # drives the LLM edit loop under the envelope's allowedTools,
+          # and pushes the diff onto this same branch. The draft PR is
+          # opened here so the edit loop has a target to push into.
+          git add .omargate/codegen-envelope.json
+          git commit -m "omar fix: codegen envelope for ${PERSONA} (${BRANCH})"
+          git push -u origin "${BRANCH}"
+          python -c 'import json,os,sys; d=json.load(open(os.environ["PLAN_FILE"])); sys.stdout.write(d.get("followup_pr_body") or "")' > /tmp/omar-fix-body.md
+          gh pr create \
+            --draft \
+            --base "$(gh pr view "${SOURCE_PR}" --json baseRefName --jq '.baseRefName')" \
+            --head "${BRANCH}" \
+            --title "omar fix: ${PERSONA} handoff for PR #${SOURCE_PR}" \
+            --body-file /tmp/omar-fix-body.md

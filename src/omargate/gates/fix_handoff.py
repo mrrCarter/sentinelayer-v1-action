@@ -18,7 +18,7 @@ plan-building surface so it's fully unit-testable.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Sequence
 
 from .findings import Finding
