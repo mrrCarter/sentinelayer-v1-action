@@ -31,6 +31,11 @@ from .gates.persona_dispatch import (
 )
 from .gates.security import SecurityScanGate
 from .gates.static import StaticAnalysisGate
+from .scaffold import parse_scaffold_ownership
+
+# Kept as a module-level alias so existing test imports
+# (from omargate.local_gates import _parse_scaffold_ownership) keep working.
+_parse_scaffold_ownership = parse_scaffold_ownership
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -113,79 +118,6 @@ def _write_findings_jsonl(findings: list[Finding], path: Path) -> None:
         for row in serialize_findings(findings):
             f.write(json.dumps(row, separators=(",", ":")))
             f.write("\n")
-
-
-def _parse_scaffold_ownership(scaffold_path: Path) -> dict[str, str]:
-    """Read .sentinelayer/scaffold.yaml and produce a file -> persona map.
-
-    Minimal parser tuned to the documented schema (ownership_rules: list of
-    {pattern, persona}). Does not try to handle every YAML construct — we
-    trade a dependency on PyYAML for a focused ~40-line parser that matches
-    the create-sentinelayer buildOwnershipMap contract.
-
-    Returns {} if the file is missing, malformed, or empty — persona dispatch
-    is opt-in, so silently degrade to "no routing" when the map isn't present.
-    """
-    try:
-        text = scaffold_path.read_text(encoding="utf-8")
-    except OSError:
-        return {}
-
-    rules: list[tuple[str, str]] = []
-    in_rules = False
-    current_pattern: str | None = None
-    for raw in text.splitlines():
-        line = raw.rstrip()
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if stripped == "ownership_rules:":
-            in_rules = True
-            continue
-        if not in_rules:
-            continue
-        if not line.startswith(" ") and not line.startswith("-"):
-            # Back at a top-level key — stop consuming rules.
-            in_rules = False
-            continue
-        if stripped.startswith("- "):
-            current_pattern = None
-            remainder = stripped[2:].strip()
-            if remainder.startswith("pattern:"):
-                current_pattern = _unquote(remainder.split(":", 1)[1].strip())
-            continue
-        if stripped.startswith("pattern:"):
-            current_pattern = _unquote(stripped.split(":", 1)[1].strip())
-            continue
-        if stripped.startswith("persona:") and current_pattern:
-            persona = _unquote(stripped.split(":", 1)[1].strip())
-            if persona:
-                rules.append((current_pattern, persona))
-            current_pattern = None
-
-    # For scaffold.yaml's "last match wins" semantics, the caller gets one
-    # persona per file — but since we don't know the full file list here,
-    # we return a best-effort map keyed by pattern so dispatch_personas can
-    # resolve on demand. We downgrade to a simple literal-path map: only
-    # patterns without glob wildcards get added, because dispatch_personas
-    # expects file -> persona, not pattern -> persona.
-    literal_map: dict[str, str] = {}
-    for pattern, persona in rules:
-        if any(ch in pattern for ch in "*?[]"):
-            continue
-        literal_map[pattern.lstrip("./")] = persona
-    return literal_map
-
-
-def _unquote(value: str) -> str:
-    value = value.strip()
-    if (
-        len(value) >= 2
-        and value[0] == value[-1]
-        and value[0] in ("'", '"')
-    ):
-        return value[1:-1]
-    return value
 
 
 def _maybe_dispatch_personas(
