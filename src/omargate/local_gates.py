@@ -24,6 +24,11 @@ from typing import Iterable
 
 from .gates import GateContext, run_gates
 from .gates.findings import Finding, serialize_findings
+from .gates.persona_dispatch import (
+    PersonaDispatchConfig,
+    default_cli_path,
+    dispatch_personas,
+)
 from .gates.security import SecurityScanGate
 from .gates.static import StaticAnalysisGate
 
@@ -50,6 +55,39 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit a single-line JSON summary to stdout instead of human text.",
     )
+    parser.add_argument(
+        "--enable-persona-dispatch",
+        dest="enable_persona_dispatch",
+        action="store_true",
+        default=False,
+        help=(
+            "After base gates run, dispatch create-sentinelayer personas "
+            "via the CLI for each baseline P0/P1 finding (requires "
+            "create-sentinelayer on PATH and a .sentinelayer/scaffold.yaml "
+            "ownership map). Persona findings are merged into FINDINGS.jsonl "
+            "with gate_id=persona_dispatch. No-op when preconditions miss."
+        ),
+    )
+    parser.add_argument(
+        "--persona-cli-path",
+        dest="persona_cli_path",
+        default="",
+        help=(
+            "Optional explicit path to the create-sentinelayer binary used "
+            "by --enable-persona-dispatch. Defaults to whichever "
+            "create-sentinelayer / sentinelayer-cli is on PATH."
+        ),
+    )
+    parser.add_argument(
+        "--persona-dispatch-dry-run",
+        dest="persona_dispatch_dry_run",
+        action="store_true",
+        default=False,
+        help=(
+            "Run persona dispatch in planning mode — resolve buckets but do "
+            "not spawn the CLI. Useful for CI smoke tests."
+        ),
+    )
     return parser
 
 
@@ -75,6 +113,128 @@ def _write_findings_jsonl(findings: list[Finding], path: Path) -> None:
         for row in serialize_findings(findings):
             f.write(json.dumps(row, separators=(",", ":")))
             f.write("\n")
+
+
+def _parse_scaffold_ownership(scaffold_path: Path) -> dict[str, str]:
+    """Read .sentinelayer/scaffold.yaml and produce a file -> persona map.
+
+    Minimal parser tuned to the documented schema (ownership_rules: list of
+    {pattern, persona}). Does not try to handle every YAML construct — we
+    trade a dependency on PyYAML for a focused ~40-line parser that matches
+    the create-sentinelayer buildOwnershipMap contract.
+
+    Returns {} if the file is missing, malformed, or empty — persona dispatch
+    is opt-in, so silently degrade to "no routing" when the map isn't present.
+    """
+    try:
+        text = scaffold_path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+
+    rules: list[tuple[str, str]] = []
+    in_rules = False
+    current_pattern: str | None = None
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped == "ownership_rules:":
+            in_rules = True
+            continue
+        if not in_rules:
+            continue
+        if not line.startswith(" ") and not line.startswith("-"):
+            # Back at a top-level key — stop consuming rules.
+            in_rules = False
+            continue
+        if stripped.startswith("- "):
+            current_pattern = None
+            remainder = stripped[2:].strip()
+            if remainder.startswith("pattern:"):
+                current_pattern = _unquote(remainder.split(":", 1)[1].strip())
+            continue
+        if stripped.startswith("pattern:"):
+            current_pattern = _unquote(stripped.split(":", 1)[1].strip())
+            continue
+        if stripped.startswith("persona:") and current_pattern:
+            persona = _unquote(stripped.split(":", 1)[1].strip())
+            if persona:
+                rules.append((current_pattern, persona))
+            current_pattern = None
+
+    # For scaffold.yaml's "last match wins" semantics, the caller gets one
+    # persona per file — but since we don't know the full file list here,
+    # we return a best-effort map keyed by pattern so dispatch_personas can
+    # resolve on demand. We downgrade to a simple literal-path map: only
+    # patterns without glob wildcards get added, because dispatch_personas
+    # expects file -> persona, not pattern -> persona.
+    literal_map: dict[str, str] = {}
+    for pattern, persona in rules:
+        if any(ch in pattern for ch in "*?[]"):
+            continue
+        literal_map[pattern.lstrip("./")] = persona
+    return literal_map
+
+
+def _unquote(value: str) -> str:
+    value = value.strip()
+    if (
+        len(value) >= 2
+        and value[0] == value[-1]
+        and value[0] in ("'", '"')
+    ):
+        return value[1:-1]
+    return value
+
+
+def _maybe_dispatch_personas(
+    *,
+    baseline_findings: list[Finding],
+    repo_root: Path,
+    enable: bool,
+    cli_override: str,
+    dry_run: bool,
+) -> dict | None:
+    if not enable:
+        return None
+
+    scaffold_path = repo_root / ".sentinelayer" / "scaffold.yaml"
+    ownership_map = _parse_scaffold_ownership(scaffold_path)
+    if not ownership_map:
+        return {
+            "status": "skipped",
+            "reason": f"no ownership map at {scaffold_path}",
+            "persona_findings": [],
+        }
+
+    cli_path = default_cli_path(cli_override or None)
+    # If the binary isn't resolvable and we're not in dry-run, skip gracefully.
+    if not dry_run:
+        import shutil
+
+        if not shutil.which(str(cli_path)):
+            return {
+                "status": "skipped",
+                "reason": f"persona CLI not resolvable on PATH: {cli_path}",
+                "persona_findings": [],
+            }
+
+    config = PersonaDispatchConfig(
+        cli_path=cli_path,
+        repo_root=repo_root,
+        scaffold_path=scaffold_path,
+        dry_run=dry_run,
+    )
+    result = dispatch_personas(baseline_findings, ownership_map, config)
+    return {
+        "status": "completed" if not dry_run else "dry_run",
+        "reason": None,
+        "persona_findings": result.persona_findings,
+        "personas_invoked": result.personas_invoked,
+        "personas_failed": result.personas_failed,
+        "unrouted_files": result.unrouted_files,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -107,6 +267,17 @@ def main(argv: list[str] | None = None) -> int:
     results = run_gates(gates, ctx)
 
     all_findings = [f for result in results for f in result.findings]
+
+    dispatch_summary = _maybe_dispatch_personas(
+        baseline_findings=all_findings,
+        repo_root=repo_root,
+        enable=args.enable_persona_dispatch,
+        cli_override=args.persona_cli_path,
+        dry_run=args.persona_dispatch_dry_run,
+    )
+    if dispatch_summary is not None and dispatch_summary.get("persona_findings"):
+        all_findings.extend(dispatch_summary["persona_findings"])
+
     findings_path = output_dir / "FINDINGS.jsonl"
     try:
         _write_findings_jsonl(all_findings, findings_path)
@@ -129,6 +300,17 @@ def main(argv: list[str] | None = None) -> int:
             for r in results
         ],
     }
+    if dispatch_summary is not None:
+        summary["persona_dispatch"] = {
+            "status": dispatch_summary["status"],
+            "reason": dispatch_summary.get("reason"),
+            "personas_invoked": dispatch_summary.get("personas_invoked", []),
+            "personas_failed": dispatch_summary.get("personas_failed", []),
+            "unrouted_files": dispatch_summary.get("unrouted_files", []),
+            "persona_findings_count": len(
+                dispatch_summary.get("persona_findings", [])
+            ),
+        }
 
     blocking = any(_severity_blocks(f.severity, args.fail_severity) for f in all_findings)
     summary["blocking"] = blocking
