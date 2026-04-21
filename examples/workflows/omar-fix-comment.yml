@@ -1,0 +1,146 @@
+# Reference workflow: handle `/omar fix <finding_id>` PR comments (#A26).
+#
+# Drop this file into `.github/workflows/` of any repo that uses Omar Gate
+# to enable the audit-to-fix handoff. When a PR reviewer types
+# `/omar fix <finding_id>` on a pull request, this workflow:
+#
+#   1. Downloads the latest FINDINGS.jsonl artifact from the most recent
+#      Omar Gate run on the PR's head ref.
+#   2. Invokes `omargate.fix_handoff_cli` to parse the command, check the
+#      per-build rate limit, resolve the target finding, and emit a
+#      persona-codegen dispatch plan.
+#   3. Spawns `create-sentinelayer /persona <id> --mode codegen` with the
+#      plan's file list and prompt context (real implementation left as a
+#      TODO — wire up once create-sentinelayer's codegen mode is published).
+#   4. Opens a follow-up PR with the persona's diff, using the body from
+#      `compose_followup_pr_body`.
+#
+# Security posture: only users with `write` or `admin` permission on the
+# repo can trigger the fix handoff. Deny-by-default for everyone else.
+
+name: Omar Fix Handoff
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  parse_and_dispatch:
+    if: |
+      github.event.issue.pull_request != null
+        && contains(github.event.comment.body, '/omar fix')
+        && (
+          github.event.comment.author_association == 'OWNER'
+            || github.event.comment.author_association == 'MEMBER'
+            || github.event.comment.author_association == 'COLLABORATOR'
+        )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.issue.number }}/merge
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Omar Gate runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Adjust this to match your org's install pattern (private registry,
+          # git submodule, etc). The reference assumes the runner is already
+          # vendored into the repo at .omar-gate-action or similar.
+          test -d "${GITHUB_WORKSPACE}/.omar-gate-action" || \
+            gh repo clone mrrCarter/sentinelayer-v1-action .omar-gate-action -- --depth 1
+
+      - name: Download latest FINDINGS.jsonl
+        id: findings
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${GITHUB_WORKSPACE}/.omargate/latest"
+          # Find the most recent Omar Gate run on the PR's head SHA.
+          pr_head_sha="$(gh pr view "${{ github.event.issue.number }}" --json headRefOid --jq '.headRefOid')"
+          run_id="$(
+            gh run list --workflow 'Omar Gate' --limit 20 --json databaseId,headSha,status,conclusion \
+              --jq "[.[] | select(.headSha == \"${pr_head_sha}\" and .status == \"completed\")][0].databaseId"
+          )"
+          if [ -z "${run_id}" ] || [ "${run_id}" = "null" ]; then
+            echo "::warning::No completed Omar Gate run found for head SHA ${pr_head_sha}; skipping handoff."
+            echo "skipped=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh run download "${run_id}" -n omar-gate-findings -D "${GITHUB_WORKSPACE}/.omargate/latest" || {
+            echo "::warning::FINDINGS.jsonl artifact not available on run ${run_id}; skipping handoff."
+            echo "skipped=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          echo "skipped=0" >> "$GITHUB_OUTPUT"
+
+      - name: Parse command and build plan
+        if: steps.findings.outputs.skipped == '0'
+        id: plan
+        shell: bash
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          echo "${COMMENT_BODY}" > /tmp/omar-fix-comment.md
+          PYTHONPATH="${GITHUB_WORKSPACE}/.omar-gate-action/src" python -m omargate.fix_handoff_cli \
+            --path "${GITHUB_WORKSPACE}" \
+            --findings-file "${GITHUB_WORKSPACE}/.omargate/latest/FINDINGS.jsonl" \
+            --comment-body-file /tmp/omar-fix-comment.md \
+            > /tmp/omar-fix-plan.json
+          echo "plan_file=/tmp/omar-fix-plan.json" >> "$GITHUB_OUTPUT"
+          cat /tmp/omar-fix-plan.json | python -m json.tool
+
+      - name: Acknowledge on PR (decision)
+        if: steps.plan.outputs.plan_file
+        uses: actions/github-script@v7
+        env:
+          PLAN_FILE: ${{ steps.plan.outputs.plan_file }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = JSON.parse(fs.readFileSync(process.env.PLAN_FILE, 'utf-8'));
+            if (!plan.command) return;
+            const lines = [
+              `**Omar fix handoff** for \`${plan.command.finding_id}\``,
+              '',
+              plan.decision
+                ? `- **Decision:** ${plan.decision.accepted ? 'accepted' : 'declined'} — ${plan.decision.reason}`
+                : '',
+              plan.plan
+                ? `- **Plan:** persona \`${plan.plan.persona}\` against \`${(plan.plan.files || []).join(', ')}\``
+                : plan.error
+                  ? `- **Error:** ${plan.error}`
+                  : '',
+              '',
+              plan.plan
+                ? `_Codegen spawn + follow-up PR step is repo-specific — see the TODO in this workflow._`
+                : '_No-op._',
+            ].filter(Boolean);
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number(process.env.PR_NUMBER),
+              body: lines.join('\n'),
+            });
+
+      # TODO: Spawn create-sentinelayer in codegen mode with the plan's
+      # files and prompt_context; commit the diff on plan.branch_name;
+      # open a follow-up PR with plan.followup_pr_body. Left for the
+      # next PR because create-sentinelayer's codegen CLI is still behind
+      # the #A27 persona-mode selector that hasn't been wired into
+      # runtime dispatch yet.
