@@ -107,9 +107,9 @@ inputs:
     required: false
     default: ''
   local_gates_enabled:
-    description: 'When true, run the action-local Omar Gate 2.0 gate runner (static + security) before the backend bridge. Writes FINDINGS.jsonl to local_gates_output_dir.'
+    description: 'When true, run the action-local Omar Gate 2.0 gate runner (static + security) before the backend bridge. Writes FINDINGS.jsonl to local_gates_output_dir. Defaults to true — set to "false" explicitly if you want the legacy backend-only flow.'
     required: false
-    default: 'false'
+    default: 'true'
   local_gates_output_dir:
     description: 'Directory for FINDINGS.jsonl emitted by the local gate runner (when local_gates_enabled=true)'
     required: false
