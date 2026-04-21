@@ -221,6 +221,74 @@ class DispatchPersonasTests(unittest.TestCase):
         self.assertEqual(result.personas_invoked, ["backend"])
 
 
+class SpawnPersonaCliArgsTests(unittest.TestCase):
+    """Assert the argv shape passed to subprocess matches the new CLI (#A27)."""
+
+    def test_spawn_uses_persona_run_subcommand_and_mode(self) -> None:
+        from omargate.gates.persona_dispatch import _spawn_persona_cli
+
+        captured: dict[str, object] = {}
+
+        class _FakeProc:
+            returncode = 0
+            stdout = '{"findings": []}'
+            stderr = ""
+
+        def _fake_run(args, **kwargs):  # noqa: ANN001 — matches subprocess.run signature
+            captured["args"] = list(args)
+            return _FakeProc()
+
+        with patch("omargate.gates.persona_dispatch.subprocess.run", _fake_run):
+            config = PersonaDispatchConfig(
+                cli_path=Path("create-sentinelayer"),
+                repo_root=Path("/tmp/repo"),
+                mode="codegen",
+            )
+            _spawn_persona_cli(config, "security", ["app/a.ts", "app/b.ts"])
+
+        args = captured["args"]
+        assert isinstance(args, list)
+        self.assertEqual(args[:4], [
+            "create-sentinelayer",
+            "persona",
+            "run",
+            "security",
+        ])
+        self.assertIn("--mode", args)
+        self.assertEqual(args[args.index("--mode") + 1], "codegen")
+        self.assertIn("--files", args)
+        self.assertEqual(args[args.index("--files") + 1], "app/a.ts,app/b.ts")
+        self.assertEqual(args[-1], "--json")
+
+    def test_spawn_omits_files_flag_when_empty(self) -> None:
+        from omargate.gates.persona_dispatch import _spawn_persona_cli
+
+        captured: dict[str, object] = {}
+
+        class _FakeProc:
+            returncode = 0
+            stdout = '{"findings": []}'
+            stderr = ""
+
+        def _fake_run(args, **kwargs):  # noqa: ANN001
+            captured["args"] = list(args)
+            return _FakeProc()
+
+        with patch("omargate.gates.persona_dispatch.subprocess.run", _fake_run):
+            config = PersonaDispatchConfig(
+                cli_path=Path("create-sentinelayer"),
+                repo_root=Path("/tmp/repo"),
+            )
+            _spawn_persona_cli(config, "backend", [])
+
+        args = captured["args"]
+        assert isinstance(args, list)
+        self.assertNotIn("--files", args)
+        self.assertIn("--mode", args)
+        self.assertEqual(args[args.index("--mode") + 1], "audit")
+        self.assertEqual(args[-1], "--json")
+
+
 class DefaultCliPathTests(unittest.TestCase):
     def test_override_wins(self) -> None:
         self.assertEqual(default_cli_path("/opt/custom/sentinelayer"), Path("/opt/custom/sentinelayer"))
