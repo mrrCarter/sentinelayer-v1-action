@@ -52,70 +52,7 @@ from .gates.fix_handoff import (
     parse_fix_command,
     should_accept_fix,
 )
-
-
-def _parse_scaffold_ownership(scaffold_path: Path) -> dict[str, str]:
-    """Minimal parser for .sentinelayer/scaffold.yaml ownership_rules.
-
-    Returns {file -> persona} for literal (non-glob) rules. See
-    local_gates.py for the authoritative copy; this duplicate exists to
-    keep fix_handoff_cli.py importable on main while the persona-dispatch
-    wiring PR (feat/wire-persona-dispatch-into-action) is still open.
-    A follow-up PR will consolidate into a shared helper.
-    """
-    try:
-        text = scaffold_path.read_text(encoding="utf-8")
-    except OSError:
-        return {}
-
-    rules: list[tuple[str, str]] = []
-    in_rules = False
-    current_pattern: str | None = None
-    for raw in text.splitlines():
-        line = raw.rstrip()
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if stripped == "ownership_rules:":
-            in_rules = True
-            continue
-        if not in_rules:
-            continue
-        if not line.startswith(" ") and not line.startswith("-"):
-            in_rules = False
-            continue
-        if stripped.startswith("- "):
-            current_pattern = None
-            remainder = stripped[2:].strip()
-            if remainder.startswith("pattern:"):
-                current_pattern = _unquote(remainder.split(":", 1)[1].strip())
-            continue
-        if stripped.startswith("pattern:"):
-            current_pattern = _unquote(stripped.split(":", 1)[1].strip())
-            continue
-        if stripped.startswith("persona:") and current_pattern:
-            persona = _unquote(stripped.split(":", 1)[1].strip())
-            if persona:
-                rules.append((current_pattern, persona))
-            current_pattern = None
-
-    literal_map: dict[str, str] = {}
-    for pattern, persona in rules:
-        if any(ch in pattern for ch in "*?[]"):
-            continue
-        literal_map[pattern.lstrip("./")] = persona
-    return literal_map
-
-
-def _unquote(value: str) -> str:
-    value = value.strip()
-    if (
-        len(value) >= 2
-        and value[0] == value[-1]
-        and value[0] in ("'", '"')
-    ):
-        return value[1:-1]
-    return value
+from .scaffold import parse_scaffold_ownership as _parse_scaffold_ownership
 
 
 def _build_parser() -> argparse.ArgumentParser:
