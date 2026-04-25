@@ -145,10 +145,36 @@ def _normalize_sbom_mode(value: str | None) -> str:
 
 
 def _normalize_spec_sources(values: list[str]) -> list[str]:
+    """Normalize spec-source path strings, dropping any that fail safety checks.
+
+    Hostile input classes rejected (per path_safety._validate_chars / _validate_prefix):
+    null bytes, ASCII control chars 0x00-0x1F + 0x7F, BiDi override codepoints
+    U+202A-202E + U+2066-2069, double-encoded percent, UNC `\\\\host\\share`
+    prefixes, tilde variants (`~user`/`~+`/`~-`), shell-expansion (`$`/`%`/leading `=`),
+    and bare Windows drive roots (`C:\\`).
+
+    Rejected items are silently dropped; legitimate spec sources keep loading.
+    """
+    from .path_safety import (
+        _validate_chars,
+        _validate_double_encoded,
+        _validate_prefix,
+        PathSafetyError,
+    )
+
     normalized: list[str] = []
     seen: set[str] = set()
     for value in values:
-        candidate = str(value or "").replace("\\", "/").strip()
+        raw = str(value or "")
+        if not raw.strip():
+            continue
+        try:
+            _validate_chars(raw)
+            _validate_double_encoded(raw)
+            _validate_prefix(raw)
+        except PathSafetyError:
+            continue
+        candidate = raw.replace("\\", "/").strip()
         if not candidate:
             continue
         lowered = candidate.lower()
