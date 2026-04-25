@@ -24,6 +24,7 @@ from typing import Iterable
 
 from .gates import GateContext, run_gates
 from .gates.findings import Finding, serialize_findings
+from .path_safety import validate_repo_path
 from .gates.persona_dispatch import (
     PersonaDispatchConfig,
     default_cli_path,
@@ -176,9 +177,15 @@ def main(argv: list[str] | None = None) -> int:
         # argparse calls sys.exit on --help / bad input. Preserve that code.
         return int(exc.code or 2)
 
-    repo_root = Path(args.path).resolve()
-    if not repo_root.is_dir():
-        print(f"error: --path does not exist or is not a directory: {repo_root}", file=sys.stderr)
+    # Validate --path through the hardening module: rejects null bytes, control
+    # chars, BiDi overrides, double-encoded percent, UNC, tilde/$/%/= prefixes,
+    # and Windows drive roots BEFORE the path becomes a Path() that scanners walk.
+    repo_root = validate_repo_path(args.path)
+    if repo_root is None:
+        print(
+            f"error: --path failed safety validation or is not a directory: {args.path!r}",
+            file=sys.stderr,
+        )
         return 2
 
     output_dir = Path(args.output_dir)
