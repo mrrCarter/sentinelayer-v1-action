@@ -126,6 +126,85 @@ class ParsePolicyTests(unittest.TestCase):
         self.assertEqual(p.raw["future_knob"], "enabled")
 
 
+class ThreeStateBehaviorTests(unittest.TestCase):
+    """3-state allow/deny/ask DSL lifted from src/utils/permissions/PermissionRule.ts.
+
+    Covers (a) default = "deny" preserves prior block-on-finding semantic,
+    (b) explicit `behavior` field wins, (c) legacy `hard: bool` is converted
+    for back-compat, (d) garbage values fall back to default, (e) ForbidPattern
+    parses behavior too.
+    """
+
+    def test_gate_toggle_default_behavior_is_deny(self) -> None:
+        self.assertEqual(DEFAULT_POLICY.gates.security.behavior, "deny")
+        self.assertEqual(DEFAULT_POLICY.gates.static_analysis.behavior, "deny")
+        # llm_judge is non-blocking by default → "allow" not "deny"
+        self.assertEqual(DEFAULT_POLICY.gates.llm_judge.behavior, "allow")
+
+    def test_explicit_behavior_overrides_hard(self) -> None:
+        # behavior=ask trumps hard=true
+        p = parse_policy({
+            "gates": [{"id": "security", "enabled": True, "hard": True, "behavior": "ask"}],
+        })
+        self.assertEqual(p.gates.security.behavior, "ask")
+        # hard derived to be False since ask is non-blocking
+        self.assertFalse(p.gates.security.hard)
+
+    def test_explicit_behavior_deny_keeps_hard_true(self) -> None:
+        p = parse_policy({
+            "gates": [{"id": "security", "enabled": True, "behavior": "deny"}],
+        })
+        self.assertEqual(p.gates.security.behavior, "deny")
+        self.assertTrue(p.gates.security.hard)
+
+    def test_back_compat_hard_true_means_deny(self) -> None:
+        # No `behavior` field → fall back to legacy hard=true semantic
+        p = parse_policy({
+            "gates": [{"id": "ownership", "enabled": True, "hard": True}],
+        })
+        self.assertEqual(p.gates.ownership.behavior, "deny")
+        self.assertTrue(p.gates.ownership.hard)
+
+    def test_back_compat_hard_false_means_allow(self) -> None:
+        p = parse_policy({
+            "gates": [{"id": "llm_judge", "enabled": True, "hard": False}],
+        })
+        self.assertEqual(p.gates.llm_judge.behavior, "allow")
+        self.assertFalse(p.gates.llm_judge.hard)
+
+    def test_invalid_behavior_value_falls_back_to_default(self) -> None:
+        # Garbage behavior string → default for that gate (security defaults to "deny")
+        p = parse_policy({
+            "gates": [{"id": "security", "enabled": True, "behavior": "totally-invalid"}],
+        })
+        self.assertEqual(p.gates.security.behavior, "deny")
+
+    def test_behavior_case_insensitive(self) -> None:
+        p = parse_policy({
+            "gates": [{"id": "security", "behavior": "  ASK  "}],
+        })
+        self.assertEqual(p.gates.security.behavior, "ask")
+
+    def test_forbid_pattern_default_behavior_is_deny(self) -> None:
+        p = parse_policy({
+            "policy": {"forbid_patterns": [{"pattern": "TODO", "severity": "P3"}]},
+        })
+        self.assertEqual(p.forbid_patterns[0].behavior, "deny")
+
+    def test_forbid_pattern_ask_behavior_parses(self) -> None:
+        # "annotate test fixture matches but don't block the gate"
+        p = parse_policy({
+            "policy": {
+                "forbid_patterns": [
+                    {"pattern": "TODO", "severity": "P3", "in": "*.test.ts", "behavior": "ask"},
+                    {"pattern": "console\\.log", "severity": "P2", "behavior": "deny"},
+                ],
+            },
+        })
+        self.assertEqual(p.forbid_patterns[0].behavior, "ask")
+        self.assertEqual(p.forbid_patterns[1].behavior, "deny")
+
+
 class LoadPolicyJsonTests(unittest.TestCase):
     def test_load_json_file(self) -> None:
         policy_dict = {

@@ -244,9 +244,16 @@ def main(argv: list[str] | None = None) -> int:
             ),
         }
 
-    blocking = any(_severity_blocks(f.severity, args.fail_severity) for f in all_findings)
+    # 3-state DSL: findings tagged decision="ask" are annotated but never block.
+    # decision="allow" or None falls through to severity-based blocking.
+    blocking = any(
+        f.decision != "ask" and _severity_blocks(f.severity, args.fail_severity)
+        for f in all_findings
+    )
+    ask_count = sum(1 for f in all_findings if f.decision == "ask")
     summary["blocking"] = blocking
     summary["fail_severity"] = args.fail_severity
+    summary["ask_count"] = ask_count
 
     if args.json_summary:
         print(json.dumps(summary, separators=(",", ":")))
