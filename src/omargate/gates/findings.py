@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 Severity = Literal["P0", "P1", "P2", "P3"]
+Decision = Literal["allow", "deny", "ask"]
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,13 @@ class Finding:
 
     gate_id / tool are required provenance fields so findings can be
     deduplicated and re-attributed across gate layers.
+
+    decision: 3-state policy outcome lifted from the GateToggle.behavior /
+    ForbidPattern.behavior fields. None means "use severity-based blocking"
+    (the legacy default — equivalent to "deny" for severities in the
+    block-list). "ask" means the finding is annotated to the PR but does NOT
+    contribute to gate-blocking, regardless of severity. "allow" is reserved
+    for soft-mode warnings.
     """
 
     gate_id: str           # "static", "security", "policy", "llm_judge", etc.
@@ -34,6 +42,7 @@ class Finding:
     confidence: float = 1.0          # 0.0-1.0; LLM-judge uses >= 0.8 floor
     recommended_fix: str | None = None
     evidence: str | None = None      # code excerpt at file:line
+    decision: Decision | None = None
 
 
 def serialize_findings(findings: list[Finding]) -> list[dict[str, Any]]:
@@ -51,6 +60,7 @@ def serialize_findings(findings: list[Finding]) -> list[dict[str, Any]]:
             "confidence": f.confidence,
             "recommendedFix": f.recommended_fix,
             "evidence": f.evidence,
+            "decision": f.decision,
         }
         for f in findings
     ]

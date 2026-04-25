@@ -30,12 +30,13 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 __all__ = [
     "GateToggle",
     "GateTogglesConfig",
     "ForbidPattern",
+    "PermissionBehavior",
     "PolicyConfig",
     "DEFAULT_POLICY",
     "PolicyLoadError",
@@ -43,6 +44,14 @@ __all__ = [
     "load_policy",
     "parse_policy",
 ]
+
+PermissionBehavior = Literal["allow", "deny", "ask"]
+"""3-state policy decision: allow (warn-or-pass), deny (block merge), ask (annotate but non-blocking).
+
+Lifted from src/utils/permissions/PermissionRule.ts allow/deny/ask semantics.
+"ask" lets policy authors say "annotate test fixture files but don't block the gate"
+without disabling the rule entirely.
+"""
 
 SCHEMA_VERSION = 1
 
@@ -53,10 +62,21 @@ class PolicyLoadError(Exception):
 
 @dataclass(frozen=True)
 class GateToggle:
-    """Per-gate enable/disable flag + optional config bag."""
+    """Per-gate enable/disable flag + 3-state behavior + optional config bag.
+
+    behavior: 3-state allow/deny/ask. Default "deny" preserves the original
+    pre-2026-04 semantic where every enabled gate blocked merge on findings.
+
+    hard: DEPRECATED — kept for back-compat with policy.yaml files that predate
+    the `behavior` field. Resolved via `_coerce_toggle_behavior` at parse time:
+    explicit `behavior` wins; else `hard=True` → "deny", `hard=False` → "allow".
+    The two fields are kept in sync after parsing so downstream code that still
+    reads `.hard` remains correct.
+    """
 
     enabled: bool = True
-    hard: bool = True  # Whether this gate blocks merge on findings
+    hard: bool = True
+    behavior: PermissionBehavior = "deny"
     config: dict[str, Any] = field(default_factory=dict)
 
 
@@ -64,23 +84,42 @@ class GateToggle:
 class GateTogglesConfig:
     """Toggles for the 7 Omar Gate layers."""
 
-    ownership: GateToggle = field(default_factory=lambda: GateToggle(enabled=False, hard=True))
-    locks: GateToggle = field(default_factory=lambda: GateToggle(enabled=False, hard=True))
-    static_analysis: GateToggle = field(default_factory=lambda: GateToggle(enabled=True, hard=True))
-    security: GateToggle = field(default_factory=lambda: GateToggle(enabled=True, hard=True))
-    policy: GateToggle = field(default_factory=lambda: GateToggle(enabled=False, hard=True))
-    scoped_tests: GateToggle = field(default_factory=lambda: GateToggle(enabled=False, hard=True))
-    llm_judge: GateToggle = field(default_factory=lambda: GateToggle(enabled=False, hard=False))
+    ownership: GateToggle = field(
+        default_factory=lambda: GateToggle(enabled=False, hard=True, behavior="deny")
+    )
+    locks: GateToggle = field(
+        default_factory=lambda: GateToggle(enabled=False, hard=True, behavior="deny")
+    )
+    static_analysis: GateToggle = field(
+        default_factory=lambda: GateToggle(enabled=True, hard=True, behavior="deny")
+    )
+    security: GateToggle = field(
+        default_factory=lambda: GateToggle(enabled=True, hard=True, behavior="deny")
+    )
+    policy: GateToggle = field(
+        default_factory=lambda: GateToggle(enabled=False, hard=True, behavior="deny")
+    )
+    scoped_tests: GateToggle = field(
+        default_factory=lambda: GateToggle(enabled=False, hard=True, behavior="deny")
+    )
+    llm_judge: GateToggle = field(
+        default_factory=lambda: GateToggle(enabled=False, hard=False, behavior="allow")
+    )
 
 
 @dataclass(frozen=True)
 class ForbidPattern:
-    """A single forbid-pattern row for the policy-check layer."""
+    """A single forbid-pattern row for the policy-check layer.
+
+    behavior: 3-state allow/deny/ask. Default "deny" preserves prior
+    block-on-match semantic; "ask" emits a non-blocking annotation.
+    """
 
     pattern: str
     severity: str = "P2"
     message: str = ""
     in_glob: str | None = None  # Optional file-glob filter (e.g. "*.ts")
+    behavior: PermissionBehavior = "deny"
 
 
 @dataclass(frozen=True)
@@ -104,12 +143,49 @@ DEFAULT_POLICY = PolicyConfig()
 # ---------- parsers ----------
 
 
+def _coerce_behavior(value: Any, fallback: PermissionBehavior) -> PermissionBehavior:
+    """Normalize a `behavior` field to the 3-state literal, falling back on garbage input.
+
+    Accepts str (any case, with whitespace). Anything else / unknown values fall
+    back to the caller's default — keeps loading lenient per SCHEMA_VERSION 1's
+    "preserve-unknown" stance.
+    """
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("allow", "deny", "ask"):
+            return v  # type: ignore[return-value]
+    return fallback
+
+
+def _resolve_toggle_behavior(
+    raw: dict[str, Any], default: GateToggle
+) -> tuple[bool, PermissionBehavior]:
+    """Compute (hard, behavior) from raw policy with back-compat precedence.
+
+    Precedence:
+        1. explicit `behavior` field wins (and `hard` is derived to stay in sync)
+        2. else legacy `hard: bool` is converted (True→deny, False→allow)
+        3. else fall back to the gate's default
+    """
+    behavior_raw = raw.get("behavior")
+    hard_raw = raw.get("hard")
+    if behavior_raw is not None:
+        behavior = _coerce_behavior(behavior_raw, default.behavior)
+        return (behavior == "deny", behavior)
+    if hard_raw is not None:
+        hard = bool(hard_raw)
+        return (hard, "deny" if hard else "allow")
+    return (default.hard, default.behavior)
+
+
 def _parse_gate_toggle(raw: Any, default: GateToggle) -> GateToggle:
     if not isinstance(raw, dict):
         return default
+    hard, behavior = _resolve_toggle_behavior(raw, default)
     return GateToggle(
         enabled=bool(raw.get("enabled", default.enabled)),
-        hard=bool(raw.get("hard", default.hard)),
+        hard=hard,
+        behavior=behavior,
         config=dict(raw.get("config") or {}),
     )
 
@@ -157,6 +233,7 @@ def _parse_forbid_patterns(raw: Any) -> tuple[ForbidPattern, ...]:
                 severity=str(entry.get("severity", "P2") or "P2").upper(),
                 message=str(entry.get("message", "") or ""),
                 in_glob=str(entry["in"]).strip() if entry.get("in") else None,
+                behavior=_coerce_behavior(entry.get("behavior"), "deny"),
             )
         )
     return tuple(out)
