@@ -12,6 +12,8 @@ from omargate.main import (
     _detect_pr_number,
     _execute_playwright_gate,
     _execute_sbom_gate,
+    _normalize_llm_failure_policy,
+    _normalize_model_id,
     _normalize_playwright_mode,
     _normalize_sbom_mode,
     _normalize_spec_binding_mode,
@@ -32,6 +34,7 @@ def _bridge_config(
     sbom_bootstrap: bool = True,
     sbom_baseline_command: str = "",
     sbom_audit_command: str = "",
+    wait_for_completion: bool = True,
 ) -> BridgeConfig:
     event_path = tmp_path / "event.json"
     event_path.write_text('{"pull_request":{"number":42}}', encoding="utf-8")
@@ -44,13 +47,20 @@ def _bridge_config(
         event_name="pull_request",
         scan_mode="deep",
         severity_gate="P1",
+        sentinelayer_managed_llm=True,
+        model="gpt-5.3-codex",
+        model_fallback="gpt-4.1-mini",
+        use_codex=True,
+        codex_only=False,
+        codex_model="gpt-5.3-codex",
+        llm_failure_policy="block",
         command_override="",
         provider_installation_id=None,
         spec_hash=None,
         spec_id=None,
         spec_binding_mode="none",
         spec_sources=[],
-        wait_for_completion=True,
+        wait_for_completion=wait_for_completion,
         wait_timeout_seconds=900,
         wait_poll_seconds=10,
         pr_number_override=42,
@@ -129,6 +139,13 @@ def test_normalize_sbom_mode() -> None:
     assert _normalize_sbom_mode("full-depth") == "audit"
     assert _normalize_sbom_mode("off") == "off"
     assert _normalize_sbom_mode("invalid") == "off"
+
+
+def test_normalize_model_policy_inputs() -> None:
+    assert _normalize_model_id("gpt-5.3-codex", default="fallback") == "gpt-5.3-codex"
+    assert _normalize_model_id("bad model; rm -rf /", default="fallback") == "fallback"
+    assert _normalize_llm_failure_policy("warn") == "warn"
+    assert _normalize_llm_failure_policy("invalid") == "block"
 
 
 def test_parse_safe_command_blocks_shell_control_tokens() -> None:
@@ -336,3 +353,43 @@ def test_main_sets_sbom_status_failed_when_gate_errors(
     assert outputs["gate_status"] == "error"
     assert outputs["sbom_status"] == "failed"
     assert outputs["sbom_mode"] == "audit"
+
+
+def test_main_forwards_llm_policy_to_backend_trigger(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _bridge_config(tmp_path, wait_for_completion=False)
+    output_path = tmp_path / "github_output.txt"
+    captured_payloads: list[dict[str, object]] = []
+
+    def _fake_request(**kwargs: object) -> dict[str, object]:
+        payload = kwargs.get("payload")
+        if isinstance(payload, dict):
+            captured_payloads.append(payload)
+        return {"status": "accepted", "investigation_run_id": "run-1"}
+
+    monkeypatch.setattr("omargate.main._load_config", lambda: config)
+    monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._execute_sbom_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._api_json_request", _fake_request)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+
+    exit_code = main()
+    assert exit_code == 0
+    assert captured_payloads
+    llm_policy = captured_payloads[0]["llm_policy"]
+    assert isinstance(llm_policy, dict)
+    assert llm_policy["sentinelayer_managed_llm"] is True
+    assert llm_policy["model"] == "gpt-5.3-codex"
+    assert llm_policy["codex_model"] == "gpt-5.3-codex"
+    assert llm_policy["llm_failure_policy"] == "block"
+
+    outputs = {}
+    for line in output_path.read_text(encoding="utf-8").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        outputs[key] = value
+    assert outputs["model"] == "gpt-5.3-codex"
+    assert outputs["codex_model"] == "gpt-5.3-codex"

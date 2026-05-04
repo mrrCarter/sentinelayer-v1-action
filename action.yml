@@ -26,6 +26,38 @@ inputs:
     description: 'Minimum severity to block merge: P0, P1, P2, or none'
     required: false
     default: 'P1'
+  github_token:
+    description: 'Optional GitHub token retained for workflows that pin the full Omar model contract'
+    required: false
+    default: ''
+  sentinelayer_managed_llm:
+    description: 'Use Sentinelayer-managed LLM routing for backend adjudication metadata'
+    required: false
+    default: 'true'
+  model:
+    description: 'Primary LLM model requested for backend adjudication metadata'
+    required: false
+    default: 'gpt-5.3-codex'
+  model_fallback:
+    description: 'Fallback LLM model requested for backend adjudication metadata'
+    required: false
+    default: 'gpt-4.1-mini'
+  use_codex:
+    description: 'Request Codex-capable adjudication path when backend supports model policy metadata'
+    required: false
+    default: 'true'
+  codex_only:
+    description: 'Request Codex-only adjudication path when backend supports model policy metadata'
+    required: false
+    default: 'false'
+  codex_model:
+    description: 'Codex model requested for backend adjudication metadata'
+    required: false
+    default: 'gpt-5.3-codex'
+  llm_failure_policy:
+    description: 'Failure policy for requested LLM adjudication metadata: block, warn, or ignore'
+    required: false
+    default: 'block'
   provider_installation_id:
     description: 'Optional GitHub App installation id override'
     required: false
@@ -144,6 +176,15 @@ outputs:
   severity_gate:
     description: 'Configured severity gate threshold for this run'
     value: ${{ steps.omar.outputs.severity_gate }}
+  model:
+    description: 'Configured primary LLM model requested for this run'
+    value: ${{ steps.omar.outputs.model }}
+  model_fallback:
+    description: 'Configured fallback LLM model requested for this run'
+    value: ${{ steps.omar.outputs.model_fallback }}
+  codex_model:
+    description: 'Configured Codex model requested for this run'
+    value: ${{ steps.omar.outputs.codex_model }}
   playwright_status:
     description: 'Playwright execution status: skipped, passed, or failed'
     value: ${{ steps.omar.outputs.playwright_status }}
@@ -297,6 +338,14 @@ runs:
         INPUT_SENTINELAYER_API_URL: ${{ inputs.sentinelayer_api_url }}
         INPUT_SCAN_MODE: ${{ inputs.scan_mode }}
         INPUT_SEVERITY_GATE: ${{ inputs.severity_gate }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
+        INPUT_SENTINELAYER_MANAGED_LLM: ${{ inputs.sentinelayer_managed_llm }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_MODEL_FALLBACK: ${{ inputs.model_fallback }}
+        INPUT_USE_CODEX: ${{ inputs.use_codex }}
+        INPUT_CODEX_ONLY: ${{ inputs.codex_only }}
+        INPUT_CODEX_MODEL: ${{ inputs.codex_model }}
+        INPUT_LLM_FAILURE_POLICY: ${{ inputs.llm_failure_policy }}
         INPUT_PROVIDER_INSTALLATION_ID: ${{ inputs.provider_installation_id }}
         INPUT_COMMAND: ${{ inputs.command }}
         INPUT_SENTINELAYER_SPEC_HASH: ${{ inputs.sentinelayer_spec_hash }}

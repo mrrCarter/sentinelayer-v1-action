@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-ACTION_VERSION = "1.5.2"
+ACTION_VERSION = "1.5.3"
 SENTINELAYER_WEB_BASE = "https://sentinelayer.com"
 _SPEC_DISCOVERY_MAX_FILES = 24
 _SPEC_DISCOVERY_MAX_BYTES = 512_000
@@ -51,6 +51,13 @@ class BridgeConfig:
     event_name: str
     scan_mode: str
     severity_gate: str
+    sentinelayer_managed_llm: bool
+    model: str
+    model_fallback: str
+    use_codex: bool
+    codex_only: bool
+    codex_model: str
+    llm_failure_policy: str
     command_override: str
     provider_installation_id: int | None
     spec_hash: str | None
@@ -142,6 +149,23 @@ def _normalize_sbom_mode(value: str | None) -> str:
     if normalized in {"audit", "deep", "full", "full-depth"}:
         return "audit"
     return "off"
+
+
+def _normalize_model_id(value: str | None, *, default: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return default
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-")
+    if len(normalized) > 128 or any(ch not in allowed for ch in normalized):
+        return default
+    return normalized
+
+
+def _normalize_llm_failure_policy(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"block", "warn", "ignore"}:
+        return normalized
+    return "block"
 
 
 def _normalize_spec_sources(values: list[str]) -> list[str]:
@@ -303,6 +327,24 @@ def _load_config() -> BridgeConfig:
     event_name = str(os.environ.get("GITHUB_EVENT_NAME") or "").strip()
     scan_mode = str(os.environ.get("INPUT_SCAN_MODE") or "deep").strip().lower()
     severity_gate = str(os.environ.get("INPUT_SEVERITY_GATE") or "P1").strip().upper()
+    sentinelayer_managed_llm = _bool_input("INPUT_SENTINELAYER_MANAGED_LLM", True)
+    model = _normalize_model_id(
+        os.environ.get("INPUT_MODEL"),
+        default="gpt-5.3-codex",
+    )
+    model_fallback = _normalize_model_id(
+        os.environ.get("INPUT_MODEL_FALLBACK"),
+        default="gpt-4.1-mini",
+    )
+    use_codex = _bool_input("INPUT_USE_CODEX", True)
+    codex_only = _bool_input("INPUT_CODEX_ONLY", False)
+    codex_model = _normalize_model_id(
+        os.environ.get("INPUT_CODEX_MODEL"),
+        default=model,
+    )
+    llm_failure_policy = _normalize_llm_failure_policy(
+        os.environ.get("INPUT_LLM_FAILURE_POLICY")
+    )
     command_override = str(os.environ.get("INPUT_COMMAND") or "").strip()
     provider_installation_id_raw = str(
         os.environ.get("INPUT_PROVIDER_INSTALLATION_ID") or ""
@@ -376,6 +418,13 @@ def _load_config() -> BridgeConfig:
         event_name=event_name,
         scan_mode=scan_mode,
         severity_gate=severity_gate,
+        sentinelayer_managed_llm=sentinelayer_managed_llm,
+        model=model,
+        model_fallback=model_fallback,
+        use_codex=use_codex,
+        codex_only=codex_only,
+        codex_model=codex_model,
+        llm_failure_policy=llm_failure_policy,
         command_override=command_override,
         provider_installation_id=provider_installation_id,
         spec_hash=spec_hash,
@@ -775,6 +824,9 @@ def _emit_outputs(
     run_id: str,
     scan_mode: str,
     severity_gate: str,
+    model: str,
+    model_fallback: str,
+    codex_model: str,
     playwright_status: str,
     playwright_mode: str,
     sbom_status: str,
@@ -788,6 +840,9 @@ def _emit_outputs(
     _write_output("run_id", run_id)
     _write_output("scan_mode", scan_mode)
     _write_output("severity_gate", severity_gate)
+    _write_output("model", model)
+    _write_output("model_fallback", model_fallback)
+    _write_output("codex_model", codex_model)
     _write_output("playwright_status", playwright_status)
     _write_output("playwright_mode", playwright_mode)
     _write_output("sbom_status", sbom_status)
@@ -840,6 +895,15 @@ def main() -> int:
         trigger_payload["spec_binding_mode"] = config.spec_binding_mode
         if config.spec_sources:
             trigger_payload["spec_sources"] = config.spec_sources
+        trigger_payload["llm_policy"] = {
+            "sentinelayer_managed_llm": config.sentinelayer_managed_llm,
+            "model": config.model,
+            "model_fallback": config.model_fallback,
+            "use_codex": config.use_codex,
+            "codex_only": config.codex_only,
+            "codex_model": config.codex_model,
+            "llm_failure_policy": config.llm_failure_policy,
+        }
 
         trigger_url = f"{config.api_url}/api/v1/github-app/trigger"
         trigger_response = _api_json_request(
@@ -897,6 +961,9 @@ def main() -> int:
             run_id=run_id or str(trigger_response.get("delivery_id") or "manual-trigger"),
             scan_mode=config.scan_mode,
             severity_gate=config.severity_gate,
+            model=config.model,
+            model_fallback=config.model_fallback,
+            codex_model=config.codex_model,
             playwright_status=playwright_status,
             playwright_mode=playwright_mode,
             sbom_status=sbom_status,
@@ -920,6 +987,7 @@ def main() -> int:
                 else "- Spec hash: `none`"
             ),
             f"- Spec sources: `{len(config.spec_sources)}`",
+            f"- LLM policy: `managed={str(config.sentinelayer_managed_llm).lower()} model={config.model} codex_model={config.codex_model} fallback={config.model_fallback} failure_policy={config.llm_failure_policy}`",
             f"- Findings: `P0={counts['P0']} P1={counts['P1']} P2={counts['P2']} P3={counts['P3']}`",
             f"- Gate: `{gate_status}` (threshold `{config.severity_gate}`)",
             f"- Playwright gate: `{playwright_status}` ({playwright_mode})",
@@ -943,6 +1011,15 @@ def main() -> int:
             run_id="error",
             scan_mode=str(os.environ.get("INPUT_SCAN_MODE") or "deep"),
             severity_gate=str(os.environ.get("INPUT_SEVERITY_GATE") or "P1").strip().upper(),
+            model=_normalize_model_id(os.environ.get("INPUT_MODEL"), default="gpt-5.3-codex"),
+            model_fallback=_normalize_model_id(
+                os.environ.get("INPUT_MODEL_FALLBACK"),
+                default="gpt-4.1-mini",
+            ),
+            codex_model=_normalize_model_id(
+                os.environ.get("INPUT_CODEX_MODEL") or os.environ.get("INPUT_MODEL"),
+                default="gpt-5.3-codex",
+            ),
             playwright_status=playwright_status,
             playwright_mode=playwright_mode,
             sbom_status=sbom_status,
