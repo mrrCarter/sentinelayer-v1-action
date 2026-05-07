@@ -95,9 +95,9 @@ inputs:
     default: 'P1'
 
   model:
-    description: 'LLM API model (used when Codex CLI is unavailable). Default is gpt-5.3-codex.'
+    description: 'LLM API model (used when Codex CLI is unavailable). Default is gpt-4.1-mini.'
     required: false
-    default: 'gpt-5.3-codex'
+    default: 'gpt-4.1-mini'
 
   model_fallback:
     description: 'Fallback LLM API model (if primary model fails or quota exceeded)'

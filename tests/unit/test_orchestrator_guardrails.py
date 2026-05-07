@@ -154,6 +154,44 @@ def test_should_run_llm_with_managed_proxy_when_byo_key_missing(
     assert orchestrator._should_run_llm() is True
 
 
+def test_byo_openai_key_takes_precedence_over_managed_proxy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("INPUT_OPENAI_API_KEY", "sk_test_dummy")
+    monkeypatch.setenv("INPUT_SENTINELAYER_TOKEN", "sl_test_token")
+    monkeypatch.setenv("INPUT_SENTINELAYER_MANAGED_LLM", "true")
+    config = OmarGateConfig()
+    logger = OmarLogger("test-run")
+    orchestrator = AnalysisOrchestrator(
+        config=config,
+        logger=logger,
+        repo_root=tmp_path,
+        allow_llm=True,
+    )
+
+    assert orchestrator._should_run_llm() is True
+    assert orchestrator._should_use_managed_proxy_for_llm_analysis() is False
+
+
+def test_managed_proxy_used_when_byo_openai_key_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("INPUT_OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("INPUT_SENTINELAYER_TOKEN", "sl_test_token")
+    monkeypatch.setenv("INPUT_SENTINELAYER_MANAGED_LLM", "true")
+    config = OmarGateConfig()
+    logger = OmarLogger("test-run")
+    orchestrator = AnalysisOrchestrator(
+        config=config,
+        logger=logger,
+        repo_root=tmp_path,
+        allow_llm=True,
+    )
+
+    assert orchestrator._should_run_llm() is True
+    assert orchestrator._should_use_managed_proxy_for_llm_analysis() is True
+
+
 @pytest.mark.anyio
 async def test_codex_only_disables_api_fallback_on_codex_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

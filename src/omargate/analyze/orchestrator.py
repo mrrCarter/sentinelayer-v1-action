@@ -158,7 +158,7 @@ class AnalysisOrchestrator:
                         anthropic_api_key=self.config.anthropic_api_key.get_secret_value(),
                         google_api_key=self.config.google_api_key.get_secret_value(),
                         xai_api_key=self.config.xai_api_key.get_secret_value(),
-                        managed_llm=self.config.use_managed_llm_proxy(),
+                        managed_llm=self._should_use_managed_proxy_for_llm_analysis(),
                         sentinelayer_token=self.config.sentinelayer_token.get_secret_value(),
                         managed_api_url=os.environ.get(
                             "SENTINELAYER_API_URL", "https://api.sentinelayer.com"
@@ -351,10 +351,21 @@ class AnalysisOrchestrator:
         primary_provider = detect_provider_from_model(
             self.config.model, default_provider=self.config.llm_provider
         )
-        if primary_provider == "openai" and self.config.use_managed_llm_proxy():
+        if primary_provider == "openai" and self._should_use_managed_proxy_for_llm_analysis():
             return True
         api_key = self._get_provider_api_key(primary_provider)
         return bool(api_key)
+
+    def _should_use_managed_proxy_for_llm_analysis(self) -> bool:
+        """Use managed proxy only when the OpenAI fallback path has no BYO key."""
+        primary_provider = detect_provider_from_model(
+            self.config.model, default_provider=self.config.llm_provider
+        )
+        if primary_provider != "openai":
+            return False
+        if self.config.openai_api_key.get_secret_value():
+            return False
+        return self.config.use_managed_llm_proxy()
 
     def _get_provider_api_key(self, provider: str) -> str:
         if provider == "openai":
@@ -473,7 +484,7 @@ class AnalysisOrchestrator:
             anthropic_api_key=self.config.anthropic_api_key.get_secret_value(),
             google_api_key=self.config.google_api_key.get_secret_value(),
             xai_api_key=self.config.xai_api_key.get_secret_value(),
-            managed_llm=self.config.use_managed_llm_proxy(),
+            managed_llm=self._should_use_managed_proxy_for_llm_analysis(),
             sentinelayer_token=self.config.sentinelayer_token.get_secret_value(),
             managed_api_url=os.environ.get("SENTINELAYER_API_URL", "https://api.sentinelayer.com"),
         )
