@@ -62,7 +62,7 @@ from .telemetry.schemas import (
 from .telemetry.uploader import upload_telemetry
 from .utils import ensure_writable_dir, json_dumps
 
-ACTION_VERSION = "1.3.4"
+ACTION_VERSION = "1.3.8"
 ACTION_MAJOR_VERSION = "1"
 CHECK_NAME_BASE = "Omar Gate"
 __all__ = [

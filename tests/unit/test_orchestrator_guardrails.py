@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from omargate.analyze.llm.context_builder import BuiltContext
+from omargate.analyze.llm.llm_client import LLMClient, LLMResponse, LLMUsage
 from omargate.analyze.orchestrator import AnalysisOrchestrator, LLMAnalysisResult
 from omargate.config import OmarGateConfig
 from omargate.logging import OmarLogger
@@ -301,6 +303,73 @@ async def test_codex_failure_runs_llm_fallback_when_enabled(
     assert result.llm_count == 1
     assert result.llm_usage == {"model": "gpt-5.3-codex", "tokens_in": 10, "tokens_out": 5}
     assert any("codex failed" in warning for warning in result.warnings)
+
+
+@pytest.mark.anyio
+async def test_failed_llm_attempt_preserves_usage_for_comment_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("INPUT_OPENAI_API_KEY", "sk_test_dummy")
+    monkeypatch.setenv("INPUT_MODEL", "gpt-4.1-mini")
+    monkeypatch.setenv("INPUT_MODEL_FALLBACK", "gpt-4.1-mini")
+    monkeypatch.setenv("INPUT_RUN_HARNESS", "false")
+    config = OmarGateConfig()
+    logger = OmarLogger("test-run")
+    orchestrator = AnalysisOrchestrator(
+        config=config,
+        logger=logger,
+        repo_root=tmp_path,
+        allow_llm=True,
+    )
+    monkeypatch.setattr(
+        orchestrator.context_builder,
+        "build_context",
+        lambda **_kwargs: BuiltContext(
+            content="scan this",
+            token_count=3,
+            files_included=[],
+            files_truncated=[],
+            files_skipped=[],
+            hotspots_included=[],
+        ),
+    )
+
+    async def _fake_analyze(*_args, **_kwargs):
+        return LLMResponse(
+            content="",
+            usage=LLMUsage(
+                model="gpt-4.1-mini",
+                tokens_in=0,
+                tokens_out=0,
+                cost_usd=0.0,
+                latency_ms=12,
+                provider="openai",
+            ),
+            success=False,
+            error="insufficient_quota",
+        )
+
+    monkeypatch.setattr(LLMClient, "analyze", _fake_analyze)
+
+    result = await orchestrator._run_llm_analysis(
+        ingest={},
+        deterministic_findings=[],
+        quick_learn=None,
+        spec_context=None,
+        scan_mode="deep",
+        diff_content=None,
+        changed_files=None,
+    )
+
+    assert result.success is False
+    assert result.usage == {
+        "model": "gpt-4.1-mini",
+        "provider": "openai",
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "cost_usd": 0.0,
+        "latency_ms": 12,
+    }
 
 
 @pytest.mark.anyio

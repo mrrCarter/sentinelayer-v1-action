@@ -510,7 +510,16 @@ class AnalysisOrchestrator:
             return LLMAnalysisResult(
                 findings=[self._parsed_finding_to_dict(f) for f in non_det_findings],
                 success=False,
-                usage=None,
+                usage={
+                    "model": response.usage.model,
+                    "provider": getattr(response.usage, "provider", None),
+                    "tokens_in": response.usage.tokens_in,
+                    "tokens_out": response.usage.tokens_out,
+                    "cost_usd": response.usage.cost_usd,
+                    "latency_ms": response.usage.latency_ms,
+                }
+                if response.usage
+                else None,
                 warning=warning,
             )
 
