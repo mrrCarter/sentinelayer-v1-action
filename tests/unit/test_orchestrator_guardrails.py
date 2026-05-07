@@ -204,6 +204,154 @@ async def test_codex_only_disables_api_fallback_on_codex_failure(
 
 
 @pytest.mark.anyio
+async def test_codex_failure_runs_llm_fallback_when_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("INPUT_OPENAI_API_KEY", "sk_test_dummy")
+    monkeypatch.setenv("INPUT_USE_CODEX", "true")
+    monkeypatch.setenv("INPUT_CODEX_ONLY", "false")
+    monkeypatch.setenv("INPUT_RUN_HARNESS", "false")
+    config = OmarGateConfig()
+    logger = OmarLogger("test-run")
+    orchestrator = AnalysisOrchestrator(
+        config=config,
+        logger=logger,
+        repo_root=tmp_path,
+        allow_llm=True,
+    )
+
+    def _fake_det(_self, _ingest):
+        return []
+
+    async def _fake_codex(*_args, **_kwargs):
+        return LLMAnalysisResult(
+            findings=[],
+            success=False,
+            usage=None,
+            warning="codex failed",
+        )
+
+    called = {"llm": False}
+
+    async def _fake_llm(*_args, **_kwargs):
+        called["llm"] = True
+        return LLMAnalysisResult(
+            findings=[
+                {
+                    "severity": "P0",
+                    "category": "LLM Failure",
+                    "file_path": "<system>",
+                    "line_start": 0,
+                    "line_end": 0,
+                    "message": "Managed LLM fallback executed",
+                    "source": "system",
+                }
+            ],
+            success=True,
+            usage={"model": "gpt-5.3-codex", "tokens_in": 10, "tokens_out": 5},
+            warning=None,
+        )
+
+    monkeypatch.setattr(AnalysisOrchestrator, "_run_deterministic_scans", _fake_det)
+    monkeypatch.setattr(AnalysisOrchestrator, "_run_codex_audit", _fake_codex)
+    monkeypatch.setattr(AnalysisOrchestrator, "_run_llm_analysis", _fake_llm)
+
+    result = await orchestrator.run(scan_mode="deep")
+
+    assert called["llm"] is True
+    assert result.llm_success is True
+    assert result.llm_count == 1
+    assert result.llm_usage == {"model": "gpt-5.3-codex", "tokens_in": 10, "tokens_out": 5}
+    assert any("codex failed" in warning for warning in result.warnings)
+
+
+@pytest.mark.anyio
+async def test_codex_skip_runs_managed_llm_fallback_without_byo_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("INPUT_OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("INPUT_SENTINELAYER_TOKEN", "sl_test_token")
+    monkeypatch.setenv("INPUT_SENTINELAYER_MANAGED_LLM", "true")
+    monkeypatch.setenv("INPUT_USE_CODEX", "true")
+    monkeypatch.setenv("INPUT_CODEX_ONLY", "false")
+    monkeypatch.setenv("INPUT_RUN_HARNESS", "false")
+    config = OmarGateConfig()
+    logger = OmarLogger("test-run")
+    orchestrator = AnalysisOrchestrator(
+        config=config,
+        logger=logger,
+        repo_root=tmp_path,
+        allow_llm=True,
+    )
+
+    def _fake_det(_self, _ingest):
+        return []
+
+    called = {"llm": False}
+
+    async def _fake_llm(*_args, **_kwargs):
+        called["llm"] = True
+        return LLMAnalysisResult(
+            findings=[],
+            success=True,
+            usage={"provider": "sentinelayer-managed"},
+            warning=None,
+        )
+
+    monkeypatch.setattr(AnalysisOrchestrator, "_run_deterministic_scans", _fake_det)
+    monkeypatch.setattr(AnalysisOrchestrator, "_run_llm_analysis", _fake_llm)
+
+    result = await orchestrator.run(scan_mode="deep")
+
+    assert called["llm"] is True
+    assert result.llm_success is True
+    assert not any("Codex" in warning for warning in result.warnings)
+
+
+@pytest.mark.anyio
+async def test_use_codex_false_runs_llm_analysis_directly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("INPUT_OPENAI_API_KEY", "sk_test_dummy")
+    monkeypatch.setenv("INPUT_USE_CODEX", "false")
+    monkeypatch.setenv("INPUT_RUN_HARNESS", "false")
+    config = OmarGateConfig()
+    logger = OmarLogger("test-run")
+    orchestrator = AnalysisOrchestrator(
+        config=config,
+        logger=logger,
+        repo_root=tmp_path,
+        allow_llm=True,
+    )
+
+    def _fake_det(_self, _ingest):
+        return []
+
+    async def _fake_codex(*_args, **_kwargs):
+        raise AssertionError("Codex should not run when INPUT_USE_CODEX=false")
+
+    called = {"llm": False}
+
+    async def _fake_llm(*_args, **_kwargs):
+        called["llm"] = True
+        return LLMAnalysisResult(
+            findings=[],
+            success=True,
+            usage=None,
+            warning=None,
+        )
+
+    monkeypatch.setattr(AnalysisOrchestrator, "_run_deterministic_scans", _fake_det)
+    monkeypatch.setattr(AnalysisOrchestrator, "_run_codex_audit", _fake_codex)
+    monkeypatch.setattr(AnalysisOrchestrator, "_run_llm_analysis", _fake_llm)
+
+    result = await orchestrator.run(scan_mode="deep")
+
+    assert called["llm"] is True
+    assert result.llm_success is True
+
+
+@pytest.mark.anyio
 async def test_codex_skip_is_silent_in_managed_mode_without_openai_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

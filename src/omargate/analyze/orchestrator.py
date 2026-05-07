@@ -207,10 +207,44 @@ class AnalysisOrchestrator:
                 findings_count=len(det_findings),
             )
 
-        # Step 4-5: Deep scan via Codex CLI (single model from config)
+        # Step 4-5: Deep scan via Codex CLI, then API/managed LLM fallback.
         llm_findings: List[dict] = []
         llm_success = False
         llm_usage: Optional[dict] = None
+
+        async def run_llm_stage(stage_name: str, completion_event: str) -> None:
+            nonlocal llm_findings, llm_success, llm_usage
+            with self.logger.stage(stage_name):
+                try:
+                    result = await self._run_llm_analysis(
+                        ingest=ingest,
+                        deterministic_findings=det_findings,
+                        quick_learn=quick_learn,
+                        spec_context=spec_context,
+                        scan_mode=scan_mode,
+                        diff_content=diff_content,
+                        changed_files=changed_files,
+                    )
+                    for finding in result.findings:
+                        finding.setdefault("model_source", self.config.model)
+                    self.logger.info(
+                        completion_event,
+                        model=self.config.model,
+                        success=result.success,
+                        findings_count=len(result.findings),
+                    )
+                    llm_success = result.success
+                    llm_findings = result.findings
+                    llm_usage = result.usage
+                    if result.warning:
+                        warnings.append(result.warning)
+                except Exception as exc:
+                    self.logger.warning(
+                        f"{completion_event} failed",
+                        model=self.config.model,
+                        error=str(exc),
+                    )
+                    warnings.append(f"{self.config.model} LLM analysis failed: {exc}")
 
         if self.allow_llm and self.config.use_codex:
             with self.logger.stage("deep_scan"):
@@ -245,7 +279,15 @@ class AnalysisOrchestrator:
                         error=str(exc),
                     )
                     warnings.append(f"{codex_model} Codex scan failed: {exc}")
+            if not llm_success and not self.config.codex_only and self._should_run_llm():
+                await run_llm_stage("llm_fallback", "LLM fallback complete")
+            elif not llm_success and not self.config.codex_only:
+                warnings.append("LLM analysis skipped (no API key or limited mode)")
+        elif self._should_run_llm():
+            await run_llm_stage("llm_analysis", "LLM analysis complete")
         elif not self.allow_llm:
+            warnings.append("LLM analysis skipped (no API key or limited mode)")
+        else:
             warnings.append("LLM analysis skipped (no API key or limited mode)")
 
         # Step 6: Merge findings
