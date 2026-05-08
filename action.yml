@@ -369,3 +369,21 @@ runs:
         set -euo pipefail
         export PYTHONPATH="${GITHUB_ACTION_PATH}/src:${PYTHONPATH:-}"
         python -m omargate.main
+
+    - name: Upload Omar Gate findings artifact
+      if: always()
+      uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874  # v4.4.0
+      with:
+        name: omar-gate-findings-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          ${{ github.workspace }}/.sentinelayer/artifacts/**
+          ${{ github.workspace }}/.sentinelayer/runs/**
+        retention-days: 30
+        if-no-files-found: warn
+        compression-level: 9
+
+    - name: Surface gate block via runner annotation
+      if: always() && (steps.omar.outputs.gate_status == 'blocked' || steps.omar.outputs.gate_status == 'error')
+      shell: bash
+      run: |
+        echo "::error title=Omar Gate Blocked::P0=${{ steps.omar.outputs.p0_count }} P1=${{ steps.omar.outputs.p1_count }} P2=${{ steps.omar.outputs.p2_count }} P3=${{ steps.omar.outputs.p3_count }}. Download artifact 'omar-gate-findings-${{ github.run_id }}-${{ github.run_attempt }}' for FINDINGS.jsonl + AUDIT_REPORT.md."
