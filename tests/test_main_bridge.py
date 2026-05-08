@@ -41,6 +41,7 @@ def _bridge_config(
     return BridgeConfig(
         token="token",
         status_poll_token="token",
+        github_token="github-token",
         api_url="https://api.sentinelayer.com",
         repo_full_name="owner/repo",
         event_path=event_path,
@@ -114,6 +115,42 @@ def test_detect_pr_number_supports_multiple_event_shapes() -> None:
     assert _detect_pr_number({"issue": {"number": 7, "pull_request": {}}}) == 7
     assert _detect_pr_number({"check_run": {"pull_requests": [{"number": 15}]}}) == 15
     assert _detect_pr_number({}, fallback_pr_number=3) == 3
+
+
+def test_detect_pr_number_resolves_push_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str | None] = {}
+
+    def fake_resolve_pr_number_from_commit(
+        *, repo_full_name: str | None, commit_sha: str | None, github_token: str | None
+    ) -> int | None:
+        captured["repo_full_name"] = repo_full_name
+        captured["commit_sha"] = commit_sha
+        captured["github_token"] = github_token
+        return 88
+
+    monkeypatch.setattr(
+        "omargate.main._resolve_pr_number_from_commit",
+        fake_resolve_pr_number_from_commit,
+    )
+
+    assert (
+        _detect_pr_number(
+            {"after": "abc123"},
+            repo_full_name="owner/repo",
+            github_token="ghs_test",
+        )
+        == 88
+    )
+    assert captured == {
+        "repo_full_name": "owner/repo",
+        "commit_sha": "abc123",
+        "github_token": "ghs_test",
+    }
+
+
+def test_detect_pr_number_rejects_unresolved_payload() -> None:
+    with pytest.raises(RuntimeError, match="Unable to resolve PR number"):
+        _detect_pr_number({"after": "abc123"})
 
 
 def test_command_for_scan_mode_defaults_to_deep_scan() -> None:

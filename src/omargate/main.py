@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import urllib.parse
 import shlex
 import subprocess
 import sys
@@ -13,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-ACTION_VERSION = "1.5.3"
+ACTION_VERSION = "1.5.4"
 SENTINELAYER_WEB_BASE = "https://sentinelayer.com"
 _SPEC_DISCOVERY_MAX_FILES = 24
 _SPEC_DISCOVERY_MAX_BYTES = 512_000
@@ -45,6 +46,7 @@ _SBOM_PYTHON_REQUIREMENTS_FILES = (
 class BridgeConfig:
     token: str
     status_poll_token: str
+    github_token: str
     api_url: str
     repo_full_name: str
     event_path: Path
@@ -318,6 +320,11 @@ def _load_config() -> BridgeConfig:
         or os.environ.get("STATUS_POLL_TOKEN")
         or token
     ).strip()
+    github_token = str(
+        os.environ.get("INPUT_GITHUB_TOKEN")
+        or os.environ.get("GITHUB_TOKEN")
+        or ""
+    ).strip()
     api_url = str(
         os.environ.get("INPUT_SENTINELAYER_API_URL")
         or "https://api.sentinelayer.com"
@@ -412,6 +419,7 @@ def _load_config() -> BridgeConfig:
     return BridgeConfig(
         token=token,
         status_poll_token=status_poll_token,
+        github_token=github_token,
         api_url=api_url,
         repo_full_name=repo_full_name,
         event_path=event_path,
@@ -472,7 +480,70 @@ def _api_json_request(
         raise RuntimeError(f"API request failed [{url}]: {exc}") from exc
 
 
-def _detect_pr_number(payload: dict[str, Any], *, fallback_pr_number: int | None = None) -> int:
+def _github_api_json_request(*, url: str, github_token: str) -> Any:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {github_token}",
+        "User-Agent": f"sentinelayer-compat-action/{ACTION_VERSION}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    request = urllib.request.Request(url=url, method="GET", headers=headers)
+    with urllib.request.urlopen(request, timeout=20) as response:
+        raw = response.read().decode("utf-8")
+        return json.loads(raw) if raw else None
+
+
+def _resolve_pr_number_from_commit(
+    *, repo_full_name: str | None, commit_sha: str | None, github_token: str | None
+) -> int | None:
+    repo = str(repo_full_name or "").strip()
+    commit = str(commit_sha or "").strip()
+    token = str(github_token or "").strip()
+    if not repo or not commit or not token:
+        return None
+    if repo.count("/") != 1:
+        return None
+    owner, name = repo.split("/", 1)
+    allowed_repo_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+    if (
+        not owner
+        or not name
+        or any(ch not in allowed_repo_chars for ch in owner)
+        or any(ch not in allowed_repo_chars for ch in name)
+    ):
+        return None
+    allowed_commit_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+    if len(commit) > 128 or any(ch not in allowed_commit_chars for ch in commit):
+        return None
+
+    url = (
+        "https://api.github.com/repos/"
+        f"{urllib.parse.quote(owner, safe='')}/{urllib.parse.quote(name, safe='')}"
+        f"/commits/{urllib.parse.quote(commit, safe='')}/pulls"
+    )
+    try:
+        response = _github_api_json_request(url=url, github_token=token)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(response, list):
+        return None
+    for item in response:
+        if not isinstance(item, dict):
+            continue
+        number = item.get("number")
+        if isinstance(number, int) and number > 0:
+            return number
+    return None
+
+
+def _detect_pr_number(
+    payload: dict[str, Any],
+    *,
+    fallback_pr_number: int | None = None,
+    repo_full_name: str | None = None,
+    commit_sha: str | None = None,
+    github_token: str | None = None,
+) -> int:
     if fallback_pr_number and fallback_pr_number > 0:
         return fallback_pr_number
 
@@ -502,6 +573,20 @@ def _detect_pr_number(payload: dict[str, Any], *, fallback_pr_number: int | None
         raw = str(workflow_dispatch_inputs.get("pr_number") or "").strip()
         if raw.isdigit() and int(raw) > 0:
             return int(raw)
+
+    payload_commit_sha = (
+        commit_sha
+        or payload.get("after")
+        or (payload.get("workflow_run") or {}).get("head_sha")
+        or (payload.get("check_run") or {}).get("head_sha")
+    )
+    resolved_from_commit = _resolve_pr_number_from_commit(
+        repo_full_name=repo_full_name,
+        commit_sha=str(payload_commit_sha or "").strip(),
+        github_token=github_token,
+    )
+    if resolved_from_commit:
+        return resolved_from_commit
 
     raise RuntimeError("Unable to resolve PR number from event payload. Provide input 'pr_number'.")
 
@@ -878,7 +963,14 @@ def main() -> int:
             sbom_detail = str(sbom_exc)
             raise
         payload = json.loads(config.event_path.read_text(encoding="utf-8"))
-        pr_number = _detect_pr_number(payload, fallback_pr_number=config.pr_number_override)
+        commit_sha = str(os.environ.get("GITHUB_SHA") or payload.get("after") or "").strip()
+        pr_number = _detect_pr_number(
+            payload,
+            fallback_pr_number=config.pr_number_override,
+            repo_full_name=config.repo_full_name,
+            commit_sha=commit_sha,
+            github_token=config.github_token,
+        )
         command = config.command_override or _command_for_scan_mode(config.scan_mode)
 
         trigger_payload: dict[str, Any] = {
