@@ -16,6 +16,7 @@ from typing import Any
 
 ACTION_VERSION = "1.5.4"
 SENTINELAYER_WEB_BASE = "https://sentinelayer.com"
+_API_REQUEST_TIMEOUT_SECONDS = 120
 _SPEC_DISCOVERY_MAX_FILES = 24
 _SPEC_DISCOVERY_MAX_BYTES = 512_000
 _SPEC_DISCOVERY_ALLOWED_SUFFIXES = {".md", ".markdown", ".txt", ".yml", ".yaml", ".json"}
@@ -470,7 +471,7 @@ def _api_json_request(
         body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(url=url, method=method, data=body, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=45) as response:
+        with urllib.request.urlopen(request, timeout=_API_REQUEST_TIMEOUT_SECONDS) as response:
             raw = response.read().decode("utf-8")
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:
