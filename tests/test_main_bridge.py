@@ -6,6 +6,8 @@ import pytest
 
 from omargate.main import (
     BridgeConfig,
+    _API_REQUEST_TIMEOUT_SECONDS,
+    _api_json_request,
     _blocking_count,
     _command_for_scan_mode,
     _compute_spec_hash_from_sources,
@@ -430,3 +432,35 @@ def test_main_forwards_llm_policy_to_backend_trigger(
         outputs[key] = value
     assert outputs["model"] == "gpt-5.3-codex"
     assert outputs["codex_model"] == "gpt-5.3-codex"
+
+
+def test_api_json_request_uses_long_enough_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_timeouts: list[int] = []
+
+    class _FakeResponse:
+        def __enter__(self) -> "_FakeResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"ok": true}'
+
+    def _fake_urlopen(request: object, *, timeout: int) -> _FakeResponse:
+        captured_timeouts.append(timeout)
+        return _FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+    payload = _api_json_request(
+        method="GET",
+        url="https://api.sentinelayer.test/api/v1/github-app/runs/run-1/status",
+        token="token",
+    )
+
+    assert payload == {"ok": True}
+    assert captured_timeouts == [_API_REQUEST_TIMEOUT_SECONDS]
+    assert _API_REQUEST_TIMEOUT_SECONDS >= 120
