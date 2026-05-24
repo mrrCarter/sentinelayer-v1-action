@@ -1,5 +1,5 @@
 name: 'Omar Gate'
-description: 'Compatibility action that delegates scans to Sentinelayer GitHub App pipeline'
+description: 'Omar Gate action that delegates scans to Sentinelayer and posts PR review results'
 author: 'Sentinelayer'
 branding:
   icon: 'shield'
@@ -327,7 +327,7 @@ runs:
         node-version: ${{ inputs.playwright_node_version }}
         cache: 'npm'
 
-    - name: Execute Omar Gate Compatibility Bridge
+    - name: Execute Omar Gate
       id: omar
       shell: bash
       working-directory: ${{ github.workspace }}

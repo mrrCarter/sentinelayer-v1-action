@@ -1,4 +1,4 @@
-"""Sentinelayer Omar compatibility action package."""
+"""Sentinelayer Omar Gate action package."""
 
 __all__ = ["main"]
 

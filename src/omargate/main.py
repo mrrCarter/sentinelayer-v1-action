@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-ACTION_VERSION = "1.5.6"
+ACTION_VERSION = "1.5.8"
 SENTINELAYER_WEB_BASE = "https://sentinelayer.com"
 _API_REQUEST_TIMEOUT_SECONDS = 120
 _SPEC_DISCOVERY_MAX_FILES = 24
@@ -469,7 +469,7 @@ def _api_json_request(
         "Accept": "application/json",
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "User-Agent": f"sentinelayer-compat-action/{ACTION_VERSION}",
+        "User-Agent": f"sentinelayer-omar-action/{ACTION_VERSION}",
     }
     if payload is not None:
         body = json.dumps(payload).encode("utf-8")
@@ -497,7 +497,7 @@ def _github_api_json_request(
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {github_token}",
         "Content-Type": "application/json",
-        "User-Agent": f"sentinelayer-compat-action/{ACTION_VERSION}",
+        "User-Agent": f"sentinelayer-omar-action/{ACTION_VERSION}",
         "X-GitHub-Api-Version": "2022-11-28",
     }
     if payload is not None:
@@ -1003,14 +1003,49 @@ def _load_local_findings(workspace: Path) -> list[dict[str, Any]]:
     return findings
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_counts(raw_counts: Any, fallback: dict[str, int] | None = None) -> dict[str, int]:
+    base = {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
+    if isinstance(fallback, dict):
+        for severity in base:
+            base[severity] = max(0, _safe_int(fallback.get(severity)))
+    if isinstance(raw_counts, dict):
+        for severity in base:
+            base[severity] = max(0, _safe_int(raw_counts.get(severity)))
+    return base
+
+
+def _finding_scope(row: dict[str, Any]) -> tuple[str, int]:
+    scope = row.get("scope") if isinstance(row.get("scope"), dict) else {}
+    raw_path = (
+        scope.get("path")
+        or scope.get("file")
+        or row.get("file")
+        or row.get("path")
+        or row.get("filename")
+        or "repo"
+    )
+    raw_line = (
+        scope.get("line_start")
+        or scope.get("lineStart")
+        or scope.get("line")
+        or row.get("line")
+        or row.get("line_start")
+        or 0
+    )
+    return str(raw_path or "repo").strip() or "repo", max(0, _safe_int(raw_line))
+
+
 def _finding_sort_key(row: dict[str, Any]) -> tuple[int, str, int]:
     sev_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
     severity = str(row.get("severity") or "").upper()
-    file_path = str(row.get("file") or "")
-    try:
-        line = int(row.get("line") or 0)
-    except (TypeError, ValueError):
-        line = 0
+    file_path, line = _finding_scope(row)
     return (sev_order.get(severity, 99), file_path, line)
 
 
@@ -1029,6 +1064,133 @@ def _github_blob_url(repo_full_name: str, commit_sha: str, file_path: str, line:
     return f"https://github.com/{repo}/blob/{commit}/{path}{suffix}"
 
 
+def _fetch_backend_run_findings(
+    *,
+    config: BridgeConfig,
+    run_id: str,
+    run_read_token: str,
+) -> dict[str, Any] | None:
+    normalized_run_id = str(run_id or "").strip()
+    if not normalized_run_id:
+        return None
+    url = (
+        f"{config.api_url}/api/v1/github-app/runs/"
+        f"{urllib.parse.quote(normalized_run_id, safe='')}/findings?limit=100"
+    )
+    try:
+        payload = _api_json_request(method="GET", url=url, token=run_read_token)
+    except Exception as exc:
+        print(f"::warning::Omar Gate backend findings fetch skipped: {exc}")
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _backend_findings(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    findings = payload.get("findings")
+    if not isinstance(findings, list):
+        return []
+    return [item for item in findings if isinstance(item, dict)]
+
+
+def _backend_counts(payload: dict[str, Any] | None, fallback: dict[str, int]) -> dict[str, int]:
+    if not isinstance(payload, dict):
+        return _normalize_counts(None, fallback)
+    return _normalize_counts(payload.get("severity_counts"), fallback)
+
+
+def _infer_stack(workspace: Path) -> list[str]:
+    stack: list[str] = []
+
+    def add(name: str) -> None:
+        if name not in stack:
+            stack.append(name)
+
+    package_json = workspace / "package.json"
+    package_text = ""
+    if package_json.exists():
+        add("Node.js")
+        try:
+            package_payload = json.loads(package_json.read_text(encoding="utf-8"))
+            deps = {
+                **(package_payload.get("dependencies") if isinstance(package_payload.get("dependencies"), dict) else {}),
+                **(
+                    package_payload.get("devDependencies")
+                    if isinstance(package_payload.get("devDependencies"), dict)
+                    else {}
+                ),
+            }
+            package_text = " ".join(str(key).lower() for key in deps)
+        except (OSError, json.JSONDecodeError):
+            package_text = ""
+    if "next" in package_text or (workspace / "next.config.js").exists() or (workspace / "next.config.mjs").exists():
+        add("Next.js")
+    if "react" in package_text:
+        add("React")
+    if (workspace / "tsconfig.json").exists() or list(workspace.glob("**/*.ts"))[:1]:
+        add("TypeScript")
+    if (workspace / "pyproject.toml").exists() or (workspace / "requirements.txt").exists():
+        add("Python")
+    if list(workspace.glob("**/*.tf"))[:1]:
+        add("Terraform")
+    if (workspace / "Dockerfile").exists() or list(workspace.glob("**/Dockerfile"))[:1]:
+        add("Docker")
+    return stack[:6] or ["unspecified"]
+
+
+def _readme_label(workspace: Path) -> str:
+    for name in ("README.md", "readme.md", "README.txt"):
+        path = workspace / name
+        if not path.exists():
+            continue
+        try:
+            for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                cleaned = line.strip().lstrip("#").strip()
+                if cleaned:
+                    return f"{name}: {_truncate_markdown(cleaned, limit=120)}"
+        except OSError:
+            continue
+    return "README: not found"
+
+
+def _architecture_label(workspace: Path) -> str:
+    has_apps = (workspace / "apps").is_dir()
+    has_packages = (workspace / "packages").is_dir()
+    has_workspace = (workspace / "pnpm-workspace.yaml").exists() or (workspace / "turbo.json").exists()
+    if has_workspace or (has_apps and has_packages):
+        return "monorepo"
+    if has_apps:
+        return "apps workspace"
+    return "single repository"
+
+
+def _entry_points_label(workspace: Path) -> str:
+    candidates: list[str] = []
+    for rel in (
+        "apps/web",
+        "apps/api",
+        "apps/dashboard",
+        "server",
+        "src",
+        ".github/workflows",
+        "infra",
+        "packages",
+    ):
+        if (workspace / rel).exists():
+            candidates.append(rel)
+    return ", ".join(candidates[:6]) if candidates else "not inferred"
+
+
+def _codebase_synopsis(workspace: Path) -> str:
+    return (
+        f"{_readme_label(workspace)}. "
+        f"Architecture: {_architecture_label(workspace)}. "
+        f"Stack: {', '.join(_infer_stack(workspace))}. "
+        f"Entry points: {_entry_points_label(workspace)}."
+    )
+
+
 def _render_top_findings(
     *,
     repo_full_name: str,
@@ -1036,29 +1198,65 @@ def _render_top_findings(
     findings: list[dict[str, Any]],
 ) -> str:
     if not findings:
-        return "No local gate findings were captured for this run."
+        return "No findings were returned for this run."
 
     lines: list[str] = []
     for idx, row in enumerate(sorted(findings, key=_finding_sort_key)[:_COMMENT_FINDING_LIMIT], start=1):
         severity = str(row.get("severity") or "P3").upper()
-        file_path = str(row.get("file") or "unknown").strip() or "unknown"
-        try:
-            line = int(row.get("line") or 0)
-        except (TypeError, ValueError):
-            line = 0
+        file_path, line = _finding_scope(row)
         locator = f"{file_path}:{line}" if line > 0 else file_path
         title = _truncate_markdown(str(row.get("title") or row.get("description") or "Finding"))
-        tool = _truncate_markdown(str(row.get("tool") or row.get("gateId") or "local-gate"), limit=80)
+        impact = _truncate_markdown(str(row.get("impact") or ""), limit=220)
+        category = _truncate_markdown(
+            str(row.get("category") or row.get("tool") or row.get("gateId") or "review"),
+            limit=80,
+        )
         link = _github_blob_url(repo_full_name, commit_sha, file_path, line)
-        lines.append(f"{idx}. **{severity}** [`{locator}`]({link}) - **{tool}**: {title}")
-        fix = _truncate_markdown(str(row.get("recommendedFix") or ""), limit=240)
+        description = f"{title} {impact}".strip()
+        lines.append(f"{idx}. **{severity}** [`{locator}`]({link}) - **{category}**: {description}")
+        fix = _truncate_markdown(
+            str(row.get("remediation_guidance") or row.get("recommendedFix") or ""),
+            limit=240,
+        )
         if fix:
             lines.append(f"   > Fix: {fix}")
 
     if len(findings) > _COMMENT_FINDING_LIMIT:
         remaining = len(findings) - _COMMENT_FINDING_LIMIT
-        lines.append(f"\n_Additional local findings omitted from this comment: {remaining}. See artifacts._")
+        lines.append(f"\n_Additional findings omitted from this comment: {remaining}. See artifacts._")
     return "\n".join(lines)
+
+
+def _severity_blocks_merge(severity: str, severity_gate: str) -> bool:
+    gate = str(severity_gate or "P1").strip().upper()
+    severity = str(severity or "").strip().upper()
+    if gate == "NONE":
+        return False
+    if gate == "P0":
+        return severity == "P0"
+    if gate == "P2":
+        return severity in {"P0", "P1", "P2"}
+    return severity in {"P0", "P1"}
+
+
+def _result_line(*, gate_status: str, severity_gate: str, counts: dict[str, int]) -> str:
+    label = "Passed" if gate_status == "passed" else ("Blocked" if gate_status == "blocked" else "Errored")
+    blocking_names = [
+        severity
+        for severity in ("P0", "P1", "P2", "P3")
+        if _severity_blocks_merge(severity, severity_gate)
+    ]
+    blocking_total = sum(int(counts.get(severity) or 0) for severity in blocking_names)
+    if gate_status == "passed" and blocking_names:
+        detail = f"no {'/'.join(blocking_names)} findings"
+    elif gate_status == "passed":
+        detail = "severity gate disabled"
+    else:
+        detail = f"{blocking_total} blocking finding(s)"
+    return (
+        f"Result: {label} (severity_gate={severity_gate}): {detail}. "
+        f"Counts: P0={counts['P0']}, P1={counts['P1']}, P2={counts['P2']}, P3={counts['P3']}"
+    )
 
 
 def _render_bridge_pr_comment(
@@ -1080,6 +1278,8 @@ def _render_bridge_pr_comment(
     sbom_mode: str,
     sbom_detail: str,
     local_findings: list[dict[str, Any]],
+    backend_findings_payload: dict[str, Any] | None,
+    workspace: Path,
     commit_sha: str,
 ) -> str:
     local_counts = {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
@@ -1088,45 +1288,49 @@ def _render_bridge_pr_comment(
         if severity in local_counts:
             local_counts[severity] += 1
 
+    backend_findings = _backend_findings(backend_findings_payload)
+    display_findings = backend_findings if backend_findings else local_findings
+    display_counts = _backend_counts(backend_findings_payload, counts)
     marker = _omar_comment_marker(config.repo_full_name, pr_number)
-    counts_marker = json.dumps(counts, separators=(",", ":"), sort_keys=True)
+    counts_marker = json.dumps(display_counts, separators=(",", ":"), sort_keys=True)
     top_findings = _render_top_findings(
         repo_full_name=config.repo_full_name,
         commit_sha=commit_sha,
-        findings=local_findings,
+        findings=display_findings,
     )
+    status_icon = "✅" if gate_status == "passed" else ("❌" if gate_status in {"blocked", "error"} else "⏳")
 
     lines = [
         marker,
         f"<!-- sentinelayer:counts:{counts_marker} -->",
-        "## Omar Gate Compatibility Bridge",
+        f"## 🛡️ Omar Gate: {status_icon} {gate_status.upper()}",
         "",
-        f"**Gate:** `{gate_status}` (threshold `{config.severity_gate}`)",
-        f"**Backend status:** `{status}` / `{progress}`",
-        f"**Scan:** `{command}`",
+        f"Gate: {config.severity_gate}",
+        _result_line(gate_status=gate_status, severity_gate=config.severity_gate, counts=display_counts),
+        "",
+        "| Severity | Count | Blocks Merge? |",
+        "|---|---:|---|",
+        f"| P0 (Critical) | {display_counts['P0']} | {'Yes' if _severity_blocks_merge('P0', config.severity_gate) else 'No'} |",
+        f"| P1 (High) | {display_counts['P1']} | {'Yes' if _severity_blocks_merge('P1', config.severity_gate) else 'No'} |",
+        f"| P2 (Medium) | {display_counts['P2']} | {'Yes' if _severity_blocks_merge('P2', config.severity_gate) else 'No'} |",
+        f"| P3 (Low) | {display_counts['P3']} | {'Yes' if _severity_blocks_merge('P3', config.severity_gate) else 'No'} |",
+        "",
+        f"Codebase Synopsis: {_codebase_synopsis(workspace)}",
+        "",
+        "### Top Findings",
+        top_findings,
+        "",
+        "### Run Details",
+        f"- Backend status: `{status}` / `{progress}`",
+        f"- Scan: `{command}`",
         (
-            "**LLM policy:** "
+            "- LLM policy: "
             f"`managed={str(config.sentinelayer_managed_llm).lower()} "
             f"model={config.model} codex_model={config.codex_model} "
             f"fallback={config.model_fallback} failure_policy={config.llm_failure_policy}`"
         ),
-        "",
-        "| Source | P0 | P1 | P2 | P3 |",
-        "|---|---:|---:|---:|---:|",
-        (
-            "| Sentinelayer backend | "
-            f"{counts['P0']} | {counts['P1']} | {counts['P2']} | {counts['P3']} |"
-        ),
-        (
-            "| Action-local gates | "
-            f"{local_counts['P0']} | {local_counts['P1']} | {local_counts['P2']} | {local_counts['P3']} |"
-        ),
-        "",
-        "### Top Findings",
-        "",
-        top_findings,
-        "",
-        "### Links",
+        f"- Backend findings source: `{str((backend_findings_payload or {}).get('findings_source') or 'run')}`",
+        f"- Action-local gates: `P0={local_counts['P0']} P1={local_counts['P1']} P2={local_counts['P2']} P3={local_counts['P3']}`",
     ]
     if run_url:
         lines.append(f"- Dashboard: {run_url}")
@@ -1137,9 +1341,6 @@ def _render_bridge_pr_comment(
             f"- Run id: `{run_id or 'manual-trigger'}`",
             f"- Playwright gate: `{playwright_status}` ({playwright_mode}) - {playwright_detail}",
             f"- SBOM gate: `{sbom_status}` ({sbom_mode}) - {sbom_detail}",
-            "",
-            "<sub>Posted by sentinelayer-v1-action compatibility bridge. "
-            "This comment is idempotently updated for the current PR.</sub>",
         ]
     )
     return "\n".join(lines)
@@ -1312,6 +1513,10 @@ def main() -> int:
         )
 
         run_id = str(trigger_response.get("investigation_run_id") or "").strip()
+        run_read_token = (
+            str(trigger_response.get("run_result_token") or "").strip()
+            or config.status_poll_token
+        )
         counts = {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
         status = str(trigger_response.get("status") or "accepted").strip().lower()
         progress = "queued"
@@ -1323,7 +1528,7 @@ def main() -> int:
                 status_payload = _api_json_request(
                     method="GET",
                     url=status_url,
-                    token=config.status_poll_token,
+                    token=run_read_token,
                 )
                 status = str(status_payload.get("status") or "queued").strip().lower()
                 progress = str(status_payload.get("progress_label") or "").strip() or status
@@ -1372,6 +1577,15 @@ def main() -> int:
         evidence_url = f"{run_url}/evidence" if run_url else ""
         workspace = _workspace_root()
         local_findings = _load_local_findings(workspace)
+        backend_findings_payload = (
+            _fetch_backend_run_findings(
+                config=config,
+                run_id=run_id,
+                run_read_token=run_read_token,
+            )
+            if run_id
+            else None
+        )
         comment_body = _render_bridge_pr_comment(
             config=config,
             pr_number=pr_number,
@@ -1390,6 +1604,8 @@ def main() -> int:
             sbom_mode=sbom_mode,
             sbom_detail=sbom_detail,
             local_findings=local_findings,
+            backend_findings_payload=backend_findings_payload,
+            workspace=workspace,
             commit_sha=commit_sha,
         )
         bridge_summary = {
@@ -1403,6 +1619,7 @@ def main() -> int:
             "severity_gate": config.severity_gate,
             "scan_command": command,
             "counts": counts,
+            "backend_findings_count": len(_backend_findings(backend_findings_payload)),
             "local_findings_count": len(local_findings),
             "run_url": run_url,
             "evidence_url": evidence_url,
@@ -1432,7 +1649,7 @@ def main() -> int:
             print(f"::notice::Omar Gate PR comment upserted: {comment_url}")
 
         summary_lines = [
-            "## Omar Gate Compatibility Bridge",
+            "## Omar Gate",
             f"- Action version: `{ACTION_VERSION}`",
             f"- Scan command: `{command}`",
             f"- Repository: `{config.repo_full_name}`",
