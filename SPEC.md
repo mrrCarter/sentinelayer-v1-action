@@ -9,15 +9,19 @@ comment, and writes downloadable evidence artifacts.
 
 ## Required Behavior
 
-- Primary implementation lives in `src/omargate/main.py`. Bridge behavior is
+- Primary implementation lives in `src/omargate/main.py`. Action behavior is
   covered by `tests/test_main_bridge.py`; action metadata and upload visibility
   are covered by `tests/test_action_yml_visibility.py`.
 - The action must fail closed when Sentinelayer orchestration fails or when
   findings at or above the configured `severity_gate` are present.
-- The compatibility bridge must preserve the historical PR visibility surface:
-  an idempotent PR comment containing `sentinelayer:omar-gate:` and enough
-  finding context for downstream scoped-count scripts.
-- The bridge must write persistent evidence under `.sentinelayer/runs/**` and
+- The action must preserve the historical PR visibility surface: an idempotent
+  Omar Gate PR comment containing `sentinelayer:omar-gate:`, the original
+  severity table, codebase synopsis, and backend top findings.
+- When the backend trigger response includes `run_result_token`, the action must
+  use that run-bound token for subsequent status and findings reads. It may fall
+  back to `status_poll_token` only for older backends that do not return a
+  per-run token.
+- The action must write persistent evidence under `.sentinelayer/runs/**` and
   `.sentinelayer/artifacts/**` so the composite upload step has real files.
 - The action must keep `gate_status`, severity counts, run id, scan mode, model,
   and optional Playwright/SBOM status outputs stable for callers.
