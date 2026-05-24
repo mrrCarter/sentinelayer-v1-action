@@ -113,8 +113,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          python -m pip install "openai>=1.40.0"
+          # Pinned to exact versions for deterministic, reproducible scans.
+          # openai pinned to the latest stable release of the 1.x line the
+          # inline scanner was written/tested against (responses + chat APIs).
+          # Bump deliberately (e.g. to a verified 2.x) rather than floating.
+          python -m pip install "pip==24.2"
+          python -m pip install "openai==1.109.1"
 
       - name: Omar Deep Scan (OpenAI fallback)
         id: omar
@@ -216,9 +220,30 @@ jobs:
           model_fallback = os.environ.get("OPENAI_FALLBACK_MODEL", "gpt-5.2-codex")
           models = [m for m in [model_primary, model_fallback] if m]
 
+          import time
+
           from openai import OpenAI
 
-          client = OpenAI()
+          # Explicit request timeout + bounded SDK-level retries so a hung or
+          # flaky provider cannot stall the gate; we also wrap calls in our own
+          # bounded retry loop below and FAIL CLOSED on exhaustion.
+          client = OpenAI(timeout=60, max_retries=2)
+
+          MAX_RETRIES = 2  # hand-rolled retries on top of SDK max_retries
+
+          def call_with_retry(caller, model):
+              attempt = 0
+              while True:
+                  try:
+                      return caller(model)
+                  except Exception:
+                      if attempt >= MAX_RETRIES:
+                          raise
+                      # Exponential backoff with a small jitter, capped at 8s.
+                      backoff = min(2 ** attempt, 8)
+                      jitter = min(0.25 * (attempt + 1), 1.0)
+                      time.sleep(backoff + jitter)
+                      attempt += 1
 
           def call_responses(model):
               resp = client.responses.create(
@@ -256,7 +281,7 @@ jobs:
           for model in models:
               for caller in (call_responses, call_chat):
                   try:
-                      raw = caller(model)
+                      raw = call_with_retry(caller, model)
                       if raw and raw.strip():
                           model_used = model
                           break
@@ -267,7 +292,14 @@ jobs:
                   break
 
           if not model_used:
-              print(f"::error::Omar deep scan failed to obtain an LLM response: {last_err}", file=sys.stderr)
+              # FAIL CLOSED on timeout / retry exhaustion (llm_failure_policy=block).
+              # Redacted diagnostics only — never emit the raw provider error body.
+              err_type = type(last_err).__name__ if last_err is not None else "NoResponse"
+              print(
+                  "::error::Omar deep scan failed to obtain an LLM response after "
+                  f"bounded retries; failing closed (type={err_type}).",
+                  file=sys.stderr,
+              )
               sys.exit(1)
 
           # --- Parse JSON (tolerate code fences) -------------------------------
@@ -286,8 +318,16 @@ jobs:
           try:
               data = parse_json(raw)
           except Exception as exc:  # noqa: BLE001
-              print(f"::error::Could not parse Omar JSON response: {exc}", file=sys.stderr)
-              print(raw[:2000], file=sys.stderr)
+              # Redacted diagnostics only — NEVER print the raw model output,
+              # the prompt, or any provider error body (the diff-derived content
+              # would otherwise leak into CI logs).
+              import hashlib
+              _h = hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:12]
+              print(
+                  f"::error::Omar LLM output JSON parse failed: type={type(exc).__name__} "
+                  f"len={len(raw)} sha256_12={_h} err={str(exc)[:120]}",
+                  file=sys.stderr,
+              )
               sys.exit(1)
 
           summary = (data.get("summary") or "").strip() or "(no summary provided)"
