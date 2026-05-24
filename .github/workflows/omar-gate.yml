@@ -1,11 +1,14 @@
-name: Omar Gate
+name: Omar Gate (Real-LLM self-scan)
 
 on:
   pull_request:
+    branches:
+      - main
     types:
       - opened
       - synchronize
       - reopened
+      - ready_for_review
   workflow_dispatch:
     inputs:
       scan_mode:
@@ -28,60 +31,485 @@ on:
           - P1
           - P2
           - none
-      pr_number:
-        description: Optional PR number override for workflow_dispatch
-        required: false
-        default: ""
-        type: string
 
 permissions:
   contents: read
-  checks: write
-  pull-requests: write
   id-token: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  omar_gate:
+  omar-gate:
     name: Omar Gate
     runs-on: ubuntu-22.04
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+      id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v4.1.7
+        with:
+          fetch-depth: 0
 
-      - name: Validate Sentinelayer token secret
+      - name: Detect Sentinelayer token
+        id: detect
         shell: bash
         env:
           SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
         run: |
           set -euo pipefail
-          test -n "${SENTINELAYER_TOKEN}" || (echo "Missing SENTINELAYER_TOKEN" && exit 1)
+          if [ -n "${SENTINELAYER_TOKEN:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Run Omar Gate
-        id: omar
-        uses: ./
+      - name: Omar Gate — Sentinelayer Security Review
+        if: ${{ steps.detect.outputs.enabled == 'true' }}
+        uses: mrrCarter/sentinelayer-v1-action@8595c4ad41e7b710ff6b1de0603da6ad8c0c3c07 # v1.3.4
         with:
           github_token: ${{ github.token }}
           sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
-          sentinelayer_managed_llm: "true"
-          scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
+          sentinelayer_spec_id: ${{ vars.SENTINELAYER_SPEC_ID || '' }}
+          sentinelayer_managed_llm: false
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
-          pr_number: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || '' }}
+          scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           model: gpt-5.3-codex
+          model_fallback: gpt-5.2-codex
           codex_model: gpt-5.3-codex
-          model_fallback: gpt-4.1-mini
-          use_codex: "true"
-          codex_only: "false"
           llm_failure_policy: block
+          fork_policy: block
 
-      - name: Summarize Omar outputs
-        if: always()
+      - name: Verify OpenAI key configured
+        if: ${{ steps.detect.outputs.enabled != 'true' }}
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "::error::Neither SENTINELAYER_TOKEN nor OPENAI_API_KEY is configured; cannot run Omar deep scan." >&2
+            exit 1
+          fi
+          echo "OpenAI key present; running BYOK deep-scan fallback."
+
+      - name: Set up Python
+        if: ${{ steps.detect.outputs.enabled != 'true' }}
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.1.1
+        with:
+          python-version: "3.11"
+
+      - name: Install OpenAI SDK
+        if: ${{ steps.detect.outputs.enabled != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
-          {
-            echo "## Omar Gate"
-            echo "- run_id: \`${{ steps.omar.outputs.run_id }}\`"
-            echo "- gate_status: \`${{ steps.omar.outputs.gate_status }}\`"
-            echo "- findings: \`P0=${{ steps.omar.outputs.p0_count }} P1=${{ steps.omar.outputs.p1_count }} P2=${{ steps.omar.outputs.p2_count }} P3=${{ steps.omar.outputs.p3_count }}\`"
-          } >> "${GITHUB_STEP_SUMMARY}"
+          python -m pip install --upgrade pip
+          python -m pip install "openai>=1.40.0"
+
+      - name: Omar Deep Scan (OpenAI fallback)
+        id: omar
+        if: ${{ steps.detect.outputs.enabled != 'true' }}
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: gpt-5.3-codex
+          OPENAI_FALLBACK_MODEL: gpt-5.2-codex
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+
+          MAX_DIFF_CHARS = 160000
+
+          def out(key, value):
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                  fh.write(f"{key}={value}\n")
+
+          def out_multiline(key, value):
+              delim = "OMAR_EOF_%s" % key.upper()
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                  fh.write(f"{key}<<{delim}\n{value}\n{delim}\n")
+
+          # --- Resolve PR context from the event payload -----------------------
+          event_path = os.environ.get("GITHUB_EVENT_PATH", "")
+          event = {}
+          if event_path and os.path.exists(event_path):
+              with open(event_path, "r", encoding="utf-8") as fh:
+                  event = json.load(fh)
+
+          pr = event.get("pull_request") or {}
+          pr_number = pr.get("number") or event.get("number") or ""
+          base_sha = (pr.get("base") or {}).get("sha") or os.environ.get("GITHUB_BASE_REF", "")
+          head_sha = (pr.get("head") or {}).get("sha") or os.environ.get("GITHUB_SHA", "")
+
+          # --- Collect the changed files + unified diff ------------------------
+          def git(args):
+              return subprocess.run(
+                  ["git"] + args,
+                  capture_output=True,
+                  text=True,
+              )
+
+          changed_files = []
+          diff_text = ""
+          if base_sha and head_sha:
+              r = git(["diff", "--name-only", f"{base_sha}...{head_sha}"])
+              if r.returncode == 0:
+                  changed_files = [ln for ln in r.stdout.splitlines() if ln.strip()]
+              d = git(["diff", f"{base_sha}...{head_sha}"])
+              if d.returncode == 0:
+                  diff_text = d.stdout
+
+          if not diff_text:
+              # Fallback: diff against the merge-base of HEAD~1 if shas unavailable.
+              d = git(["diff", "HEAD~1...HEAD"])
+              if d.returncode == 0:
+                  diff_text = d.stdout
+              n = git(["diff", "--name-only", "HEAD~1...HEAD"])
+              if n.returncode == 0 and not changed_files:
+                  changed_files = [ln for ln in n.stdout.splitlines() if ln.strip()]
+
+          truncated = False
+          if len(diff_text) > MAX_DIFF_CHARS:
+              diff_text = diff_text[:MAX_DIFF_CHARS]
+              truncated = True
+
+          # --- Build the strict-JSON prompt ------------------------------------
+          system_prompt = (
+              "You are Omar, a strict senior release engineer and QA bug hunter. "
+              "Review the supplied pull-request diff for correctness bugs, regressions, "
+              "security issues, crashes, data loss, and concrete release blockers. "
+              "Respond with STRICT JSON only — no prose outside the JSON object. "
+              "Schema: {\"summary\": string, \"findings\": [{\"severity\": one of "
+              "\"P0\"|\"P1\"|\"P2\"|\"P3\", \"file\": string, \"issue\": string, "
+              "\"fix\": string, \"confidence\": one of \"high\"|\"medium\"|\"low\"}], "
+              "\"testing_gaps\": [string]}. Reserve P0/P1 for concrete, demonstrable "
+              "blocking defects; do not block on vague or stylistic advice."
+          )
+          user_prompt = (
+              f"Pull request #{pr_number}\n"
+              f"Base: {base_sha}\nHead: {head_sha}\n"
+              f"Changed files ({len(changed_files)}):\n"
+              + "\n".join(changed_files)
+              + "\n\nUnified diff"
+              + (" (TRUNCATED)" if truncated else "")
+              + ":\n\n"
+              + diff_text
+          )
+
+          model_primary = os.environ.get("OPENAI_MODEL", "gpt-5.3-codex")
+          model_fallback = os.environ.get("OPENAI_FALLBACK_MODEL", "gpt-5.2-codex")
+          models = [m for m in [model_primary, model_fallback] if m]
+
+          from openai import OpenAI
+
+          client = OpenAI()
+
+          def call_responses(model):
+              resp = client.responses.create(
+                  model=model,
+                  input=[
+                      {"role": "system", "content": system_prompt},
+                      {"role": "user", "content": user_prompt},
+                  ],
+              )
+              text = getattr(resp, "output_text", None)
+              if text:
+                  return text
+              # Manual extraction fallback for SDK variance.
+              chunks = []
+              for item in getattr(resp, "output", []) or []:
+                  for c in getattr(item, "content", []) or []:
+                      t = getattr(c, "text", None)
+                      if t:
+                          chunks.append(t)
+              return "".join(chunks)
+
+          def call_chat(model):
+              resp = client.chat.completions.create(
+                  model=model,
+                  messages=[
+                      {"role": "system", "content": system_prompt},
+                      {"role": "user", "content": user_prompt},
+                  ],
+              )
+              return resp.choices[0].message.content or ""
+
+          raw = ""
+          model_used = ""
+          last_err = None
+          for model in models:
+              for caller in (call_responses, call_chat):
+                  try:
+                      raw = caller(model)
+                      if raw and raw.strip():
+                          model_used = model
+                          break
+                  except Exception as exc:  # noqa: BLE001 - report + fall through
+                      last_err = exc
+                      continue
+              if model_used:
+                  break
+
+          if not model_used:
+              print(f"::error::Omar deep scan failed to obtain an LLM response: {last_err}", file=sys.stderr)
+              sys.exit(1)
+
+          # --- Parse JSON (tolerate code fences) -------------------------------
+          def parse_json(text):
+              text = text.strip()
+              fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+              if fence:
+                  text = fence.group(1)
+              else:
+                  start = text.find("{")
+                  end = text.rfind("}")
+                  if start != -1 and end != -1 and end > start:
+                      text = text[start:end + 1]
+              return json.loads(text)
+
+          try:
+              data = parse_json(raw)
+          except Exception as exc:  # noqa: BLE001
+              print(f"::error::Could not parse Omar JSON response: {exc}", file=sys.stderr)
+              print(raw[:2000], file=sys.stderr)
+              sys.exit(1)
+
+          summary = (data.get("summary") or "").strip() or "(no summary provided)"
+          findings = data.get("findings") or []
+          testing_gaps = data.get("testing_gaps") or []
+
+          # --- Demote false-blocks ---------------------------------------------
+          # Demote P0/P1 to P2 when the finding is test-file-only OR lacks a
+          # concrete blocking signal, to avoid vague-advisory false-blocks.
+          BLOCK_SIGNALS = (
+              "bug", "regression", "security", "crash", "vulnerab", "injection",
+              "data loss", "corrupt", "deadlock", "race", "leak", "overflow",
+              "broken", "fail", "exception", "null", "undefined", "panic",
+              "missing", "incorrect", "unsafe", "exploit", "bypass", "auth",
+          )
+          TEST_PATH_HINT = re.compile(r"(^|/)(tests?|__tests__|spec)(/|$)|_test\.|\.test\.|\.spec\.", re.IGNORECASE)
+
+          def is_test_only(path):
+              if not path:
+                  return False
+              return bool(TEST_PATH_HINT.search(path))
+
+          def has_block_signal(finding):
+              blob = " ".join(
+                  str(finding.get(k, "")) for k in ("issue", "fix", "summary")
+              ).lower()
+              return any(sig in blob for sig in BLOCK_SIGNALS)
+
+          normalized = []
+          for f in findings:
+              sev = str(f.get("severity", "P3")).upper().strip()
+              if sev not in ("P0", "P1", "P2", "P3"):
+                  sev = "P3"
+              path = str(f.get("file", "") or "")
+              if sev in ("P0", "P1"):
+                  if is_test_only(path) or not has_block_signal(f):
+                      sev = "P2"
+              normalized.append({
+                  "severity": sev,
+                  "file": path or "(unspecified)",
+                  "issue": str(f.get("issue", "")).strip(),
+                  "fix": str(f.get("fix", "")).strip(),
+                  "confidence": str(f.get("confidence", "")).strip() or "n/a",
+              })
+
+          counts = {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
+          for f in normalized:
+              counts[f["severity"]] += 1
+
+          gate_status = "blocked" if (counts["P0"] > 0 or counts["P1"] > 0) else "passed"
+
+          # --- Build the markdown comment body ---------------------------------
+          status_emoji = "BLOCKED" if gate_status == "blocked" else "PASSED"
+          lines = []
+          lines.append("<!-- omar-openai-summary -->")
+          lines.append("## Omar Deep Scan (OpenAI fallback)")
+          lines.append("")
+          lines.append(f"**Gate status:** `{gate_status}` ({status_emoji})")
+          lines.append(f"**Model used:** `{model_used}`")
+          if truncated:
+              lines.append("")
+              lines.append(f"> Note: diff truncated to {MAX_DIFF_CHARS} chars for review.")
+          lines.append("")
+          lines.append("### Summary")
+          lines.append("")
+          lines.append(summary)
+          lines.append("")
+          lines.append("### Severity matrix")
+          lines.append("")
+          lines.append("| P0 | P1 | P2 | P3 |")
+          lines.append("| --- | --- | --- | --- |")
+          lines.append(f"| {counts['P0']} | {counts['P1']} | {counts['P2']} | {counts['P3']} |")
+          lines.append("")
+          lines.append("### Findings")
+          lines.append("")
+          if normalized:
+              lines.append("| Severity | File | Issue | Suggested fix | Confidence |")
+              lines.append("| --- | --- | --- | --- | --- |")
+              def cell(s):
+                  return str(s).replace("|", "\\|").replace("\n", " ").strip()
+              for f in normalized:
+                  lines.append(
+                      f"| {f['severity']} | {cell(f['file'])} | {cell(f['issue'])} | "
+                      f"{cell(f['fix'])} | {f['confidence']} |"
+                  )
+          else:
+              lines.append("No findings reported.")
+          lines.append("")
+          lines.append("### Changed files")
+          lines.append("")
+          if changed_files:
+              for cf in changed_files:
+                  lines.append(f"- `{cf}`")
+          else:
+              lines.append("- (none detected)")
+          lines.append("")
+          lines.append("### Testing gaps")
+          lines.append("")
+          if testing_gaps:
+              for g in testing_gaps:
+                  lines.append(f"- {str(g).strip()}")
+          else:
+              lines.append("- None reported.")
+          lines.append("")
+
+          body = "\n".join(lines)
+
+          comment_path = os.path.join(os.environ.get("RUNNER_TEMP", "/tmp"), "omar_comment.md")
+          with open(comment_path, "w", encoding="utf-8") as fh:
+              fh.write(body)
+
+          step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if step_summary:
+              with open(step_summary, "a", encoding="utf-8") as fh:
+                  fh.write(body + "\n")
+
+          out("p0_count", counts["P0"])
+          out("p1_count", counts["P1"])
+          out("p2_count", counts["P2"])
+          out("p3_count", counts["P3"])
+          out("gate_status", gate_status)
+          out("pr_number", pr_number)
+          out("comment_path", comment_path)
+          out("model_used", model_used)
+
+          print(f"Omar deep scan complete: status={gate_status} "
+                f"P0={counts['P0']} P1={counts['P1']} P2={counts['P2']} P3={counts['P3']} "
+                f"model={model_used}")
+          PY
+
+      - name: Upsert Omar PR comment
+        if: ${{ steps.detect.outputs.enabled != 'true' && steps.omar.outputs.pr_number != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.omar.outputs.pr_number }}
+          COMMENT_PATH: ${{ steps.omar.outputs.comment_path }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          repo = os.environ["REPO"]
+          pr_number = os.environ["PR_NUMBER"]
+          comment_path = os.environ["COMMENT_PATH"]
+          marker = "<!-- omar-openai-summary -->"
+
+          with open(comment_path, "r", encoding="utf-8") as fh:
+              body = fh.read()
+
+          def gh_api(args, input_data=None):
+              return subprocess.run(
+                  ["gh", "api"] + args,
+                  capture_output=True,
+                  text=True,
+                  input=input_data,
+              )
+
+          # List existing issue comments and find ours by marker + bot author.
+          existing_id = None
+          page = 1
+          while True:
+              r = gh_api([
+                  "-X", "GET",
+                  f"/repos/{repo}/issues/{pr_number}/comments",
+                  "-f", "per_page=100",
+                  "-f", f"page={page}",
+              ])
+              if r.returncode != 0:
+                  print(r.stderr)
+                  break
+              comments = json.loads(r.stdout or "[]")
+              if not comments:
+                  break
+              for c in comments:
+                  login = (c.get("user") or {}).get("login", "")
+                  if marker in (c.get("body") or "") and login == "github-actions[bot]":
+                      existing_id = c.get("id")
+                      break
+              if existing_id or len(comments) < 100:
+                  break
+              page += 1
+
+          payload = json.dumps({"body": body})
+          if existing_id:
+              r = gh_api([
+                  "-X", "PATCH",
+                  f"/repos/{repo}/issues/comments/{existing_id}",
+                  "--input", "-",
+              ], input_data=payload)
+              action = "updated"
+          else:
+              r = gh_api([
+                  "-X", "POST",
+                  f"/repos/{repo}/issues/{pr_number}/comments",
+                  "--input", "-",
+              ], input_data=payload)
+              action = "created"
+
+          if r.returncode != 0:
+              print(f"::error::Failed to upsert Omar comment: {r.stderr}")
+              raise SystemExit(1)
+          print(f"Omar PR comment {action}.")
+          PY
+
+      - name: Enforce P1 gate
+        if: ${{ steps.detect.outputs.enabled != 'true' }}
+        shell: bash
+        env:
+          P0_COUNT: ${{ steps.omar.outputs.p0_count }}
+          P1_COUNT: ${{ steps.omar.outputs.p1_count }}
+          GATE_STATUS: ${{ steps.omar.outputs.gate_status }}
+        run: |
+          set -euo pipefail
+          p0="${P0_COUNT:-0}"
+          p1="${P1_COUNT:-0}"
+          echo "Omar gate status: ${GATE_STATUS:-unknown} (P0=${p0} P1=${p1})"
+          if [ "${p0}" -gt 0 ] || [ "${p1}" -gt 0 ]; then
+            echo "::error::Omar gate blocked: ${p0} P0 and ${p1} P1 finding(s) at or above the P1 severity gate." >&2
+            exit 1
+          fi
+          echo "Omar gate passed."
