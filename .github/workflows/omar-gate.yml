@@ -81,8 +81,8 @@ jobs:
           sentinelayer_spec_id: ${{ vars.SENTINELAYER_SPEC_ID || '' }}
           sentinelayer_managed_llm: false
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          severity_gate: P1
-          scan_mode: deep
+          severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
+          scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           model: gpt-5.3-codex
           model_fallback: gpt-5.2-codex
           codex_model: gpt-5.3-codex
