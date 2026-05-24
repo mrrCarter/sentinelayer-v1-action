@@ -541,6 +541,35 @@ def test_main_updates_existing_omar_pr_comment(
     assert not any(req.get("method") == "POST" for req in github_requests)
 
 
+def test_main_comment_upsert_failure_is_fail_soft(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = _bridge_config(tmp_path, wait_for_completion=False)
+
+    def _fake_api_request(**kwargs: object) -> dict[str, object]:
+        return {"status": "accepted", "investigation_run_id": "run-3"}
+
+    def _fake_github_request(**kwargs: object) -> object:
+        raise RuntimeError("resource not accessible by integration")
+
+    monkeypatch.setattr("omargate.main._load_config", lambda: config)
+    monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._execute_sbom_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._api_json_request", _fake_api_request)
+    monkeypatch.setattr("omargate.main._github_api_json_request", _fake_github_request)
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+
+    exit_code = main()
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Omar Gate PR comment skipped" in captured.out
+    assert "resource not accessible by integration" in captured.out
+    assert (tmp_path / ".sentinelayer" / "runs" / "run-3" / "RUN_SUMMARY.json").exists()
+
+
 def test_api_json_request_uses_long_enough_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
