@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-ACTION_VERSION = "1.5.5"
+ACTION_VERSION = "1.5.6"
 SENTINELAYER_WEB_BASE = "https://sentinelayer.com"
 _API_REQUEST_TIMEOUT_SECONDS = 120
 _SPEC_DISCOVERY_MAX_FILES = 24
@@ -1165,7 +1165,8 @@ def _upsert_omar_pr_comment(
     try:
         comments = _github_api_json_request(url=list_comments_url, github_token=token)
     except Exception as exc:
-        raise RuntimeError(f"Unable to list PR comments for Omar Gate upsert: {exc}") from exc
+        print(f"::warning::Omar Gate PR comment skipped: unable to list PR comments: {exc}")
+        return None
 
     if not isinstance(comments, list):
         comments = []
@@ -1180,22 +1181,30 @@ def _upsert_omar_pr_comment(
         if not isinstance(comment_id, int):
             continue
         update_url = _github_api_repo_url(config.repo_full_name, f"issues/comments/{comment_id}")
-        response = _github_api_json_request(
-            url=update_url,
-            github_token=token,
-            method="PATCH",
-            payload={"body": body},
-        )
+        try:
+            response = _github_api_json_request(
+                url=update_url,
+                github_token=token,
+                method="PATCH",
+                payload={"body": body},
+            )
+        except Exception as exc:
+            print(f"::warning::Omar Gate PR comment update skipped: {exc}")
+            return None
         if isinstance(response, dict):
             return str(response.get("html_url") or "")
         return None
 
-    response = _github_api_json_request(
-        url=comments_url,
-        github_token=token,
-        method="POST",
-        payload={"body": body},
-    )
+    try:
+        response = _github_api_json_request(
+            url=comments_url,
+            github_token=token,
+            method="POST",
+            payload={"body": body},
+        )
+    except Exception as exc:
+        print(f"::warning::Omar Gate PR comment create skipped: {exc}")
+        return None
     if isinstance(response, dict):
         return str(response.get("html_url") or "")
     return None

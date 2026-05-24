@@ -29,6 +29,8 @@ comment, and writes downloadable evidence artifacts.
 - Do not include tokens, raw secrets, or provider credentials in comments,
   summaries, or artifacts.
 - PR-comment updates must be idempotent and scoped to the current PR.
+- PR-comment permission or GitHub API failures must be fail-soft warnings:
+  they must not convert a passing Sentinelayer scan into a failed Omar Gate.
 - Fork PRs must not receive repository secrets through the dogfooding workflow.
 - Local findings are advisory unless their configured severity threshold blocks;
   backend severity counts remain the bridge output contract.
