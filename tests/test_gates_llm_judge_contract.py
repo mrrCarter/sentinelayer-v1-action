@@ -23,7 +23,7 @@ _BASE_FINDING = {
     "category": "sql_injection",
     "confidence": 0.9,
     "recommended_fix": "Use parameterized queries.",
-    "evidence": "query = 'SELECT * FROM users WHERE id=' + user_input",
+    "evidence": "query builder appends user input into an unsafe predicate",
 }
 
 

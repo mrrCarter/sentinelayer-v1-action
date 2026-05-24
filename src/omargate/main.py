@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import urllib.parse
 import shlex
 import subprocess
@@ -14,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-ACTION_VERSION = "1.5.4"
+ACTION_VERSION = "1.5.5"
 SENTINELAYER_WEB_BASE = "https://sentinelayer.com"
 _API_REQUEST_TIMEOUT_SECONDS = 120
 _SPEC_DISCOVERY_MAX_FILES = 24
@@ -41,6 +42,9 @@ _SBOM_PYTHON_REQUIREMENTS_FILES = (
     "requirements-dev.txt",
     "requirements-prod.txt",
 )
+_OMAR_COMMENT_MARKER_PREFIX = "sentinelayer:omar-gate:"
+_LOCAL_FINDINGS_RELATIVE_PATH = Path(".omargate/local/FINDINGS.jsonl")
+_COMMENT_FINDING_LIMIT = 10
 
 
 @dataclass(frozen=True)
@@ -481,17 +485,52 @@ def _api_json_request(
         raise RuntimeError(f"API request failed [{url}]: {exc}") from exc
 
 
-def _github_api_json_request(*, url: str, github_token: str) -> Any:
+def _github_api_json_request(
+    *,
+    url: str,
+    github_token: str,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+) -> Any:
+    body: bytes | None = None
     headers = {
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {github_token}",
+        "Content-Type": "application/json",
         "User-Agent": f"sentinelayer-compat-action/{ACTION_VERSION}",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    request = urllib.request.Request(url=url, method="GET", headers=headers)
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(url=url, method=method, data=body, headers=headers)
     with urllib.request.urlopen(request, timeout=20) as response:
         raw = response.read().decode("utf-8")
         return json.loads(raw) if raw else None
+
+
+def _github_api_repo_url(repo_full_name: str, path: str) -> str:
+    repo = str(repo_full_name or "").strip()
+    if repo.count("/") != 1:
+        raise RuntimeError(f"Invalid GitHub repository name: {repo!r}")
+    owner, name = repo.split("/", 1)
+    allowed_repo_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+    if (
+        not owner
+        or not name
+        or any(ch not in allowed_repo_chars for ch in owner)
+        or any(ch not in allowed_repo_chars for ch in name)
+    ):
+        raise RuntimeError(f"Invalid GitHub repository name: {repo!r}")
+    normalized_path = str(path or "").lstrip("/")
+    return (
+        "https://api.github.com/repos/"
+        f"{urllib.parse.quote(owner, safe='')}/{urllib.parse.quote(name, safe='')}/"
+        f"{normalized_path}"
+    )
+
+
+def _omar_comment_marker(repo_full_name: str, pr_number: int) -> str:
+    return f"<!-- {_OMAR_COMMENT_MARKER_PREFIX}{repo_full_name}:pr-{pr_number} -->"
 
 
 def _resolve_pr_number_from_commit(
@@ -935,6 +974,263 @@ def _emit_outputs(
     _write_output("sbom_mode", sbom_mode)
 
 
+def _workspace_root() -> Path:
+    raw = str(os.environ.get("GITHUB_WORKSPACE") or ".").strip() or "."
+    return Path(raw).resolve()
+
+
+def _safe_run_slug(run_id: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(run_id or "").strip()).strip(".-")
+    return slug[:160] or "manual-trigger"
+
+
+def _load_local_findings(workspace: Path) -> list[dict[str, Any]]:
+    findings_path = workspace / _LOCAL_FINDINGS_RELATIVE_PATH
+    if not findings_path.exists():
+        return []
+    findings: list[dict[str, Any]] = []
+    with findings_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                row = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                findings.append(row)
+    return findings
+
+
+def _finding_sort_key(row: dict[str, Any]) -> tuple[int, str, int]:
+    sev_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+    severity = str(row.get("severity") or "").upper()
+    file_path = str(row.get("file") or "")
+    try:
+        line = int(row.get("line") or 0)
+    except (TypeError, ValueError):
+        line = 0
+    return (sev_order.get(severity, 99), file_path, line)
+
+
+def _truncate_markdown(value: str, *, limit: int = 320) -> str:
+    clean = " ".join(str(value or "").replace("\r", " ").replace("\n", " ").split())
+    if len(clean) <= limit:
+        return clean
+    return clean[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _github_blob_url(repo_full_name: str, commit_sha: str, file_path: str, line: int) -> str:
+    repo = urllib.parse.quote(str(repo_full_name or "").strip(), safe="/")
+    commit = urllib.parse.quote(str(commit_sha or "HEAD").strip() or "HEAD", safe="")
+    path = urllib.parse.quote(str(file_path or "").lstrip("/"), safe="/")
+    suffix = f"#L{line}" if line > 0 else ""
+    return f"https://github.com/{repo}/blob/{commit}/{path}{suffix}"
+
+
+def _render_top_findings(
+    *,
+    repo_full_name: str,
+    commit_sha: str,
+    findings: list[dict[str, Any]],
+) -> str:
+    if not findings:
+        return "No local gate findings were captured for this run."
+
+    lines: list[str] = []
+    for idx, row in enumerate(sorted(findings, key=_finding_sort_key)[:_COMMENT_FINDING_LIMIT], start=1):
+        severity = str(row.get("severity") or "P3").upper()
+        file_path = str(row.get("file") or "unknown").strip() or "unknown"
+        try:
+            line = int(row.get("line") or 0)
+        except (TypeError, ValueError):
+            line = 0
+        locator = f"{file_path}:{line}" if line > 0 else file_path
+        title = _truncate_markdown(str(row.get("title") or row.get("description") or "Finding"))
+        tool = _truncate_markdown(str(row.get("tool") or row.get("gateId") or "local-gate"), limit=80)
+        link = _github_blob_url(repo_full_name, commit_sha, file_path, line)
+        lines.append(f"{idx}. **{severity}** [`{locator}`]({link}) - **{tool}**: {title}")
+        fix = _truncate_markdown(str(row.get("recommendedFix") or ""), limit=240)
+        if fix:
+            lines.append(f"   > Fix: {fix}")
+
+    if len(findings) > _COMMENT_FINDING_LIMIT:
+        remaining = len(findings) - _COMMENT_FINDING_LIMIT
+        lines.append(f"\n_Additional local findings omitted from this comment: {remaining}. See artifacts._")
+    return "\n".join(lines)
+
+
+def _render_bridge_pr_comment(
+    *,
+    config: BridgeConfig,
+    pr_number: int,
+    run_id: str,
+    command: str,
+    status: str,
+    progress: str,
+    counts: dict[str, int],
+    gate_status: str,
+    run_url: str,
+    evidence_url: str,
+    playwright_status: str,
+    playwright_mode: str,
+    playwright_detail: str,
+    sbom_status: str,
+    sbom_mode: str,
+    sbom_detail: str,
+    local_findings: list[dict[str, Any]],
+    commit_sha: str,
+) -> str:
+    local_counts = {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
+    for row in local_findings:
+        severity = str(row.get("severity") or "").upper()
+        if severity in local_counts:
+            local_counts[severity] += 1
+
+    marker = _omar_comment_marker(config.repo_full_name, pr_number)
+    counts_marker = json.dumps(counts, separators=(",", ":"), sort_keys=True)
+    top_findings = _render_top_findings(
+        repo_full_name=config.repo_full_name,
+        commit_sha=commit_sha,
+        findings=local_findings,
+    )
+
+    lines = [
+        marker,
+        f"<!-- sentinelayer:counts:{counts_marker} -->",
+        "## Omar Gate Compatibility Bridge",
+        "",
+        f"**Gate:** `{gate_status}` (threshold `{config.severity_gate}`)",
+        f"**Backend status:** `{status}` / `{progress}`",
+        f"**Scan:** `{command}`",
+        (
+            "**LLM policy:** "
+            f"`managed={str(config.sentinelayer_managed_llm).lower()} "
+            f"model={config.model} codex_model={config.codex_model} "
+            f"fallback={config.model_fallback} failure_policy={config.llm_failure_policy}`"
+        ),
+        "",
+        "| Source | P0 | P1 | P2 | P3 |",
+        "|---|---:|---:|---:|---:|",
+        (
+            "| Sentinelayer backend | "
+            f"{counts['P0']} | {counts['P1']} | {counts['P2']} | {counts['P3']} |"
+        ),
+        (
+            "| Action-local gates | "
+            f"{local_counts['P0']} | {local_counts['P1']} | {local_counts['P2']} | {local_counts['P3']} |"
+        ),
+        "",
+        "### Top Findings",
+        "",
+        top_findings,
+        "",
+        "### Links",
+    ]
+    if run_url:
+        lines.append(f"- Dashboard: {run_url}")
+    if evidence_url:
+        lines.append(f"- Evidence: {evidence_url}")
+    lines.extend(
+        [
+            f"- Run id: `{run_id or 'manual-trigger'}`",
+            f"- Playwright gate: `{playwright_status}` ({playwright_mode}) - {playwright_detail}",
+            f"- SBOM gate: `{sbom_status}` ({sbom_mode}) - {sbom_detail}",
+            "",
+            "<sub>Posted by sentinelayer-v1-action compatibility bridge. "
+            "This comment is idempotently updated for the current PR.</sub>",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _upsert_omar_pr_comment(
+    *,
+    config: BridgeConfig,
+    pr_number: int,
+    body: str,
+) -> str | None:
+    token = str(config.github_token or "").strip()
+    if not token:
+        print("::warning::Omar Gate PR comment skipped: github_token input is empty.")
+        return None
+
+    marker = _omar_comment_marker(config.repo_full_name, pr_number)
+    comments_url = _github_api_repo_url(
+        config.repo_full_name,
+        f"issues/{pr_number}/comments",
+    )
+    list_comments_url = f"{comments_url}?per_page=100"
+    try:
+        comments = _github_api_json_request(url=list_comments_url, github_token=token)
+    except Exception as exc:
+        raise RuntimeError(f"Unable to list PR comments for Omar Gate upsert: {exc}") from exc
+
+    if not isinstance(comments, list):
+        comments = []
+
+    for comment in comments:
+        if not isinstance(comment, dict):
+            continue
+        existing_body = str(comment.get("body") or "")
+        if marker not in existing_body and _OMAR_COMMENT_MARKER_PREFIX not in existing_body:
+            continue
+        comment_id = comment.get("id")
+        if not isinstance(comment_id, int):
+            continue
+        update_url = _github_api_repo_url(config.repo_full_name, f"issues/comments/{comment_id}")
+        response = _github_api_json_request(
+            url=update_url,
+            github_token=token,
+            method="PATCH",
+            payload={"body": body},
+        )
+        if isinstance(response, dict):
+            return str(response.get("html_url") or "")
+        return None
+
+    response = _github_api_json_request(
+        url=comments_url,
+        github_token=token,
+        method="POST",
+        payload={"body": body},
+    )
+    if isinstance(response, dict):
+        return str(response.get("html_url") or "")
+    return None
+
+
+def _write_bridge_artifacts(
+    *,
+    workspace: Path,
+    run_id: str,
+    summary: dict[str, Any],
+    comment_body: str,
+    local_findings: list[dict[str, Any]],
+) -> None:
+    slug = _safe_run_slug(run_id)
+    run_dir = workspace / ".sentinelayer" / "runs" / slug
+    artifacts_dir = workspace / ".sentinelayer" / "artifacts" / slug
+    run_dir.mkdir(parents=True, exist_ok=True)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    summary_json = json.dumps(summary, indent=2, sort_keys=True)
+    (run_dir / "RUN_SUMMARY.json").write_text(summary_json + "\n", encoding="utf-8")
+    (run_dir / "REVIEW_BRIEF.md").write_text(comment_body + "\n", encoding="utf-8")
+    (artifacts_dir / "BRIDGE_SUMMARY.md").write_text(comment_body + "\n", encoding="utf-8")
+
+    findings_path = run_dir / "FINDINGS.jsonl"
+    source_findings_path = workspace / _LOCAL_FINDINGS_RELATIVE_PATH
+    if source_findings_path.exists():
+        findings_path.write_text(source_findings_path.read_text(encoding="utf-8"), encoding="utf-8")
+    else:
+        with findings_path.open("w", encoding="utf-8") as handle:
+            for row in local_findings:
+                handle.write(json.dumps(row, separators=(",", ":"), sort_keys=True))
+                handle.write("\n")
+
+
 def main() -> int:
     print(
         "::notice::Omar Gate Action v1 is a thin GitHub App bridge. "
@@ -1065,6 +1361,67 @@ def main() -> int:
 
         run_url = f"{SENTINELAYER_WEB_BASE}/runs/{run_id}" if run_id else ""
         evidence_url = f"{run_url}/evidence" if run_url else ""
+        workspace = _workspace_root()
+        local_findings = _load_local_findings(workspace)
+        comment_body = _render_bridge_pr_comment(
+            config=config,
+            pr_number=pr_number,
+            run_id=run_id or str(trigger_response.get("delivery_id") or "manual-trigger"),
+            command=command,
+            status=status,
+            progress=progress,
+            counts=counts,
+            gate_status=gate_status,
+            run_url=run_url,
+            evidence_url=evidence_url,
+            playwright_status=playwright_status,
+            playwright_mode=playwright_mode,
+            playwright_detail=playwright_detail,
+            sbom_status=sbom_status,
+            sbom_mode=sbom_mode,
+            sbom_detail=sbom_detail,
+            local_findings=local_findings,
+            commit_sha=commit_sha,
+        )
+        bridge_summary = {
+            "action_version": ACTION_VERSION,
+            "repository_full_name": config.repo_full_name,
+            "pr_number": pr_number,
+            "run_id": run_id or str(trigger_response.get("delivery_id") or "manual-trigger"),
+            "status": status,
+            "progress": progress,
+            "gate_status": gate_status,
+            "severity_gate": config.severity_gate,
+            "scan_command": command,
+            "counts": counts,
+            "local_findings_count": len(local_findings),
+            "run_url": run_url,
+            "evidence_url": evidence_url,
+            "llm_policy": {
+                "sentinelayer_managed_llm": config.sentinelayer_managed_llm,
+                "model": config.model,
+                "model_fallback": config.model_fallback,
+                "use_codex": config.use_codex,
+                "codex_only": config.codex_only,
+                "codex_model": config.codex_model,
+                "llm_failure_policy": config.llm_failure_policy,
+            },
+        }
+        _write_bridge_artifacts(
+            workspace=workspace,
+            run_id=run_id or str(trigger_response.get("delivery_id") or "manual-trigger"),
+            summary=bridge_summary,
+            comment_body=comment_body,
+            local_findings=local_findings,
+        )
+        comment_url = _upsert_omar_pr_comment(
+            config=config,
+            pr_number=pr_number,
+            body=comment_body,
+        )
+        if comment_url:
+            print(f"::notice::Omar Gate PR comment upserted: {comment_url}")
+
         summary_lines = [
             "## Omar Gate Compatibility Bridge",
             f"- Action version: `{ACTION_VERSION}`",
@@ -1091,6 +1448,8 @@ def main() -> int:
         if run_url:
             summary_lines.append(f"- Run: {run_url}")
             summary_lines.append(f"- Evidence: {evidence_url}")
+        if comment_url:
+            summary_lines.append(f"- PR comment: {comment_url}")
         _append_summary("\n".join(summary_lines) + "\n")
 
         if run_id:

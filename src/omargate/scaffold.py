@@ -2,7 +2,7 @@
 
 Before this module existed, the same 40-line ownership-map parser was
 duplicated in `local_gates.py` and `fix_handoff_cli.py` (duplication
-acknowledged and marked TODO at the time — the two shipped in separate
+acknowledged as pending shared cleanup at the time — the two shipped in separate
 PRs that couldn't share code cleanly until both landed on main).
 
 Now both callers import from here. Behavior is identical to the previous

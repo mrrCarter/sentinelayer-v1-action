@@ -1,0 +1,87 @@
+name: Omar Gate
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+  workflow_dispatch:
+    inputs:
+      scan_mode:
+        description: Sentinelayer scan profile
+        required: false
+        default: deep
+        type: choice
+        options:
+          - baseline
+          - deep
+          - audit
+          - full-depth
+      severity_gate:
+        description: Severity threshold that blocks merge
+        required: false
+        default: P1
+        type: choice
+        options:
+          - P0
+          - P1
+          - P2
+          - none
+      pr_number:
+        description: Optional PR number override for workflow_dispatch
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  omar_gate:
+    name: Omar Gate
+    runs-on: ubuntu-22.04
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Validate Sentinelayer token secret
+        shell: bash
+        env:
+          SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${SENTINELAYER_TOKEN}" || (echo "Missing SENTINELAYER_TOKEN" && exit 1)
+
+      - name: Run Omar Gate
+        id: omar
+        uses: ./
+        with:
+          github_token: ${{ github.token }}
+          sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+          sentinelayer_managed_llm: "true"
+          scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
+          severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
+          pr_number: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || '' }}
+          model: gpt-5.3-codex
+          codex_model: gpt-5.3-codex
+          model_fallback: gpt-4.1-mini
+          use_codex: "true"
+          codex_only: "false"
+          llm_failure_policy: block
+
+      - name: Summarize Omar outputs
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Omar Gate"
+            echo "- run_id: \`${{ steps.omar.outputs.run_id }}\`"
+            echo "- gate_status: \`${{ steps.omar.outputs.gate_status }}\`"
+            echo "- findings: \`P0=${{ steps.omar.outputs.p0_count }} P1=${{ steps.omar.outputs.p1_count }} P2=${{ steps.omar.outputs.p2_count }} P3=${{ steps.omar.outputs.p3_count }}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
