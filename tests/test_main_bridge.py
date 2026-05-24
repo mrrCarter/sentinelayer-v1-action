@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -412,6 +413,10 @@ def test_main_forwards_llm_policy_to_backend_trigger(
     monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _config: ("skipped", "ok"))
     monkeypatch.setattr("omargate.main._execute_sbom_gate", lambda _config: ("skipped", "ok"))
     monkeypatch.setattr("omargate.main._api_json_request", _fake_request)
+    monkeypatch.setattr(
+        "omargate.main._github_api_json_request",
+        lambda **kwargs: [] if str(kwargs.get("method") or "GET") == "GET" else {"html_url": ""},
+    )
     monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
 
     exit_code = main()
@@ -432,6 +437,108 @@ def test_main_forwards_llm_policy_to_backend_trigger(
         outputs[key] = value
     assert outputs["model"] == "gpt-5.3-codex"
     assert outputs["codex_model"] == "gpt-5.3-codex"
+
+
+def test_main_upserts_pr_comment_and_persistent_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _bridge_config(tmp_path, wait_for_completion=False)
+    output_path = tmp_path / "github_output.txt"
+    local_dir = tmp_path / ".omargate" / "local"
+    local_dir.mkdir(parents=True)
+    local_finding = {
+        "gateId": "security",
+        "tool": "semgrep",
+        "severity": "P2",
+        "file": "apps/api/app/routes/traffic.py",
+        "line": 87,
+        "title": "Example medium finding",
+        "recommendedFix": "Tighten the route guard.",
+    }
+    (local_dir / "FINDINGS.jsonl").write_text(
+        json.dumps(local_finding, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    github_requests: list[dict[str, object]] = []
+
+    def _fake_api_request(**kwargs: object) -> dict[str, object]:
+        return {"status": "accepted", "investigation_run_id": "run-1"}
+
+    def _fake_github_request(**kwargs: object) -> object:
+        github_requests.append(dict(kwargs))
+        method = str(kwargs.get("method") or "GET")
+        if method == "GET":
+            return []
+        if method == "POST":
+            return {"html_url": "https://github.com/owner/repo/pull/42#issuecomment-new"}
+        raise AssertionError(f"unexpected method: {method}")
+
+    monkeypatch.setattr("omargate.main._load_config", lambda: config)
+    monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._execute_sbom_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._api_json_request", _fake_api_request)
+    monkeypatch.setattr("omargate.main._github_api_json_request", _fake_github_request)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv("GITHUB_SHA", "abc123")
+
+    exit_code = main()
+
+    assert exit_code == 0
+    post_requests = [req for req in github_requests if req.get("method") == "POST"]
+    assert len(post_requests) == 1
+    comment_body = post_requests[0]["payload"]["body"]  # type: ignore[index]
+    assert "sentinelayer:omar-gate:owner/repo:pr-42" in comment_body
+    assert "## Omar Gate Compatibility Bridge" in comment_body
+    assert "### Top Findings" in comment_body
+    assert "**P2** [`apps/api/app/routes/traffic.py:87`]" in comment_body
+    assert "run-1" in comment_body
+
+    run_dir = tmp_path / ".sentinelayer" / "runs" / "run-1"
+    artifacts_dir = tmp_path / ".sentinelayer" / "artifacts" / "run-1"
+    assert (run_dir / "RUN_SUMMARY.json").exists()
+    assert (run_dir / "REVIEW_BRIEF.md").exists()
+    assert (run_dir / "FINDINGS.jsonl").read_text(encoding="utf-8").strip()
+    assert (artifacts_dir / "BRIDGE_SUMMARY.md").exists()
+
+
+def test_main_updates_existing_omar_pr_comment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _bridge_config(tmp_path, wait_for_completion=False)
+    github_requests: list[dict[str, object]] = []
+
+    def _fake_api_request(**kwargs: object) -> dict[str, object]:
+        return {"status": "accepted", "investigation_run_id": "run-2"}
+
+    def _fake_github_request(**kwargs: object) -> object:
+        github_requests.append(dict(kwargs))
+        method = str(kwargs.get("method") or "GET")
+        if method == "GET":
+            return [
+                {
+                    "id": 123,
+                    "body": "<!-- sentinelayer:omar-gate:owner/repo:pr-42 -->\nold",
+                }
+            ]
+        if method == "PATCH":
+            return {"html_url": "https://github.com/owner/repo/pull/42#issuecomment-123"}
+        raise AssertionError(f"unexpected method: {method}")
+
+    monkeypatch.setattr("omargate.main._load_config", lambda: config)
+    monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._execute_sbom_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._api_json_request", _fake_api_request)
+    monkeypatch.setattr("omargate.main._github_api_json_request", _fake_github_request)
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+
+    exit_code = main()
+
+    assert exit_code == 0
+    assert any(req.get("method") == "PATCH" for req in github_requests)
+    assert not any(req.get("method") == "POST" for req in github_requests)
 
 
 def test_api_json_request_uses_long_enough_timeout(
