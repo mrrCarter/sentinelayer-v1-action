@@ -159,6 +159,7 @@ class AnalysisOrchestrator:
                         google_api_key=self.config.google_api_key.get_secret_value(),
                         xai_api_key=self.config.xai_api_key.get_secret_value(),
                         managed_llm=self._should_use_managed_proxy_for_llm_analysis(),
+                        managed_capacity_fallback=self._should_allow_managed_capacity_fallback(),
                         sentinelayer_token=self.config.sentinelayer_token.get_secret_value(),
                         managed_api_url=os.environ.get(
                             "SENTINELAYER_API_URL", "https://api.sentinelayer.com"
@@ -367,6 +368,13 @@ class AnalysisOrchestrator:
             return False
         return self.config.use_managed_llm_proxy()
 
+    def _should_allow_managed_capacity_fallback(self) -> bool:
+        """Allow managed proxy only as a final BYO quota/rate-limit fallback."""
+        return bool(
+            self.config.sentinelayer_managed_llm
+            and self.config.sentinelayer_token.get_secret_value()
+        )
+
     def _get_provider_api_key(self, provider: str) -> str:
         if provider == "openai":
             return self.config.openai_api_key.get_secret_value()
@@ -377,6 +385,26 @@ class AnalysisOrchestrator:
         if provider == "xai":
             return self.config.xai_api_key.get_secret_value()
         return ""
+
+    @staticmethod
+    def _llm_usage_to_dict(usage) -> Optional[dict]:
+        if not usage:
+            return None
+        payload = {
+            "model": usage.model,
+            "provider": getattr(usage, "provider", None),
+            "tokens_in": usage.tokens_in,
+            "tokens_out": usage.tokens_out,
+            "cost_usd": usage.cost_usd,
+            "latency_ms": usage.latency_ms,
+        }
+        route = getattr(usage, "route", None)
+        if route and route != "byo":
+            payload["route"] = route
+        fallback_chain = getattr(usage, "fallback_chain", None)
+        if fallback_chain:
+            payload["fallback_chain"] = fallback_chain
+        return payload
 
     def _run_deterministic_scans(self, ingest: dict) -> List[dict]:
         """Run all deterministic scanners."""
@@ -485,6 +513,7 @@ class AnalysisOrchestrator:
             google_api_key=self.config.google_api_key.get_secret_value(),
             xai_api_key=self.config.xai_api_key.get_secret_value(),
             managed_llm=self._should_use_managed_proxy_for_llm_analysis(),
+            managed_capacity_fallback=self._should_allow_managed_capacity_fallback(),
             sentinelayer_token=self.config.sentinelayer_token.get_secret_value(),
             managed_api_url=os.environ.get("SENTINELAYER_API_URL", "https://api.sentinelayer.com"),
         )
@@ -510,16 +539,7 @@ class AnalysisOrchestrator:
             return LLMAnalysisResult(
                 findings=[self._parsed_finding_to_dict(f) for f in non_det_findings],
                 success=False,
-                usage={
-                    "model": response.usage.model,
-                    "provider": getattr(response.usage, "provider", None),
-                    "tokens_in": response.usage.tokens_in,
-                    "tokens_out": response.usage.tokens_out,
-                    "cost_usd": response.usage.cost_usd,
-                    "latency_ms": response.usage.latency_ms,
-                }
-                if response.usage
-                else None,
+                usage=self._llm_usage_to_dict(response.usage),
                 warning=warning,
             )
 
@@ -533,16 +553,7 @@ class AnalysisOrchestrator:
         return LLMAnalysisResult(
             findings=[self._parsed_finding_to_dict(f) for f in parse_result.findings],
             success=True,
-            usage={
-                "model": response.usage.model,
-                "provider": getattr(response.usage, "provider", None),
-                "tokens_in": response.usage.tokens_in,
-                "tokens_out": response.usage.tokens_out,
-                "cost_usd": response.usage.cost_usd,
-                "latency_ms": response.usage.latency_ms,
-            }
-            if response.usage
-            else None,
+            usage=self._llm_usage_to_dict(response.usage),
             warning=None,
         )
 

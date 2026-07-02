@@ -83,6 +83,16 @@ def _check_name(comment_tag: str = "") -> str:
         return CHECK_NAME_BASE
     return f"{CHECK_NAME_BASE} ({tag})"
 
+
+def _llm_fallback_used(llm_usage: dict, model_fallback: str) -> bool:
+    model_used = str(llm_usage.get("model") or "").strip()
+    route_used = str(llm_usage.get("route") or "").strip()
+    return bool(
+        (model_used and model_used == model_fallback)
+        or route_used.startswith("managed_after_byo_capacity")
+    )
+
+
 def _short_circuit_with_gate_result(
     *,
     run_dir: Path,
@@ -609,7 +619,7 @@ async def async_main() -> int:
                 .strip()
                 or None
             )
-            fallback_used = bool(model_used and model_used == config.model_fallback)
+            fallback_used = _llm_fallback_used(analysis.llm_usage, config.model_fallback)
 
             # Codex CLI runs may not provide token/cost accounting. Treat missing as 0 for telemetry.
             tokens_in = int(analysis.llm_usage.get("tokens_in") or 0)

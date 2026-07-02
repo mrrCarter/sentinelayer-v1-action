@@ -26,6 +26,8 @@ class LLMUsage:
     cost_usd: float
     latency_ms: int
     provider: str = "openai"
+    route: str = "byo"
+    fallback_chain: Optional[str] = None
 
 
 @dataclass
@@ -51,6 +53,7 @@ class LLMClient:
         timeout_seconds: int = 120,
         max_retries: int = 2,
         managed_llm: bool = False,
+        managed_capacity_fallback: bool = False,
         sentinelayer_token: str = "",
         managed_api_url: str = "https://api.sentinelayer.com",
     ) -> None:
@@ -65,6 +68,7 @@ class LLMClient:
         self.timeout = timeout_seconds
         self.max_retries = max_retries
         self.managed_llm = managed_llm
+        self.managed_capacity_fallback = managed_capacity_fallback
         self.sentinelayer_token = sentinelayer_token
         self.managed_api_url = managed_api_url
         self._client = None
@@ -153,6 +157,8 @@ class LLMClient:
         user: str,
         max_tokens: int,
         temperature: float,
+        route: str = "managed",
+        fallback_chain: Optional[str] = None,
     ) -> LLMResponse:
         endpoint = f"{self.managed_api_url.rstrip('/')}/api/v1/proxy/llm"
 
@@ -187,14 +193,32 @@ class LLMClient:
         except httpx.TimeoutException:
             return LLMResponse(
                 content="",
-                usage=LLMUsage(model, 0, 0, 0.0, int((time.time() - start) * 1000), provider="openai"),
+                usage=LLMUsage(
+                    model,
+                    0,
+                    0,
+                    0.0,
+                    int((time.time() - start) * 1000),
+                    provider="openai",
+                    route=route,
+                    fallback_chain=fallback_chain,
+                ),
                 success=False,
                 error=f"Managed LLM proxy timeout after {self.timeout}s",
             )
         except Exception as exc:
             return LLMResponse(
                 content="",
-                usage=LLMUsage(model, 0, 0, 0.0, int((time.time() - start) * 1000), provider="openai"),
+                usage=LLMUsage(
+                    model,
+                    0,
+                    0,
+                    0.0,
+                    int((time.time() - start) * 1000),
+                    provider="openai",
+                    route=route,
+                    fallback_chain=fallback_chain,
+                ),
                 success=False,
                 error=f"Managed LLM proxy request failed: {exc}",
             )
@@ -220,7 +244,16 @@ class LLMClient:
                 pass
             return LLMResponse(
                 content="",
-                usage=LLMUsage(model, 0, 0, 0.0, latency_ms, provider="openai"),
+                usage=LLMUsage(
+                    model,
+                    0,
+                    0,
+                    0.0,
+                    latency_ms,
+                    provider="openai",
+                    route=route,
+                    fallback_chain=fallback_chain,
+                ),
                 success=False,
                 error=error_message,
             )
@@ -236,7 +269,16 @@ class LLMClient:
         except Exception as exc:
             return LLMResponse(
                 content="",
-                usage=LLMUsage(model, 0, 0, 0.0, latency_ms, provider="openai"),
+                usage=LLMUsage(
+                    model,
+                    0,
+                    0,
+                    0.0,
+                    latency_ms,
+                    provider="openai",
+                    route=route,
+                    fallback_chain=fallback_chain,
+                ),
                 success=False,
                 error=f"Managed LLM proxy response parsing failed: {exc}",
             )
@@ -250,8 +292,75 @@ class LLMClient:
                 cost_usd=cost_usd,
                 latency_ms=latency_ms,
                 provider=provider_name,
+                route=route,
+                fallback_chain=fallback_chain,
             ),
             success=True,
+        )
+
+    @staticmethod
+    def _is_capacity_error(error: Optional[str]) -> bool:
+        message = str(error or "").strip().lower()
+        if not message:
+            return False
+        markers = (
+            "429",
+            "insufficient_quota",
+            "resource_exhausted",
+            "quota",
+            "rate limit",
+            "rate_limit",
+            "generate_content_free_tier_requests",
+        )
+        return any(marker in message for marker in markers)
+
+    @classmethod
+    def _all_failures_are_capacity(cls, *responses: LLMResponse) -> bool:
+        errors = [response.error for response in responses if not response.success]
+        return bool(errors) and all(cls._is_capacity_error(error) for error in errors)
+
+    def _managed_capacity_fallback_model(self) -> str:
+        primary_provider = detect_provider_from_model(
+            self.primary_model, default_provider=self.llm_provider
+        )
+        if primary_provider == "openai":
+            return self.primary_model
+        fallback_provider = detect_provider_from_model(
+            self.fallback_model, default_provider=self.llm_provider
+        )
+        if fallback_provider == "openai":
+            return self.fallback_model
+        return "gpt-4.1-mini"
+
+    def _should_try_managed_capacity_fallback(
+        self,
+        *,
+        primary_response: LLMResponse,
+        fallback_response: LLMResponse,
+    ) -> bool:
+        return (
+            self.managed_capacity_fallback
+            and not self.managed_llm
+            and bool(self.sentinelayer_token)
+            and self._all_failures_are_capacity(primary_response, fallback_response)
+        )
+
+    def _capacity_fallback_chain(
+        self,
+        *,
+        primary_response: LLMResponse,
+        fallback_response: LLMResponse,
+        managed_model: str,
+        managed_status: str,
+    ) -> str:
+        primary_provider = primary_response.usage.provider
+        fallback_provider = fallback_response.usage.provider
+        return "->".join(
+            [
+                f"primary:{primary_provider}/{primary_response.usage.model}:capacity_failed",
+                f"fallback:{fallback_provider}/{fallback_response.usage.model}:capacity_failed",
+                f"managed:openai/{managed_model}:{managed_status}",
+            ]
         )
 
     async def analyze(
@@ -286,9 +395,44 @@ class LLMClient:
         if fallback_response.success:
             return fallback_response
 
+        managed_error: Optional[str] = None
+        if self._should_try_managed_capacity_fallback(
+            primary_response=primary_response,
+            fallback_response=fallback_response,
+        ):
+            managed_model = self._managed_capacity_fallback_model()
+            fallback_chain = self._capacity_fallback_chain(
+                primary_response=primary_response,
+                fallback_response=fallback_response,
+                managed_model=managed_model,
+                managed_status="attempt",
+            )
+            managed_response = await self._call_managed_proxy(
+                model=managed_model,
+                system=system_prompt,
+                user=user_content,
+                max_tokens=max_tokens,
+                temperature=0.1,
+                route="managed_after_byo_capacity",
+                fallback_chain=fallback_chain,
+            )
+            managed_response.usage.fallback_chain = self._capacity_fallback_chain(
+                primary_response=primary_response,
+                fallback_response=fallback_response,
+                managed_model=managed_model,
+                managed_status="success" if managed_response.success else "failed",
+            )
+            if managed_response.success:
+                return managed_response
+            managed_error = managed_response.error or "unknown error"
+            fallback_response.usage.route = "managed_after_byo_capacity_failed"
+            fallback_response.usage.fallback_chain = managed_response.usage.fallback_chain
+
         primary_error = primary_response.error or "unknown error"
         fallback_error = fallback_response.error or "unknown error"
         combined_error = f"Primary failed: {primary_error}; Fallback failed: {fallback_error}"
+        if managed_error:
+            combined_error = f"{combined_error}; Managed fallback failed: {managed_error}"
         return LLMResponse(
             content="",
             usage=fallback_response.usage,

@@ -63,7 +63,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          sentinelayer_managed_llm: ${{ secrets.OPENAI_API_KEY == '' && secrets.SENTINELAYER_TOKEN != '' }}
+          sentinelayer_managed_llm: ${{ secrets.SENTINELAYER_TOKEN != '' }}
 ```
 
 ### Step 4: Open a Pull Request
@@ -136,10 +136,10 @@ Runs secrets scanning, config analysis, dependency auditing, and pattern matchin
     github_token: ${{ secrets.GITHUB_TOKEN }}
     sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
     openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-    sentinelayer_managed_llm: ${{ secrets.OPENAI_API_KEY == '' && secrets.SENTINELAYER_TOKEN != '' }}
+    sentinelayer_managed_llm: ${{ secrets.SENTINELAYER_TOKEN != '' }}
 ```
 
-This mode forwards bounded LLM context through `POST /api/v1/proxy/llm`. The API applies per-repo trial and budget limits, then returns model output to Omar Gate.
+Without a BYO OpenAI key, this mode forwards bounded LLM context through `POST /api/v1/proxy/llm`. With a BYO OpenAI key, BYO remains primary and Sentinelayer-managed capacity is tried once only after quota/rate-limit fallback exhaustion. The API applies per-repo trial and budget limits, then returns model output to Omar Gate.
 
 ### Common Customizations
 
@@ -277,7 +277,7 @@ Use these in subsequent workflow steps:
 | `llm_provider` | `openai` | `openai`, `anthropic`, `google`, `xai` |
 | `model` | `gpt-5.3-codex` | Primary LLM model |
 | `model_fallback` | `gpt-4.1-mini` | Fallback if primary fails |
-| `sentinelayer_managed_llm` | `false` | Route OpenAI calls through Sentinelayer-managed proxy. If false, auto-enables when `openai_api_key` is empty and `sentinelayer_token` exists. |
+| `sentinelayer_managed_llm` | `false` | Use Sentinelayer-managed OpenAI capacity. With no `openai_api_key`, OpenAI calls use the managed proxy; with BYO OpenAI, BYO remains primary and managed is tried once only after quota/rate-limit fallback exhaustion. |
 | `use_codex` | `true` | Use Codex CLI for deep agentic audit (OpenAI only, requires host runner) |
 | `codex_model` | `gpt-5.3-codex` | Model for Codex CLI |
 
