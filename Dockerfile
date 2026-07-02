@@ -23,8 +23,8 @@ RUN set -eux; \
     apk add --no-cache \
       ca-certificates=20251003-r0 \
       libstdc++=15.2.0-r2 \
-      nodejs=24.13.0-r1 \
-      npm=11.6.3-r0 \
+      nodejs=24.17.0-r0 \
+      npm=11.11.0-r0 \
       openssl=3.5.7-r0 \
       git=2.52.0-r0
 
