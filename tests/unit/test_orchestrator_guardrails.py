@@ -23,6 +23,25 @@ def _orchestrator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AnalysisOr
     )
 
 
+def test_byo_openai_managed_flag_allows_capacity_fallback_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("INPUT_OPENAI_API_KEY", "sk_test_dummy")
+    monkeypatch.setenv("INPUT_SENTINELAYER_TOKEN", "sl_test_token")
+    monkeypatch.setenv("INPUT_SENTINELAYER_MANAGED_LLM", "true")
+    monkeypatch.setenv("INPUT_LLM_PROVIDER", "openai")
+    config = OmarGateConfig()
+    orchestrator = AnalysisOrchestrator(
+        config=config,
+        logger=OmarLogger("test-run"),
+        repo_root=tmp_path,
+        allow_llm=True,
+    )
+
+    assert orchestrator._should_use_managed_proxy_for_llm_analysis() is False
+    assert orchestrator._should_allow_managed_capacity_fallback() is True
+
+
 def test_llm_p1_without_corroboration_is_downgraded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     orchestrator = _orchestrator(tmp_path, monkeypatch)
     ingest = {"files": [{"path": "src/auth.py", "lines": 200}]}
@@ -173,6 +192,7 @@ def test_byo_openai_key_takes_precedence_over_managed_proxy(
 
     assert orchestrator._should_run_llm() is True
     assert orchestrator._should_use_managed_proxy_for_llm_analysis() is False
+    assert orchestrator._should_allow_managed_capacity_fallback() is True
 
 
 def test_managed_proxy_used_when_byo_openai_key_missing(
@@ -344,6 +364,12 @@ async def test_failed_llm_attempt_preserves_usage_for_comment_metadata(
                 cost_usd=0.0,
                 latency_ms=12,
                 provider="openai",
+                route="managed_after_byo_capacity_failed",
+                fallback_chain=(
+                    "primary:openai/gpt-5.3-codex:capacity_failed"
+                    "->fallback:google/gemini-2.5-flash:capacity_failed"
+                    "->managed:openai/gpt-5.3-codex:failed"
+                ),
             ),
             success=False,
             error="insufficient_quota",
@@ -369,6 +395,12 @@ async def test_failed_llm_attempt_preserves_usage_for_comment_metadata(
         "tokens_out": 0,
         "cost_usd": 0.0,
         "latency_ms": 12,
+        "route": "managed_after_byo_capacity_failed",
+        "fallback_chain": (
+            "primary:openai/gpt-5.3-codex:capacity_failed"
+            "->fallback:google/gemini-2.5-flash:capacity_failed"
+            "->managed:openai/gpt-5.3-codex:failed"
+        ),
     }
 
 

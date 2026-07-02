@@ -116,6 +116,213 @@ async def test_llm_client_returns_error_when_both_fail() -> None:
     assert "Fallback failed" in result.error
 
 
+@pytest.mark.anyio
+async def test_managed_capacity_fallback_runs_once_after_byo_quota_failures() -> None:
+    client = LLMClient(
+        api_key="sk-byo",
+        primary_model="gpt-5.3-codex",
+        fallback_model="gemini-2.5-flash",
+        google_api_key="google-byo",
+        managed_capacity_fallback=True,
+        sentinelayer_token="sl_test_token",
+        max_retries=1,
+    )
+    primary_fail = LLMResponse(
+        content="",
+        usage=LLMUsage(
+            model=client.primary_model,
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+            latency_ms=0,
+            provider="openai",
+        ),
+        success=False,
+        error="Error code: 429 - insufficient_quota",
+    )
+    fallback_fail = LLMResponse(
+        content="",
+        usage=LLMUsage(
+            model=client.fallback_model,
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+            latency_ms=0,
+            provider="google",
+        ),
+        success=False,
+        error="429 RESOURCE_EXHAUSTED generate_content_free_tier_requests",
+    )
+    managed_success = LLMResponse(
+        content="managed-ok",
+        usage=LLMUsage(
+            model=client.primary_model,
+            tokens_in=12,
+            tokens_out=4,
+            cost_usd=0.02,
+            latency_ms=31,
+            provider="openai",
+            route="managed_after_byo_capacity",
+        ),
+        success=True,
+    )
+
+    with (
+        patch.object(
+            client,
+            "_call_with_retry",
+            new=AsyncMock(side_effect=[primary_fail, fallback_fail]),
+        ) as retry_mock,
+        patch.object(
+            client,
+            "_call_managed_proxy",
+            new=AsyncMock(return_value=managed_success),
+        ) as managed_mock,
+    ):
+        result = await client.analyze("system", "user", max_tokens=256)
+
+    assert result.success is True
+    assert result.content == "managed-ok"
+    assert retry_mock.call_count == 2
+    managed_mock.assert_awaited_once()
+    assert managed_mock.await_args.kwargs["model"] == client.primary_model
+    assert managed_mock.await_args.kwargs["route"] == "managed_after_byo_capacity"
+    assert result.usage.route == "managed_after_byo_capacity"
+    assert result.usage.fallback_chain is not None
+    assert "primary:openai/gpt-5.3-codex:capacity_failed" in result.usage.fallback_chain
+    assert "fallback:google/gemini-2.5-flash:capacity_failed" in result.usage.fallback_chain
+    assert "managed:openai/gpt-5.3-codex:success" in result.usage.fallback_chain
+
+
+@pytest.mark.anyio
+async def test_managed_capacity_fallback_does_not_run_for_non_capacity_errors() -> None:
+    client = LLMClient(
+        api_key="sk-byo",
+        primary_model="gpt-5.3-codex",
+        fallback_model="gpt-4.1-mini",
+        managed_capacity_fallback=True,
+        sentinelayer_token="sl_test_token",
+        max_retries=1,
+    )
+    primary_fail = LLMResponse(
+        content="",
+        usage=LLMUsage(
+            model=client.primary_model,
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+            latency_ms=0,
+            provider="openai",
+        ),
+        success=False,
+        error="Error code: 429 - insufficient_quota",
+    )
+    fallback_fail = LLMResponse(
+        content="",
+        usage=LLMUsage(
+            model=client.fallback_model,
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+            latency_ms=0,
+            provider="openai",
+        ),
+        success=False,
+        error="response did not match Omar JSON schema",
+    )
+
+    with (
+        patch.object(
+            client,
+            "_call_with_retry",
+            new=AsyncMock(side_effect=[primary_fail, fallback_fail]),
+        ),
+        patch.object(client, "_call_managed_proxy", new=AsyncMock()) as managed_mock,
+    ):
+        result = await client.analyze("system", "user", max_tokens=256)
+
+    assert result.success is False
+    assert "Primary failed" in str(result.error)
+    assert "Fallback failed" in str(result.error)
+    managed_mock.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_managed_capacity_fallback_failure_fails_closed() -> None:
+    client = LLMClient(
+        api_key="sk-byo",
+        primary_model="gpt-5.3-codex",
+        fallback_model="gemini-2.5-flash",
+        google_api_key="google-byo",
+        managed_capacity_fallback=True,
+        sentinelayer_token="sl_test_token",
+        max_retries=1,
+    )
+    primary_fail = LLMResponse(
+        content="",
+        usage=LLMUsage(
+            model=client.primary_model,
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+            latency_ms=0,
+            provider="openai",
+        ),
+        success=False,
+        error="Error code: 429 - insufficient_quota",
+    )
+    fallback_fail = LLMResponse(
+        content="",
+        usage=LLMUsage(
+            model=client.fallback_model,
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+            latency_ms=0,
+            provider="google",
+        ),
+        success=False,
+        error="429 RESOURCE_EXHAUSTED generate_content_free_tier_requests",
+    )
+    managed_fail = LLMResponse(
+        content="",
+        usage=LLMUsage(
+            model=client.primary_model,
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+            latency_ms=20,
+            provider="openai",
+            route="managed_after_byo_capacity",
+        ),
+        success=False,
+        error="Managed LLM proxy timeout",
+    )
+
+    with (
+        patch.object(
+            client,
+            "_call_with_retry",
+            new=AsyncMock(side_effect=[primary_fail, fallback_fail]),
+        ),
+        patch.object(
+            client,
+            "_call_managed_proxy",
+            new=AsyncMock(return_value=managed_fail),
+        ) as managed_mock,
+    ):
+        result = await client.analyze("system", "user", max_tokens=256)
+
+    assert result.success is False
+    assert "Primary failed" in str(result.error)
+    assert "Fallback failed" in str(result.error)
+    assert "Managed fallback failed" in str(result.error)
+    managed_mock.assert_awaited_once()
+    assert result.usage.route == "managed_after_byo_capacity_failed"
+    assert result.usage.fallback_chain is not None
+    assert "managed:openai/gpt-5.3-codex:failed" in result.usage.fallback_chain
+
+
 def test_cost_estimation() -> None:
     """Cost estimation matches expected pricing."""
     client = LLMClient(api_key="test")

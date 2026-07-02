@@ -54,7 +54,7 @@ inputs:
     default: ''
 
   sentinelayer_managed_llm:
-    description: 'Use Sentinelayer-managed LLM proxy (free-trial mode). If false, auto-enabled when openai_api_key is empty and sentinelayer_token is set.'
+    description: 'Use Sentinelayer-managed OpenAI capacity. With no openai_api_key, routes OpenAI calls through the managed proxy; with BYO OpenAI, keeps BYO primary and allows one managed retry only after quota/rate-limit fallback exhaustion.'
     required: false
     default: 'false'
 
