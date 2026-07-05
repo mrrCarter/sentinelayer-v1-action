@@ -614,6 +614,17 @@ class AnalysisOrchestrator:
         )
         if not result.success:
             warn = result.error or "Codex audit failed"
+            # Observability-only diagnostic (no control-flow change): surface WHY the
+            # codex-cli primary failed (returncode vs unparseable output) so the LLM-
+            # fallback masking can be root-caused. Bounded snippet, failing-path only.
+            self.logger.warning(
+                "Codex primary failed (diagnostic)",
+                model=active_model,
+                error=result.error,
+                parse_errors=(result.parse_errors or [])[:5],
+                duration_ms=result.duration_ms,
+                raw_output_snippet=(result.raw_output or "")[:500],
+            )
             return LLMAnalysisResult(
                 findings=[],
                 success=False,
