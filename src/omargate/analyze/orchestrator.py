@@ -32,6 +32,7 @@ _LOG_SECRET_SCRUB_RES = (
     (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED]"),
     (re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"), "[REDACTED]"),
     (re.compile(r"sk_(?:live|test)_[0-9a-zA-Z]{16,}"), "[REDACTED]"),
+    (re.compile(r"AIza[0-9A-Za-z_-]{35}"), "[REDACTED]"),
     (re.compile(r"(?i)bearer\s+[A-Za-z0-9._-]{8,}"), "Bearer [REDACTED]"),
     (
         re.compile(r"(?i)((?:api[_-]?key|secret|token|password|authorization)\s*[=:]\s*)\S+"),
