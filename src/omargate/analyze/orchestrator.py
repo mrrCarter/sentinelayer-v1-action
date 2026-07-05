@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import os
+import re
 from pathlib import Path
 from typing import List, Optional
 
@@ -24,6 +25,34 @@ from .deterministic import ConfigScanner, EngQualityScanner, PatternScanner, sca
 from .llm import ContextBuilder, LLMClient, PromptLoader, ResponseParser, handle_llm_failure
 from .llm.providers import detect_provider_from_model
 from .llm.response_parser import ParsedFinding
+
+
+_LOG_SECRET_SCRUB_RES = (
+    (re.compile(r"sk-[A-Za-z0-9_-]{16,}"), "[REDACTED]"),
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED]"),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"), "[REDACTED]"),
+    (re.compile(r"sk_(?:live|test)_[0-9a-zA-Z]{16,}"), "[REDACTED]"),
+    (re.compile(r"(?i)bearer\s+[A-Za-z0-9._-]{8,}"), "Bearer [REDACTED]"),
+    (
+        re.compile(r"(?i)((?:api[_-]?key|secret|token|password|authorization)\s*[=:]\s*)\S+"),
+        r"\1[REDACTED]",
+    ),
+)
+
+
+def _scrub_log_value(value):
+    """Value-scrub known secret shapes before logging.
+
+    OmarLogger._sanitize redacts by field NAME only; these diagnostic values
+    (codex stderr/output) can carry the provider key / Bearer token / secret-
+    bearing scanned source, so scrub the VALUE before it reaches the public run log.
+    """
+    if not value:
+        return value
+    scrubbed = str(value)
+    for pattern, repl in _LOG_SECRET_SCRUB_RES:
+        scrubbed = pattern.sub(repl, scrubbed)
+    return scrubbed
 
 
 @dataclass
@@ -620,10 +649,10 @@ class AnalysisOrchestrator:
             self.logger.warning(
                 "Codex primary failed (diagnostic)",
                 model=active_model,
-                error=result.error,
-                parse_errors=(result.parse_errors or [])[:5],
+                error=_scrub_log_value(result.error),
+                parse_errors=[_scrub_log_value(p) for p in (result.parse_errors or [])[:5]],
                 duration_ms=result.duration_ms,
-                raw_output_snippet=(result.raw_output or "")[:500],
+                raw_output_snippet=_scrub_log_value((result.raw_output or "")[:500]),
             )
             return LLMAnalysisResult(
                 findings=[],
