@@ -108,6 +108,15 @@ def test_artifact_name_resolver_supports_safe_suffixes() -> None:
     )
 
 
+def test_llm_failure_policy_documents_deterministic_only() -> None:
+    text = _action_yml_text()
+
+    assert "deterministic_only" in text, (
+        "workflow break-glass uses deterministic_only, so action.yml must document it "
+        "as a supported llm_failure_policy value"
+    )
+
+
 def test_existing_omar_step_id_is_omar() -> None:
     """The block annotation step references steps.omar.outputs.gate_status — id must persist."""
     text = _action_yml_text()

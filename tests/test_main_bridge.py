@@ -30,6 +30,9 @@ from omargate.main import (
 def _bridge_config(
     tmp_path: Path,
     *,
+    sentinelayer_managed_llm: bool = True,
+    use_codex: bool = True,
+    llm_failure_policy: str = "block",
     playwright_mode: str = "baseline",
     playwright_bootstrap: bool = True,
     playwright_base_url: str = "",
@@ -51,13 +54,13 @@ def _bridge_config(
         event_name="pull_request",
         scan_mode="deep",
         severity_gate="P1",
-        sentinelayer_managed_llm=True,
+        sentinelayer_managed_llm=sentinelayer_managed_llm,
         model="gpt-5.3-codex",
         model_fallback="gpt-4.1-mini",
-        use_codex=True,
+        use_codex=use_codex,
         codex_only=False,
         codex_model="gpt-5.3-codex",
-        llm_failure_policy="block",
+        llm_failure_policy=llm_failure_policy,
         command_override="",
         provider_installation_id=None,
         spec_hash=None,
@@ -185,6 +188,7 @@ def test_normalize_model_policy_inputs() -> None:
     assert _normalize_model_id("gpt-5.3-codex", default="fallback") == "gpt-5.3-codex"
     assert _normalize_model_id("bad model; rm -rf /", default="fallback") == "fallback"
     assert _normalize_llm_failure_policy("warn") == "warn"
+    assert _normalize_llm_failure_policy("deterministic_only") == "deterministic_only"
     assert _normalize_llm_failure_policy("invalid") == "block"
 
 
@@ -437,6 +441,113 @@ def test_main_forwards_llm_policy_to_backend_trigger(
         outputs[key] = value
     assert outputs["model"] == "gpt-5.3-codex"
     assert outputs["codex_model"] == "gpt-5.3-codex"
+
+
+def test_main_deterministic_only_skips_backend_trigger(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _bridge_config(
+        tmp_path,
+        wait_for_completion=True,
+        sentinelayer_managed_llm=False,
+        use_codex=False,
+        llm_failure_policy="deterministic_only",
+    )
+    output_path = tmp_path / "github_output.txt"
+
+    def _unexpected_api_request(**_kwargs: object) -> dict[str, object]:
+        raise AssertionError("deterministic_only must not call backend trigger/status/findings")
+
+    monkeypatch.setattr("omargate.main._load_config", lambda: config)
+    monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._execute_sbom_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._api_json_request", _unexpected_api_request)
+    monkeypatch.setattr(
+        "omargate.main._github_api_json_request",
+        lambda **kwargs: [] if str(kwargs.get("method") or "GET") == "GET" else {"html_url": ""},
+    )
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv("GITHUB_SHA", "abc123")
+
+    exit_code = main()
+
+    assert exit_code == 0
+    outputs = {}
+    for line in output_path.read_text(encoding="utf-8").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        outputs[key] = value
+    assert outputs["gate_status"] == "passed"
+    assert outputs["run_id"].startswith("ghlocal_owner-repo_")
+    run_dir = tmp_path / ".sentinelayer" / "runs" / outputs["run_id"]
+    assert (run_dir / "RUN_SUMMARY.json").exists()
+    summary = json.loads((run_dir / "RUN_SUMMARY.json").read_text(encoding="utf-8"))
+    assert summary["backend_findings_count"] == 0
+    assert summary["llm_policy"]["llm_failure_policy"] == "deterministic_only"
+    assert summary["progress"] == "completed:deterministic-local"
+    review_brief = (run_dir / "REVIEW_BRIEF.md").read_text(encoding="utf-8")
+    assert "Backend findings source: `skipped:deterministic_only`" in review_brief
+    assert "Dashboard:" not in review_brief
+
+
+def test_main_deterministic_only_blocks_on_local_findings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _bridge_config(
+        tmp_path,
+        wait_for_completion=True,
+        sentinelayer_managed_llm=False,
+        use_codex=False,
+        llm_failure_policy="deterministic_only",
+    )
+    output_path = tmp_path / "github_output.txt"
+    local_dir = tmp_path / ".omargate" / "local"
+    local_dir.mkdir(parents=True)
+    (local_dir / "FINDINGS.jsonl").write_text(
+        json.dumps(
+            {
+                "severity": "P1",
+                "tool": "local",
+                "file": "src/app.py",
+                "line": 7,
+                "title": "Local deterministic finding",
+            },
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def _unexpected_api_request(**_kwargs: object) -> dict[str, object]:
+        raise AssertionError("deterministic_only must not call backend trigger/status/findings")
+
+    monkeypatch.setattr("omargate.main._load_config", lambda: config)
+    monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._execute_sbom_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._api_json_request", _unexpected_api_request)
+    monkeypatch.setattr(
+        "omargate.main._github_api_json_request",
+        lambda **kwargs: [] if str(kwargs.get("method") or "GET") == "GET" else {"html_url": ""},
+    )
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv("GITHUB_SHA", "abc123")
+
+    exit_code = main()
+
+    assert exit_code == 1
+    outputs = {}
+    for line in output_path.read_text(encoding="utf-8").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        outputs[key] = value
+    assert outputs["gate_status"] == "blocked"
+    assert outputs["p1_count"] == "1"
 
 
 def test_main_upserts_pr_comment_and_persistent_artifacts(
