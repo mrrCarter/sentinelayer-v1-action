@@ -494,11 +494,111 @@ def _unsafe_forbid_pattern_reason(pattern: str) -> str | None:
         )
     if _BACKREFERENCE_RE.search(pattern):
         return "backreferences are not allowed in policy forbid patterns"
+    if _has_complex_quantified_group(pattern):
+        return (
+            "quantified groups containing nested groups, quantifiers, or "
+            "alternation are not allowed in policy forbid patterns"
+        )
     if _UNSAFE_NESTED_QUANTIFIER_RE.search(pattern):
         return "nested quantified groups are not allowed in policy forbid patterns"
     if _UNSAFE_QUANTIFIED_BRANCH_RE.search(pattern):
         return "quantified alternation groups are not allowed in policy forbid patterns"
     return None
+
+
+def _has_complex_quantified_group(pattern: str) -> bool:
+    """Return True when a quantified group has a risky internal shape.
+
+    A wrapper like `((a+))+$` is the same ReDoS class as `(a+)+$`, but shallow
+    regex heuristics miss it. This lightweight scanner tracks escaped chars
+    and character classes, then conservatively rejects quantified groups whose
+    body contains another group, a quantifier, or alternation.
+    """
+    stack: list[int] = []
+    escaped = False
+    in_class = False
+    idx = 0
+    while idx < len(pattern):
+        ch = pattern[idx]
+        if escaped:
+            escaped = False
+            idx += 1
+            continue
+        if ch == "\\":
+            escaped = True
+            idx += 1
+            continue
+        if ch == "[":
+            in_class = True
+            idx += 1
+            continue
+        if ch == "]" and in_class:
+            in_class = False
+            idx += 1
+            continue
+        if in_class:
+            idx += 1
+            continue
+        if ch == "(":
+            stack.append(idx)
+        elif ch == ")" and stack:
+            start = stack.pop()
+            body = pattern[start + 1 : idx]
+            if _next_token_is_quantifier(pattern, idx + 1) and _group_body_is_complex(body):
+                return True
+        idx += 1
+    return False
+
+
+def _next_token_is_quantifier(pattern: str, start: int) -> bool:
+    if start >= len(pattern):
+        return False
+    ch = pattern[start]
+    if ch in {"*", "+"}:
+        return True
+    if ch == "{":
+        close = pattern.find("}", start + 1)
+        if close == -1:
+            return False
+        body = pattern[start + 1 : close]
+        if not body:
+            return False
+        left, sep, right = body.partition(",")
+        return left.isdigit() and (not sep or not right or right.isdigit())
+    return False
+
+
+def _group_body_is_complex(body: str) -> bool:
+    escaped = False
+    in_class = False
+    idx = 0
+    while idx < len(body):
+        ch = body[idx]
+        if escaped:
+            escaped = False
+            idx += 1
+            continue
+        if ch == "\\":
+            escaped = True
+            idx += 1
+            continue
+        if ch == "[":
+            in_class = True
+            idx += 1
+            continue
+        if ch == "]" and in_class:
+            in_class = False
+            idx += 1
+            continue
+        if in_class:
+            idx += 1
+            continue
+        if ch in {"(", ")", "|", "*", "+"}:
+            return True
+        if _next_token_is_quantifier(body, idx):
+            return True
+        idx += 1
+    return False
 
 
 def _scan_for_pattern(
