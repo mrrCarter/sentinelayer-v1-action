@@ -319,6 +319,7 @@ Use these in subsequent workflow steps:
 | `local_gates_enabled` | `true` | Run the action-local Omar Gate 2.0 gate runner before the backend bridge. |
 | `local_gates_output_dir` | `.omargate/local` | Output directory for local gate `FINDINGS.jsonl` and `SUMMARY.json`. |
 | `local_gates_fail_severity` | `P1` | Minimum severity that makes the local gate runner block (`P0`, `P1`, `P2`, `P3`, `never`). |
+| `local_gates_policy_path` | empty | Optional checked-in policy file path. Empty auto-discovers `.sentinelayer/policy.yaml`, `.sentinelayer/policy.yml`, then `.sentinelayer/policy.json`. JSON works with stdlib; YAML requires PyYAML on the runner. |
 | `local_gates_persona_dispatch` | `false` | Opt into local persona dispatch for scaffold-mapped findings after the local gate runner finishes. |
 | `local_gates_persona_cli_path` | empty | Optional `create-sentinelayer` CLI path for persona dispatch. Empty uses PATH discovery. |
 | `local_gates_persona_dispatch_dry_run` | `false` | Include persona routing in the local-gates summary without spawning persona review commands. |
@@ -335,6 +336,31 @@ Use these in subsequent workflow steps:
 | `sbom_audit_command` | empty | Optional override command for `sbom_mode: audit`. Empty uses default Node/Python CycloneDX profile with expanded output. |
 
 See [action.yml](action.yml) for the authoritative input contract.
+
+---
+
+### Local Policy File
+
+When `local_gates_enabled: true`, the runner auto-discovers `.sentinelayer/policy.yaml`, `.sentinelayer/policy.yml`, or `.sentinelayer/policy.json`. A policy file can toggle deterministic gates and configure `policy.forbid_patterns`:
+
+```yaml
+version: 1
+gates:
+  - id: static_analysis
+    enabled: true
+  - id: security_scan
+    enabled: true
+  - id: policy
+    enabled: true
+    config:
+      forbid_patterns:
+        - pattern: "console\\.log\\("
+          severity: P2
+          message: "no console.log"
+          in: "*.ts"
+```
+
+Set `behavior: ask` on a forbid pattern to annotate without blocking. Invalid explicit policy files fail closed as runner errors; absent policy files keep the default static+security local gates.
 
 ---
 
