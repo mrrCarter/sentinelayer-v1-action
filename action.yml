@@ -150,6 +150,18 @@ inputs:
     description: 'Minimum severity that causes the local gate runner to exit non-zero: P0, P1, P2, P3, or never'
     required: false
     default: 'P1'
+  local_gates_persona_dispatch:
+    description: 'When true, let the local gate runner dispatch persona reviews through create-sentinelayer for scaffold-mapped findings. Defaults to false so existing workflows remain deterministic unless they opt in.'
+    required: false
+    default: 'false'
+  local_gates_persona_cli_path:
+    description: 'Optional path to the create-sentinelayer CLI used for local persona dispatch. Empty uses PATH discovery.'
+    required: false
+    default: ''
+  local_gates_persona_dispatch_dry_run:
+    description: 'When true, evaluate persona routing and include the dispatch summary without spawning persona review commands.'
+    required: false
+    default: 'false'
   artifact_name_suffix:
     description: 'Optional suffix appended to the uploaded findings artifact name; useful when invoking this action more than once in a workflow run'
     required: false
@@ -224,20 +236,38 @@ runs:
       env:
         INPUT_LOCAL_GATES_OUTPUT_DIR: ${{ inputs.local_gates_output_dir }}
         INPUT_LOCAL_GATES_FAIL_SEVERITY: ${{ inputs.local_gates_fail_severity }}
+        INPUT_LOCAL_GATES_PERSONA_DISPATCH: ${{ inputs.local_gates_persona_dispatch }}
+        INPUT_LOCAL_GATES_PERSONA_CLI_PATH: ${{ inputs.local_gates_persona_cli_path }}
+        INPUT_LOCAL_GATES_PERSONA_DISPATCH_DRY_RUN: ${{ inputs.local_gates_persona_dispatch_dry_run }}
       run: |
         set -euo pipefail
         action_dir="${{ github.action_path }}"
         output_dir="${INPUT_LOCAL_GATES_OUTPUT_DIR:-.omargate/local}"
         fail_sev="${INPUT_LOCAL_GATES_FAIL_SEVERITY:-P1}"
+        persona_dispatch="${INPUT_LOCAL_GATES_PERSONA_DISPATCH:-false}"
+        persona_cli_path="${INPUT_LOCAL_GATES_PERSONA_CLI_PATH:-}"
+        persona_dispatch_dry_run="${INPUT_LOCAL_GATES_PERSONA_DISPATCH_DRY_RUN:-false}"
         findings_path="${GITHUB_WORKSPACE}/${output_dir}/FINDINGS.jsonl"
         summary_path="${GITHUB_WORKSPACE}/${output_dir}/SUMMARY.json"
         mkdir -p "${GITHUB_WORKSPACE}/${output_dir}"
+
+        persona_args=()
+        if [ "${persona_dispatch}" = "true" ]; then
+          persona_args+=(--enable-persona-dispatch)
+          if [ -n "${persona_cli_path}" ]; then
+            persona_args+=(--persona-cli-path "${persona_cli_path}")
+          fi
+          if [ "${persona_dispatch_dry_run}" = "true" ]; then
+            persona_args+=(--persona-dispatch-dry-run)
+          fi
+        fi
 
         set +e
         PYTHONPATH="${action_dir}/src" python -m omargate.local_gates \
           --path . \
           --output-dir "${GITHUB_WORKSPACE}/${output_dir}" \
           --fail-severity "${fail_sev}" \
+          "${persona_args[@]}" \
           --json-summary \
           > "${summary_path}"
         rc=$?
