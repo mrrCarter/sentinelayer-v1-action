@@ -179,3 +179,40 @@ def test_comment_renders_codebase_synopsis() -> None:
 
     assert "Codebase Synopsis" in body
     assert "README: Deterministic gate for CI pipelines." in body
+
+
+def test_comment_redacts_provider_error_details() -> None:
+    body = render_pr_comment(
+        result=_gate_result(),
+        run_id="run-abcdef123456",
+        repo_full_name="acme/demo",
+        pr_number=42,
+        dashboard_url=None,
+        artifacts_url=None,
+        estimated_cost_usd=0.01,
+        version="1.2.0",
+        findings=[
+            {
+                "severity": "P0",
+                "file_path": "<system>",
+                "line_start": 0,
+                "category": "LLM Failure",
+                "message": (
+                    "LLM analysis failed: 403 PERMISSION_DENIED consumer "
+                    "projects/123456789012 with key AIzaSyDUMMYDUMMYDUMMYDUMMYDUMMY."
+                ),
+                "fix_plan": "Retry once provider capacity is healthy.",
+            }
+        ],
+        warnings=[
+            "Fallback failed for project_id=my-prod-project token=sk-testtesttesttest"
+        ],
+        head_sha="deadbeef",
+    )
+
+    assert "PERMISSION_DENIED" in body
+    assert "123456789012" not in body
+    assert "my-prod-project" not in body
+    assert "AIza" not in body
+    assert "sk-testtesttesttest" not in body
+    assert "[redacted-provider-id]" in body

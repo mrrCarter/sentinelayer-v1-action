@@ -117,6 +117,53 @@ async def test_llm_client_returns_error_when_both_fail() -> None:
 
 
 @pytest.mark.anyio
+async def test_llm_client_redacts_provider_payloads_in_combined_error() -> None:
+    client = LLMClient(api_key="test", fallback_model="gemini-2.5-flash")
+
+    primary_fail = LLMResponse(
+        content="",
+        usage=LLMUsage(
+            model=client.primary_model,
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+            latency_ms=0,
+        ),
+        success=False,
+        error="Error code: 429 - insufficient_quota sk-testtesttesttest",
+    )
+    fallback_fail = LLMResponse(
+        content="",
+        usage=LLMUsage(
+            model=client.fallback_model,
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+            latency_ms=0,
+            provider="google",
+        ),
+        success=False,
+        error="403 PERMISSION_DENIED consumer projects/123456789012 suspended",
+    )
+
+    with patch.object(
+        client,
+        "_call_with_retry",
+        new=AsyncMock(side_effect=[primary_fail, fallback_fail]),
+    ):
+        result = await client.analyze("system", "user")
+
+    assert result.success is False
+    assert result.error is not None
+    assert "Primary failed" in result.error
+    assert "Fallback failed" in result.error
+    assert "insufficient_quota" in result.error
+    assert "PERMISSION_DENIED" in result.error
+    assert "123456789012" not in result.error
+    assert "sk-testtesttesttest" not in result.error
+
+
+@pytest.mark.anyio
 async def test_managed_capacity_fallback_runs_once_after_byo_quota_failures() -> None:
     client = LLMClient(
         api_key="sk-byo",

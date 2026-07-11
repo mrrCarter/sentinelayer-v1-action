@@ -13,6 +13,7 @@ from .formatting import (
 from .fix_plan import ensure_fix_plan
 from .ingest.codebase_snapshot import build_codebase_synopsis, render_codebase_snapshot_md
 from .models import GateResult, GateStatus
+from .redaction import sanitize_public_error
 
 MARKER_PREFIX = "<!-- sentinelayer:omar-gate:v1:"
 
@@ -109,7 +110,7 @@ def _warnings_section(warnings: Optional[List[str]]) -> str:
     if not warnings:
         return ""
     lines = ["<details>", "<summary>Warnings</summary>", ""]
-    lines.extend(f"- {truncate(str(w), 400)}" for w in warnings[:25])
+    lines.extend(f"- {truncate(sanitize_public_error(w), 400)}" for w in warnings[:25])
     if len(warnings) > 25:
         lines.append(f"- ...and {len(warnings) - 25} more")
     lines.extend(["", "</details>"])
@@ -167,12 +168,15 @@ def _top_findings_section(
         file_path = str(finding.get("file_path") or "?").replace("\\", "/")
         line_start = finding.get("line_start")
         category = str(finding.get("category") or "Issue")
-        message = truncate(str(finding.get("message") or "No description").strip(), 220)
+        raw_message = sanitize_public_error(
+            str(finding.get("message") or "No description").strip()
+        )
+        message = truncate(raw_message, 220)
         fix_plan = truncate(
             ensure_fix_plan(
-                fix_plan=finding.get("fix_plan", ""),
-                recommendation=finding.get("recommendation", ""),
-                message=finding.get("message", ""),
+                fix_plan=sanitize_public_error(finding.get("fix_plan", "")),
+                recommendation=sanitize_public_error(finding.get("recommendation", "")),
+                message=raw_message,
             ),
             600,
         )
@@ -389,7 +393,7 @@ def render_pr_comment(
             "Omar Gate uses three independent layers to minimize false positives:",
             "",
             "**Layer 1 — AST & Syntax-Aware Deterministic Analysis**",
-            "- Python `eval()`/`exec()` detected via `ast.parse` + `ast.walk`, not regex — "
+            "- Python dynamic execution primitives are detected via `ast.parse` + `ast.walk`, not regex — "
             "eliminates self-referential matches in comments, strings, and docs.",
             "- JS/TS comment and string literals are blanked before pattern matching.",
             "- Entropy-based secret detection requires context keywords nearby, "

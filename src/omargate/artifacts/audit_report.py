@@ -7,6 +7,7 @@ from typing import List, Optional
 from ..fix_plan import ensure_fix_plan
 from ..formatting import humanize_duration_ms
 from ..ingest.codebase_snapshot import build_codebase_snapshot
+from ..redaction import sanitize_public_error
 
 SEVERITY_ICONS = {"P0": "🔴", "P1": "🟠", "P2": "🟡", "P3": "⚪"}
 CATEGORY_ICONS = {
@@ -206,11 +207,14 @@ def generate_audit_report(
 
             line_start = finding.get("line_start", 0)
             line_end = finding.get("line_end", line_start)
-            recommendation = str(finding.get("recommendation", "") or "").strip()
+            message = sanitize_public_error(finding.get("message", "No description"))
+            recommendation = sanitize_public_error(
+                str(finding.get("recommendation", "") or "").strip()
+            )
             fix_plan = ensure_fix_plan(
-                fix_plan=finding.get("fix_plan", ""),
+                fix_plan=sanitize_public_error(finding.get("fix_plan", "")),
                 recommendation=recommendation,
-                message=finding.get("message", ""),
+                message=message,
             )
 
             lines.extend(
@@ -222,7 +226,7 @@ def generate_audit_report(
                     f"**Confidence:** {confidence_display}",
                     f"**Fingerprint:** `{finding.get('fingerprint', 'n/a')[:12]}...`",
                     "",
-                    f"**Issue:** {finding.get('message', 'No description')}",
+                    f"**Issue:** {message}",
                     "",
                 ]
             )
@@ -297,7 +301,7 @@ def generate_audit_report(
     if errors:
         lines.extend(["### Errors & Warnings", ""])
         for error in errors:
-            lines.append(f"- ⚠️ {error}")
+            lines.append(f"- ⚠️ {sanitize_public_error(error)}")
         lines.append("")
 
     # Footer

@@ -141,6 +141,37 @@ def test_review_brief_detects_categories() -> None:
     assert "💳 Payment & Billing" in content
 
 
+def test_review_brief_redacts_provider_error_details() -> None:
+    findings = [
+        {
+            "severity": "P0",
+            "category": "LLM Failure",
+            "file_path": "<system>",
+            "line_start": 0,
+            "line_end": 0,
+            "message": (
+                "LLM failed for consumer projects/123456789012 and "
+                "project_id=my-prod-project with key AIzaSyDUMMYDUMMYDUMMYDUMMYDUMMY"
+            ),
+            "recommendation": "Retry when provider capacity is healthy.",
+        }
+    ]
+
+    content = render_review_brief(
+        run_id="run-redact",
+        findings=findings,
+        ingest=_make_ingest([]),
+        scan_mode="deep",
+        version="1.0.0",
+    )
+
+    assert "LLM Failure" in content
+    assert "123456789012" not in content
+    assert "my-prod-project" not in content
+    assert "AIza" not in content
+    assert "[redacted-provider-id]" in content
+
+
 def test_review_brief_no_persona_names() -> None:
     content = render_review_brief(
         run_id="run-000",
