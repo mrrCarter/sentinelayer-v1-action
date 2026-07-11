@@ -6,9 +6,11 @@ from omargate.main import (
     _counts_from_check_run_output,
     _exit_code_from_gate_result,
     _gate_result_from_check_run,
+    _github_publish_enabled,
     _latest_completed_check_run,
     _map_category_to_spec_sections,
 )
+from omargate.config import OmarGateConfig
 from omargate.models import GateStatus
 from omargate.utils import parse_iso8601
 
@@ -22,6 +24,17 @@ def test_parse_iso8601_handles_z_suffix() -> None:
 def test_check_name_uses_comment_tag_when_set() -> None:
     assert _check_name("") == "Omar Gate"
     assert _check_name("gemini") == "Omar Gate (gemini)"
+
+
+def test_github_publish_enabled_defaults_true(monkeypatch) -> None:
+    monkeypatch.setenv("INPUT_OPENAI_API_KEY", "sk_test_dummy")
+    assert _github_publish_enabled(OmarGateConfig()) is True
+
+
+def test_github_publish_enabled_honors_false(monkeypatch) -> None:
+    monkeypatch.setenv("INPUT_OPENAI_API_KEY", "sk_test_dummy")
+    monkeypatch.setenv("INPUT_PUBLISH_GITHUB", "false")
+    assert _github_publish_enabled(OmarGateConfig()) is False
 
 
 def test_latest_completed_check_run_picks_newest_completed() -> None:

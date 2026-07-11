@@ -15,6 +15,7 @@ SentinelLayer (Omar Gate) is configured entirely via GitHub Action inputs (see [
 | Input | Type | Default | Purpose |
 |---|---|---|---|
 | `github_token` | secret string | `""` | GitHub token for PR comments, Check Runs, and fetching diffs. Use `${{ secrets.GITHUB_TOKEN }}`. |
+| `publish_github` | bool | `true` | Publish PR comments and Check Runs. Set `false` only for internal probe runs that publish a separate canonical gate. |
 | `openai_api_key` | secret string | `""` | OpenAI API key (for Codex CLI + Responses API). |
 | `anthropic_api_key` | secret string | `""` | Anthropic API key (for Claude models). |
 | `google_api_key` | secret string | `""` | Google AI API key (for Gemini models). |

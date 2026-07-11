@@ -21,6 +21,11 @@ runs, telemetry, and evidence artifacts from the checked-out repository.
   remain deterministic and read-only.
 - PR comments and reports must remain stable and idempotent for downstream
   automation.
+- `publish_github` must default to `true`. When explicitly set to `false`, the
+  action must still run analysis, write artifacts/outputs/summaries, and exit
+  according to the gate result, but it must not create or update PR comments or
+  GitHub check runs. This mode is only for internal probe runs where a caller
+  consumes artifacts and publishes a separate canonical gate.
 - `.github/workflows/security-review.yml` is the canonical pull-request gate
   for tests, provenance, and Omar Review. `.github/workflows/omar-gate.yml`
   is a manual fail-closed deep-scan entrypoint and must not duplicate PR
