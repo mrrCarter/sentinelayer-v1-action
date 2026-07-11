@@ -543,7 +543,17 @@ def test_main_upserts_pr_comment_and_persistent_artifacts(
     artifacts_dir = tmp_path / ".sentinelayer" / "artifacts" / "run-1"
     assert (run_dir / "RUN_SUMMARY.json").exists()
     assert (run_dir / "REVIEW_BRIEF.md").exists()
-    assert (run_dir / "FINDINGS.jsonl").read_text(encoding="utf-8").strip()
+    persisted_findings = [
+        json.loads(line)
+        for line in (run_dir / "FINDINGS.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(persisted_findings) == 2
+    assert any(row.get("title") == "Example medium finding" for row in persisted_findings)
+    assert any(
+        row.get("title") == "Release gate is not coupled to smoke evidence."
+        for row in persisted_findings
+    )
     assert (artifacts_dir / "BRIDGE_SUMMARY.md").exists()
 
 

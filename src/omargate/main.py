@@ -1418,6 +1418,7 @@ def _write_bridge_artifacts(
     summary: dict[str, Any],
     comment_body: str,
     local_findings: list[dict[str, Any]],
+    backend_findings: list[dict[str, Any]] | None = None,
 ) -> None:
     slug = _safe_run_slug(run_id)
     run_dir = workspace / ".sentinelayer" / "runs" / slug
@@ -1431,14 +1432,37 @@ def _write_bridge_artifacts(
     (artifacts_dir / "BRIDGE_SUMMARY.md").write_text(comment_body + "\n", encoding="utf-8")
 
     findings_path = run_dir / "FINDINGS.jsonl"
-    source_findings_path = workspace / _LOCAL_FINDINGS_RELATIVE_PATH
-    if source_findings_path.exists():
-        findings_path.write_text(source_findings_path.read_text(encoding="utf-8"), encoding="utf-8")
-    else:
-        with findings_path.open("w", encoding="utf-8") as handle:
-            for row in local_findings:
-                handle.write(json.dumps(row, separators=(",", ":"), sort_keys=True))
-                handle.write("\n")
+    merged_findings: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for row in list(backend_findings or []) + list(local_findings or []):
+        if not isinstance(row, dict):
+            continue
+        fingerprint = str(
+            row.get("finding_fingerprint")
+            or row.get("fingerprint")
+            or row.get("finding_id")
+            or ""
+        ).strip()
+        if not fingerprint:
+            file_path, line = _finding_scope(row)
+            fingerprint = "|".join(
+                [
+                    str(row.get("severity") or ""),
+                    str(row.get("category") or row.get("tool") or ""),
+                    file_path,
+                    str(line),
+                    str(row.get("title") or row.get("message") or row.get("impact") or ""),
+                ]
+            )
+        if fingerprint in seen_keys:
+            continue
+        seen_keys.add(fingerprint)
+        merged_findings.append(row)
+
+    with findings_path.open("w", encoding="utf-8") as handle:
+        for row in merged_findings:
+            handle.write(json.dumps(row, separators=(",", ":"), sort_keys=True))
+            handle.write("\n")
 
 
 def main() -> int:
@@ -1645,6 +1669,7 @@ def main() -> int:
             summary=bridge_summary,
             comment_body=comment_body,
             local_findings=local_findings,
+            backend_findings=_backend_findings(backend_findings_payload),
         )
         comment_url = _upsert_omar_pr_comment(
             config=config,
