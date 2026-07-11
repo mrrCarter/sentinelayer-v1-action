@@ -168,3 +168,27 @@ def test_local_gates_exposes_persona_dispatch_inputs_safely() -> None:
         "local_gates must receive persona args via array expansion so custom CLI "
         "paths with spaces are safe"
     )
+
+
+def test_local_gates_exposes_policy_path_safely() -> None:
+    text = _action_yml_text()
+
+    assert re.search(r"^\s{2}local_gates_policy_path:\s*$", text, flags=re.MULTILINE), (
+        "action.yml must expose local_gates_policy_path so workflows can point "
+        "the local runner at a checked-in policy file"
+    )
+    assert re.search(
+        r"local_gates_policy_path:\n(?:    .+\n)*    default: ''",
+        text,
+    ), "policy path must default empty so local_gates auto-discovers policy.yaml/yml/json"
+    assert "INPUT_LOCAL_GATES_POLICY_PATH" in text, (
+        "the composite action must pass the optional policy path into local_gates"
+    )
+    assert "policy_args=()" in text, (
+        "policy flags must be built as a bash array, not string-concatenated"
+    )
+    assert 'policy_args+=(--policy-file "${policy_path}")' in text
+    assert '"${policy_args[@]}"' in text, (
+        "local_gates must receive policy args via array expansion so custom policy "
+        "paths with spaces are safe"
+    )

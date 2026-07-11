@@ -27,10 +27,16 @@ Usage:
 
 from __future__ import annotations
 
+import fnmatch
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Iterable, Literal
+
+from ..path_safety import EXCLUDED_PATH_PREFIXES
+from . import GateContext, GateResult
+from .findings import Finding, Severity
 
 __all__ = [
     "GateToggle",
@@ -40,6 +46,7 @@ __all__ = [
     "PolicyConfig",
     "DEFAULT_POLICY",
     "PolicyLoadError",
+    "PolicyGate",
     "SCHEMA_VERSION",
     "load_policy",
     "parse_policy",
@@ -139,6 +146,22 @@ class PolicyConfig:
 
 DEFAULT_POLICY = PolicyConfig()
 
+_GATE_ID_ALIASES = {
+    "security_scan": "security",
+    "security": "security",
+    "static": "static_analysis",
+    "static_analysis": "static_analysis",
+}
+
+_SCAN_EXCLUDED_PREFIXES = EXCLUDED_PATH_PREFIXES | frozenset(
+    {
+        ".omargate",
+        ".sentinelayer",
+    }
+)
+
+_MAX_POLICY_FILE_BYTES = 1_000_000
+
 
 # ---------- parsers ----------
 
@@ -200,6 +223,7 @@ def _parse_gates(raw: Any) -> GateTogglesConfig:
         if not isinstance(entry, dict):
             continue
         gate_id = str(entry.get("id", "")).strip().replace("-", "_")
+        gate_id = _GATE_ID_ALIASES.get(gate_id, gate_id)
         if not gate_id:
             continue
         default_gate = getattr(default, gate_id, None)
@@ -246,6 +270,31 @@ def _parse_severity_tuple(raw: Any, default: tuple[str, ...]) -> tuple[str, ...]
     return cleaned or default
 
 
+def _policy_block(raw: dict[str, Any]) -> dict[str, Any]:
+    """Return the effective policy gate config from either supported schema shape.
+
+    The spec sample stores policy rows under `gates[].config` for the `policy`
+    gate. Earlier action-local tests used a top-level `policy:` block. Support
+    both, with the explicit gate config taking precedence when keys overlap.
+    """
+    top_level = raw.get("policy") if isinstance(raw.get("policy"), dict) else {}
+    gate_config: dict[str, Any] = {}
+    gates = raw.get("gates")
+    if isinstance(gates, list):
+        for entry in gates:
+            if not isinstance(entry, dict):
+                continue
+            gate_id = str(entry.get("id", "")).strip().replace("-", "_")
+            gate_id = _GATE_ID_ALIASES.get(gate_id, gate_id)
+            if gate_id != "policy":
+                continue
+            config = entry.get("config")
+            if isinstance(config, dict):
+                gate_config = config
+            break
+    return {**top_level, **gate_config}
+
+
 def parse_policy(raw: dict[str, Any]) -> PolicyConfig:
     """Convert a parsed dict (from JSON or YAML) into a PolicyConfig.
 
@@ -267,28 +316,22 @@ def parse_policy(raw: dict[str, Any]) -> PolicyConfig:
             f"(max supported: {SCHEMA_VERSION}). Upgrade the Omar Gate action."
         )
 
+    policy_block = _policy_block(raw)
     sev_gate = raw.get("severity_gate") if isinstance(raw.get("severity_gate"), dict) else {}
     return PolicyConfig(
         version=version,
         spec_id=str(raw["spec_id"]).strip() if raw.get("spec_id") else None,
         spec_hash_auto_discover=bool(raw.get("spec_hash_auto_discover", True)),
         gates=_parse_gates(raw.get("gates")),
-        forbid_patterns=_parse_forbid_patterns(
-            (raw.get("policy") or {}).get("forbid_patterns")
-            if isinstance(raw.get("policy"), dict)
-            else None,
-        ),
-        coverage_min=_parse_coverage_min(raw),
+        forbid_patterns=_parse_forbid_patterns(policy_block.get("forbid_patterns")),
+        coverage_min=_parse_coverage_min(policy_block),
         severity_block_list=_parse_severity_tuple(sev_gate.get("block_on"), ("P0", "P1")),
         severity_warn_list=_parse_severity_tuple(sev_gate.get("soft_warn"), ("P2",)),
         raw=dict(raw),
     )
 
 
-def _parse_coverage_min(raw: dict[str, Any]) -> float | None:
-    policy_block = raw.get("policy")
-    if not isinstance(policy_block, dict):
-        return None
+def _parse_coverage_min(policy_block: dict[str, Any]) -> float | None:
     value = policy_block.get("coverage_min")
     if value is None:
         return None
@@ -338,3 +381,131 @@ def load_policy(path: Path | str) -> PolicyConfig:
         )
 
     return parse_policy(raw if raw is not None else {})
+
+
+# ---------- policy gate ----------
+
+
+class PolicyGate:
+    """Evaluate policy.yaml forbid-pattern rows against repository text files."""
+
+    gate_id = "policy"
+
+    def __init__(
+        self,
+        policy: PolicyConfig,
+        *,
+        policy_path: Path | None = None,
+    ) -> None:
+        self._policy = policy
+        self._policy_path = policy_path
+
+    def run(self, ctx: GateContext) -> GateResult:
+        findings: list[Finding] = []
+        patterns = list(self._policy.forbid_patterns)
+
+        compiled: list[tuple[int, ForbidPattern, re.Pattern[str] | None, str | None]] = []
+        for idx, pattern in enumerate(patterns, start=1):
+            try:
+                compiled.append((idx, pattern, re.compile(pattern.pattern), None))
+            except re.error as exc:
+                compiled.append((idx, pattern, None, str(exc)))
+
+        policy_file = _policy_path_for_finding(ctx.repo_root, self._policy_path)
+        for idx, pattern, regex, error in compiled:
+            if error is not None:
+                findings.append(
+                    Finding(
+                        gate_id=self.gate_id,
+                        tool="forbid-patterns",
+                        severity="P1",
+                        file=policy_file,
+                        line=0,
+                        title="Invalid policy forbid pattern",
+                        description=f"Pattern {idx} failed to compile: {error}",
+                        rule_id=f"policy:forbid-pattern:{idx}:invalid-regex",
+                        decision="deny",
+                    )
+                )
+                continue
+            if regex is None:
+                continue
+            findings.extend(_scan_for_pattern(ctx.repo_root, idx, pattern, regex))
+
+        return GateResult(
+            gate_id=self.gate_id,
+            findings=findings,
+            status="ok",
+            metadata={
+                "forbid_patterns": len(patterns),
+                "policy_path": str(self._policy_path) if self._policy_path else None,
+                "coverage_min": self._policy.coverage_min,
+            },
+        )
+
+
+def _policy_path_for_finding(repo_root: Path, policy_path: Path | None) -> str:
+    if policy_path is None:
+        return ".sentinelayer/policy.yaml"
+    try:
+        return policy_path.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return policy_path.as_posix()
+
+
+def _scan_for_pattern(
+    repo_root: Path,
+    idx: int,
+    pattern: ForbidPattern,
+    regex: re.Pattern[str],
+) -> list[Finding]:
+    findings: list[Finding] = []
+    for path in _iter_policy_scan_files(repo_root):
+        rel = path.relative_to(repo_root).as_posix()
+        if pattern.in_glob and not _glob_matches(rel, pattern.in_glob):
+            continue
+        try:
+            if path.stat().st_size > _MAX_POLICY_FILE_BYTES:
+                continue
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            if not regex.search(line):
+                continue
+            findings.append(
+                Finding(
+                    gate_id="policy",
+                    tool="forbid-patterns",
+                    severity=_normalize_severity(pattern.severity),
+                    file=rel,
+                    line=line_no,
+                    title=pattern.message or "Forbidden policy pattern matched",
+                    description=f"Configured forbid pattern matched: {pattern.pattern}",
+                    rule_id=f"policy:forbid-pattern:{idx}",
+                    evidence=line.strip()[:240],
+                    decision=pattern.behavior,
+                )
+            )
+    return findings
+
+
+def _iter_policy_scan_files(repo_root: Path) -> Iterable[Path]:
+    for path in repo_root.rglob("*"):
+        if not path.is_file():
+            continue
+        rel_parts = path.relative_to(repo_root).parts
+        if any(part in _SCAN_EXCLUDED_PREFIXES for part in rel_parts):
+            continue
+        yield path
+
+
+def _glob_matches(rel: str, pattern: str) -> bool:
+    return fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(Path(rel).name, pattern)
+
+
+def _normalize_severity(value: str) -> Severity:
+    upper = str(value or "P2").strip().upper()
+    if upper in {"P0", "P1", "P2", "P3"}:
+        return upper  # type: ignore[return-value]
+    return "P2"

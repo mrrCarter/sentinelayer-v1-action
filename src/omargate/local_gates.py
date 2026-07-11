@@ -30,6 +30,13 @@ from .gates.persona_dispatch import (
     default_cli_path,
     dispatch_personas,
 )
+from .gates.policy import (
+    DEFAULT_POLICY,
+    PolicyConfig,
+    PolicyGate,
+    PolicyLoadError,
+    load_policy,
+)
 from .gates.security import SecurityScanGate
 from .gates.static import StaticAnalysisGate
 from .scaffold import parse_scaffold_ownership
@@ -60,6 +67,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json-summary",
         action="store_true",
         help="Emit a single-line JSON summary to stdout instead of human text.",
+    )
+    parser.add_argument(
+        "--policy-file",
+        dest="policy_file",
+        default="",
+        help=(
+            "Optional policy file path. Empty auto-discovers "
+            ".sentinelayer/policy.yaml, .sentinelayer/policy.yml, then "
+            ".sentinelayer/policy.json. Missing auto-discovered policy keeps "
+            "default static+security gates."
+        ),
+    )
+    parser.add_argument(
+        "--ignore-policy",
+        dest="ignore_policy",
+        action="store_true",
+        default=False,
+        help="Do not load .sentinelayer/policy.*; use default static+security gates.",
     )
     parser.add_argument(
         "--enable-persona-dispatch",
@@ -119,6 +144,61 @@ def _write_findings_jsonl(findings: list[Finding], path: Path) -> None:
         for row in serialize_findings(findings):
             f.write(json.dumps(row, separators=(",", ":")))
             f.write("\n")
+
+
+def _discover_policy_file(repo_root: Path) -> Path | None:
+    for rel in (
+        ".sentinelayer/policy.yaml",
+        ".sentinelayer/policy.yml",
+        ".sentinelayer/policy.json",
+    ):
+        candidate = repo_root / rel
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _resolve_policy_file(repo_root: Path, raw: str) -> Path:
+    policy_path = Path(raw)
+    if not policy_path.is_absolute():
+        policy_path = repo_root / policy_path
+    resolved = policy_path.resolve()
+    try:
+        resolved.relative_to(repo_root.resolve())
+    except ValueError as exc:
+        raise PolicyLoadError(
+            f"Policy file must be inside the repository root: {raw}"
+        ) from exc
+    if not resolved.is_file():
+        raise PolicyLoadError(f"Policy file not found: {raw}")
+    return resolved
+
+
+def _load_policy_for_repo(
+    repo_root: Path,
+    *,
+    policy_file: str,
+    ignore_policy: bool,
+) -> tuple[PolicyConfig, Path | None, str]:
+    if ignore_policy:
+        return DEFAULT_POLICY, None, "ignored"
+    policy_path = _resolve_policy_file(repo_root, policy_file) if policy_file else _discover_policy_file(repo_root)
+    if policy_path is None:
+        return DEFAULT_POLICY, None, "absent"
+    return load_policy(policy_path), policy_path, "loaded"
+
+
+def _tool_enabled(config: dict, *keys: str, default: bool) -> bool:
+    for key in keys:
+        if key not in config:
+            continue
+        value = config.get(key)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, dict):
+            return bool(value.get("enabled", True))
+        return bool(value)
+    return default
 
 
 def _maybe_dispatch_personas(
@@ -192,11 +272,45 @@ def main(argv: list[str] | None = None) -> int:
     if not output_dir.is_absolute():
         output_dir = (Path.cwd() / output_dir).resolve()
 
+    try:
+        policy_config, policy_path, policy_status = _load_policy_for_repo(
+            repo_root,
+            policy_file=args.policy_file,
+            ignore_policy=args.ignore_policy,
+        )
+    except PolicyLoadError as exc:
+        print(f"error: failed to load policy: {exc}", file=sys.stderr)
+        return 2
+
     gates = []
-    if args.enable_static:
-        gates.append(StaticAnalysisGate())
-    if args.enable_security:
-        gates.append(SecurityScanGate())
+    if args.enable_static and policy_config.gates.static_analysis.enabled:
+        static_config = policy_config.gates.static_analysis.config
+        gates.append(
+            StaticAnalysisGate(
+                tsc=_tool_enabled(static_config, "tsc", default=True),
+                eslint=_tool_enabled(static_config, "eslint", default=True),
+                prettier=_tool_enabled(static_config, "prettier", default=False),
+            )
+        )
+    if args.enable_security and policy_config.gates.security.enabled:
+        security_config = policy_config.gates.security.config
+        gates.append(
+            SecurityScanGate(
+                gitleaks=_tool_enabled(security_config, "gitleaks", default=True),
+                semgrep=_tool_enabled(security_config, "semgrep", default=True),
+                osv_scanner=_tool_enabled(
+                    security_config,
+                    "osv_scanner",
+                    "osv-scanner",
+                    default=True,
+                ),
+                actionlint=_tool_enabled(security_config, "actionlint", default=True),
+                checkov=_tool_enabled(security_config, "checkov", default=True),
+                tflint=_tool_enabled(security_config, "tflint", default=True),
+            )
+        )
+    if policy_config.gates.policy.enabled:
+        gates.append(PolicyGate(policy_config, policy_path=policy_path))
 
     if not gates:
         print("error: no gates enabled (pass --enable-static and/or --enable-security)", file=sys.stderr)
@@ -238,6 +352,14 @@ def main(argv: list[str] | None = None) -> int:
             }
             for r in results
         ],
+        "policy": {
+            "status": policy_status,
+            "path": str(policy_path) if policy_path else None,
+            "version": policy_config.version,
+            "spec_id": policy_config.spec_id,
+            "forbid_patterns": len(policy_config.forbid_patterns),
+            "coverage_min": policy_config.coverage_min,
+        },
     }
     if dispatch_summary is not None:
         summary["persona_dispatch"] = {
@@ -251,10 +373,12 @@ def main(argv: list[str] | None = None) -> int:
             ),
         }
 
-    # 3-state DSL: findings tagged decision="ask" are annotated but never block.
-    # decision="allow" or None falls through to severity-based blocking.
+    # 3-state DSL: findings tagged decision="ask" are annotated but never block;
+    # decision="allow" is explicitly permitted. decision=None preserves legacy
+    # severity-based blocking for static/security findings.
     blocking = any(
-        f.decision != "ask" and _severity_blocks(f.severity, args.fail_severity)
+        f.decision not in ("ask", "allow")
+        and _severity_blocks(f.severity, args.fail_severity)
         for f in all_findings
     )
     ask_count = sum(1 for f in all_findings if f.decision == "ask")

@@ -7,9 +7,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from omargate.gates import GateContext
 from omargate.gates.policy import (
     DEFAULT_POLICY,
     PolicyLoadError,
+    PolicyGate,
     SCHEMA_VERSION,
     load_policy,
     parse_policy,
@@ -76,6 +78,16 @@ class ParsePolicyTests(unittest.TestCase):
         # Does not raise; unknown ignored
         self.assertEqual(p.gates, DEFAULT_POLICY.gates)
 
+    def test_spec_gate_aliases_are_supported(self) -> None:
+        p = parse_policy({
+            "gates": [
+                {"id": "security_scan", "enabled": False},
+                {"id": "static", "enabled": False},
+            ],
+        })
+        self.assertFalse(p.gates.security.enabled)
+        self.assertFalse(p.gates.static_analysis.enabled)
+
     def test_forbid_patterns_parsed(self) -> None:
         p = parse_policy({
             "gates": [
@@ -98,6 +110,30 @@ class ParsePolicyTests(unittest.TestCase):
         self.assertEqual(p.forbid_patterns[0].severity, "P2")
         self.assertEqual(p.forbid_patterns[1].in_glob, "*.ts")
         self.assertEqual(p.coverage_min, 0.70)
+
+    def test_forbid_patterns_parse_from_policy_gate_config(self) -> None:
+        p = parse_policy({
+            "gates": [
+                {
+                    "id": "policy",
+                    "enabled": True,
+                    "config": {
+                        "forbid_patterns": [
+                            {
+                                "pattern": "process\\.env\\.[A-Z_]+\\s*=",
+                                "severity": "P1",
+                                "message": "no env mutation",
+                            }
+                        ],
+                        "coverage_min": 0.75,
+                    },
+                }
+            ],
+        })
+        self.assertTrue(p.gates.policy.enabled)
+        self.assertEqual(len(p.forbid_patterns), 1)
+        self.assertEqual(p.forbid_patterns[0].message, "no env mutation")
+        self.assertEqual(p.coverage_min, 0.75)
 
     def test_forbid_patterns_missing_pattern_skipped(self) -> None:
         p = parse_policy({
@@ -270,6 +306,93 @@ class LoadPolicyYamlTests(unittest.TestCase):
                 self.assertIn("PyYAML", str(cm.exception))
         finally:
             path.unlink()
+
+
+class PolicyGateTests(unittest.TestCase):
+    def test_policy_gate_emits_forbid_pattern_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            src = repo / "src"
+            src.mkdir()
+            (src / "app.ts").write_text("console.log('debug')\n", encoding="utf-8")
+            (src / "app.py").write_text("console.log('not ts')\n", encoding="utf-8")
+            policy = parse_policy({
+                "gates": [
+                    {
+                        "id": "policy",
+                        "enabled": True,
+                        "config": {
+                            "forbid_patterns": [
+                                {
+                                    "pattern": "console\\.log\\(",
+                                    "severity": "P2",
+                                    "message": "no console.log",
+                                    "in": "*.ts",
+                                }
+                            ],
+                        },
+                    }
+                ],
+            })
+
+            result = PolicyGate(policy).run(GateContext(repo_root=repo))
+
+            self.assertEqual(result.status, "ok")
+            self.assertEqual(len(result.findings), 1)
+            finding = result.findings[0]
+            self.assertEqual(finding.file, "src/app.ts")
+            self.assertEqual(finding.line, 1)
+            self.assertEqual(finding.title, "no console.log")
+            self.assertEqual(finding.rule_id, "policy:forbid-pattern:1")
+            self.assertEqual(finding.decision, "deny")
+
+    def test_policy_gate_ask_decision_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "app.ts").write_text("TODO: inspect\n", encoding="utf-8")
+            policy = parse_policy({
+                "gates": [
+                    {
+                        "id": "policy",
+                        "enabled": True,
+                        "config": {
+                            "forbid_patterns": [
+                                {
+                                    "pattern": "TODO",
+                                    "severity": "P1",
+                                    "behavior": "ask",
+                                }
+                            ],
+                        },
+                    }
+                ],
+            })
+
+            result = PolicyGate(policy).run(GateContext(repo_root=repo))
+
+            self.assertEqual(len(result.findings), 1)
+            self.assertEqual(result.findings[0].decision, "ask")
+
+    def test_policy_gate_invalid_regex_is_visible_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            policy = parse_policy({
+                "gates": [
+                    {
+                        "id": "policy",
+                        "enabled": True,
+                        "config": {
+                            "forbid_patterns": [{"pattern": "(", "severity": "P1"}],
+                        },
+                    }
+                ],
+            })
+
+            result = PolicyGate(policy).run(GateContext(repo_root=repo))
+
+            self.assertEqual(len(result.findings), 1)
+            self.assertEqual(result.findings[0].severity, "P1")
+            self.assertIn("Invalid policy forbid pattern", result.findings[0].title)
 
 
 if __name__ == "__main__":

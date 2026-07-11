@@ -90,6 +90,123 @@ class CliMainTests(unittest.TestCase):
             rc = main(["--path", tmp, "--output-dir", tmp, "--fail-severity", "never"])
             self.assertEqual(rc, 0)
 
+    def test_policy_file_toggles_gates_and_blocks_on_forbid_pattern(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "src").mkdir()
+            (repo / "src" / "app.ts").write_text("console.log('debug')\n", encoding="utf-8")
+            policy_dir = repo / ".sentinelayer"
+            policy_dir.mkdir()
+            policy_path = policy_dir / "policy.json"
+            policy_path.write_text(
+                json.dumps({
+                    "version": 1,
+                    "gates": [
+                        {"id": "static_analysis", "enabled": False},
+                        {"id": "security_scan", "enabled": False},
+                        {
+                            "id": "policy",
+                            "enabled": True,
+                            "config": {
+                                "forbid_patterns": [
+                                    {
+                                        "pattern": "console\\.log\\(",
+                                        "severity": "P2",
+                                        "message": "no console.log",
+                                        "in": "*.ts",
+                                    }
+                                ],
+                            },
+                        },
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            output_dir = repo / "out"
+            rc = main([
+                "--path",
+                str(repo),
+                "--output-dir",
+                str(output_dir),
+                "--policy-file",
+                ".sentinelayer/policy.json",
+                "--fail-severity",
+                "P2",
+                "--json-summary",
+            ])
+
+            self.assertEqual(rc, 1)
+            findings = [
+                json.loads(line)
+                for line in (output_dir / "FINDINGS.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0]["gateId"], "policy")
+            self.assertEqual(findings[0]["file"], "src/app.ts")
+
+    def test_policy_ask_findings_do_not_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "app.ts").write_text("TODO: inspect\n", encoding="utf-8")
+            policy_dir = repo / ".sentinelayer"
+            policy_dir.mkdir()
+            (policy_dir / "policy.json").write_text(
+                json.dumps({
+                    "version": 1,
+                    "gates": [
+                        {"id": "static_analysis", "enabled": False},
+                        {"id": "security_scan", "enabled": False},
+                        {
+                            "id": "policy",
+                            "enabled": True,
+                            "config": {
+                                "forbid_patterns": [
+                                    {
+                                        "pattern": "TODO",
+                                        "severity": "P1",
+                                        "behavior": "ask",
+                                    }
+                                ],
+                            },
+                        },
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            output_dir = repo / "out"
+            rc = main([
+                "--path",
+                str(repo),
+                "--output-dir",
+                str(output_dir),
+                "--fail-severity",
+                "P1",
+                "--json-summary",
+            ])
+
+            self.assertEqual(rc, 0)
+            findings = [
+                json.loads(line)
+                for line in (output_dir / "FINDINGS.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(findings[0]["decision"], "ask")
+
+    def test_explicit_missing_policy_file_returns_2(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rc = main([
+                "--path",
+                tmp,
+                "--output-dir",
+                tmp,
+                "--policy-file",
+                ".sentinelayer/missing.json",
+            ])
+            self.assertEqual(rc, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

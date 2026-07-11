@@ -32,6 +32,11 @@ comment, and writes downloadable evidence artifacts.
   code, download the current run-scoped `omar-gate-findings-*` artifact, and
   distinguish declined/no-op fix requests from runner errors so the PR still
   receives a decision acknowledgement.
+- When local gates run, the action must auto-discover `.sentinelayer/policy.yaml`,
+  `.sentinelayer/policy.yml`, then `.sentinelayer/policy.json` unless
+  `local_gates_policy_path` points at an explicit file. The policy file controls
+  local static/security/policy gate toggles and `policy.forbid_patterns`;
+  absent policy keeps the default static+security gates.
 
 ## Security Constraints
 
@@ -43,6 +48,10 @@ comment, and writes downloadable evidence artifacts.
 - Fork PRs must not receive repository secrets through the dogfooding workflow.
 - Local findings are advisory unless their configured severity threshold blocks;
   backend severity counts remain the bridge output contract.
+- Invalid explicit policy files must fail closed as local runner errors. Policy
+  path arguments must resolve inside the repository root.
+- Policy forbid-pattern findings with `behavior: ask` must be annotated but must
+  not contribute to local gate blocking.
 - The `/omar fix <finding_id>` handoff must be opt-in and deny-by-default for
   unauthorized commenters. It must not trust author association as a substitute
   for repository permission.
