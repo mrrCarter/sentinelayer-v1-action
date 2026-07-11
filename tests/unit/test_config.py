@@ -24,6 +24,7 @@ def test_config_parses_booleans(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("INPUT_TELEMETRY", "false")
     monkeypatch.setenv("INPUT_SHARE_METADATA", "true")
     monkeypatch.setenv("INPUT_SHARE_ARTIFACTS", "true")
+    monkeypatch.setenv("INPUT_PUBLISH_GITHUB", "false")
     cfg = OmarGateConfig()
 
     assert cfg.run_deterministic_fix is True
@@ -31,6 +32,7 @@ def test_config_parses_booleans(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.telemetry is False
     assert cfg.share_metadata is True
     assert cfg.share_artifacts is True
+    assert cfg.publish_github is False
 
 
 def test_invalid_severity_gate_raises(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -74,6 +74,10 @@ class OmarGateConfig(BaseSettings):
         default="",
         description="Optional provider tag to isolate PR comments/check runs",
     )
+    publish_github: bool = Field(
+        default=True,
+        description="Publish GitHub PR comments and check runs",
+    )
 
     # Sentinelayer integration (optional)
     sentinelayer_token: SecretStr = Field(default="", description="Sentinelayer API token")

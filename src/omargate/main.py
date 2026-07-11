@@ -74,6 +74,7 @@ __all__ = [
     "_exit_code_from_gate_result",
     "_map_category_to_spec_sections",
     "_build_spec_compliance_from_findings",
+    "_github_publish_enabled",
 ]
 
 
@@ -217,6 +218,11 @@ def _publish_strict() -> bool:
     if os.environ.get("ACT", "").lower() == "true":
         return False
     return True
+
+
+def _github_publish_enabled(config: OmarGateConfig) -> bool:
+    """Return True when this run should create GitHub comments/check-runs."""
+    return bool(getattr(config, "publish_github", True))
 
 
 async def async_main() -> int:
@@ -390,7 +396,7 @@ async def async_main() -> int:
                     collector.fork_blocked = True
                     preflight_success = False
                     logger.info("Blocked by fork policy", reason=fork_reason)
-                    if ctx.pr_number:
+                    if ctx.pr_number and _github_publish_enabled(config):
                         comment_body = (
                             "## 🛡️ Omar Gate: Blocked\n\n"
                             "Fork PRs cannot access secrets required for full analysis. "
@@ -478,17 +484,18 @@ async def async_main() -> int:
                             counts=Counts(),
                             dedupe_key=idem_key,
                         )
-                        try:
-                            gh.create_check_run(
-                                name=check_name,
-                                head_sha=ctx.head_sha,
-                                conclusion="neutral",
-                                summary=reason_msg,
-                                title="Omar Gate: RATE LIMITED",
-                                text=f"Scan skipped — cooldown period ({wait_mins} min) not met.",
-                            )
-                        except Exception:
-                            pass
+                        if _github_publish_enabled(config):
+                            try:
+                                gh.create_check_run(
+                                    name=check_name,
+                                    head_sha=ctx.head_sha,
+                                    conclusion="neutral",
+                                    summary=reason_msg,
+                                    title="Omar Gate: RATE LIMITED",
+                                    text=f"Scan skipped — cooldown period ({wait_mins} min) not met.",
+                                )
+                            except Exception:
+                                pass
                         exit_code = 0
 
                     collector.record_preflight_exit(reason="rate_limit", exit_code=exit_code)
@@ -555,7 +562,7 @@ async def async_main() -> int:
                 counts=Counts(),
                 dedupe_key=idem_key,
             )
-            if gh.token:
+            if gh.token and _github_publish_enabled(config):
                 try:
                     gh.create_check_run(
                         name=check_name,
@@ -811,6 +818,7 @@ async def async_main() -> int:
         collector.stage_start("publish")
         try:
             with logger.stage("publish"):
+                publish_github = _github_publish_enabled(config)
                 # Avoid misleading "$0.00" when the engine cannot report usage (e.g. Codex CLI).
                 if not analysis.llm_success and int(analysis.llm_count or 0) == 0:
                     cost_usd = 0.0
@@ -820,7 +828,9 @@ async def async_main() -> int:
                 else:
                     cost_usd = None
 
-                if not gh.token:
+                if not publish_github:
+                    logger.info("GitHub PR comment publish disabled by input")
+                elif not gh.token:
                     message = "GitHub token missing; publish calls unavailable"
                     if _publish_strict():
                         raise RuntimeError(message)
@@ -935,7 +945,9 @@ async def async_main() -> int:
                     "error": "failure",
                 }
                 annotations = findings_to_annotations(analysis.findings)
-                if not gh.token:
+                if not publish_github:
+                    logger.info("GitHub check-run publish disabled by input")
+                elif not gh.token:
                     message = "GitHub token missing; check run unavailable"
                     if _publish_strict():
                         raise RuntimeError(message)
