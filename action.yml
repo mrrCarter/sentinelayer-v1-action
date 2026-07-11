@@ -150,6 +150,10 @@ inputs:
     description: 'Minimum severity that causes the local gate runner to exit non-zero: P0, P1, P2, P3, or never'
     required: false
     default: 'P1'
+  artifact_name_suffix:
+    description: 'Optional suffix appended to the uploaded findings artifact name; useful when invoking this action more than once in a workflow run'
+    required: false
+    default: ''
 
 outputs:
   gate_status:
@@ -370,11 +374,26 @@ runs:
         export PYTHONPATH="${GITHUB_ACTION_PATH}/src:${PYTHONPATH:-}"
         python -m omargate.main
 
+    - name: Resolve Omar Gate artifact name
+      id: artifact_name
+      if: always()
+      shell: bash
+      env:
+        RAW_SUFFIX: ${{ inputs.artifact_name_suffix }}
+      run: |
+        set -euo pipefail
+        suffix="$(printf '%s' "${RAW_SUFFIX:-}" | tr -c 'A-Za-z0-9_.-' '-' | sed -E 's/-+/-/g; s/^-|-$//g' | cut -c 1-64)"
+        artifact_name="omar-gate-findings-${{ github.run_id }}-${{ github.run_attempt }}"
+        if [ -n "${suffix}" ]; then
+          artifact_name="${artifact_name}-${suffix}"
+        fi
+        echo "name=${artifact_name}" >> "${GITHUB_OUTPUT}"
+
     - name: Upload Omar Gate findings artifact
       if: always()
       uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874  # v4.4.0
       with:
-        name: omar-gate-findings-${{ github.run_id }}-${{ github.run_attempt }}
+        name: ${{ steps.artifact_name.outputs.name }}
         path: |
           ${{ github.workspace }}/.sentinelayer/artifacts/**
           ${{ github.workspace }}/.sentinelayer/runs/**
@@ -386,4 +405,4 @@ runs:
       if: always() && (steps.omar.outputs.gate_status == 'blocked' || steps.omar.outputs.gate_status == 'error')
       shell: bash
       run: |
-        echo "::error title=Omar Gate Blocked::P0=${{ steps.omar.outputs.p0_count }} P1=${{ steps.omar.outputs.p1_count }} P2=${{ steps.omar.outputs.p2_count }} P3=${{ steps.omar.outputs.p3_count }}. Download artifact 'omar-gate-findings-${{ github.run_id }}-${{ github.run_attempt }}' for FINDINGS.jsonl + AUDIT_REPORT.md."
+        echo "::error title=Omar Gate Blocked::P0=${{ steps.omar.outputs.p0_count }} P1=${{ steps.omar.outputs.p1_count }} P2=${{ steps.omar.outputs.p2_count }} P3=${{ steps.omar.outputs.p3_count }}. Download artifact '${{ steps.artifact_name.outputs.name }}' for FINDINGS.jsonl + AUDIT_REPORT.md."

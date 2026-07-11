@@ -75,6 +75,7 @@ jobs:
           use_codex: "true"
           codex_only: "false"
           llm_failure_policy: block
+          artifact_name_suffix: managed
 
       - name: Classify managed Omar failure
         id: managed_failure
@@ -111,6 +112,7 @@ jobs:
           use_codex: "false"
           codex_only: "false"
           llm_failure_policy: deterministic_only
+          artifact_name_suffix: deterministic
 
       - name: Select Omar Gate result
         id: omar_result
