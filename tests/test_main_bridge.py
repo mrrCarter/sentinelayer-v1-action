@@ -543,6 +543,9 @@ def test_main_upserts_pr_comment_and_persistent_artifacts(
     artifacts_dir = tmp_path / ".sentinelayer" / "artifacts" / "run-1"
     assert (run_dir / "RUN_SUMMARY.json").exists()
     assert (run_dir / "REVIEW_BRIEF.md").exists()
+    assert (run_dir / "AUDIT_REPORT.md").read_text(encoding="utf-8") == (
+        run_dir / "REVIEW_BRIEF.md"
+    ).read_text(encoding="utf-8")
     persisted_findings = [
         json.loads(line)
         for line in (run_dir / "FINDINGS.jsonl").read_text(encoding="utf-8").splitlines()

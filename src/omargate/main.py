@@ -1429,6 +1429,7 @@ def _write_bridge_artifacts(
     summary_json = json.dumps(summary, indent=2, sort_keys=True)
     (run_dir / "RUN_SUMMARY.json").write_text(summary_json + "\n", encoding="utf-8")
     (run_dir / "REVIEW_BRIEF.md").write_text(comment_body + "\n", encoding="utf-8")
+    (run_dir / "AUDIT_REPORT.md").write_text(comment_body + "\n", encoding="utf-8")
     (artifacts_dir / "BRIDGE_SUMMARY.md").write_text(comment_body + "\n", encoding="utf-8")
 
     findings_path = run_dir / "FINDINGS.jsonl"
