@@ -445,6 +445,13 @@ def test_main_upserts_pr_comment_and_persistent_artifacts(
 ) -> None:
     config = _bridge_config(tmp_path, wait_for_completion=False)
     output_path = tmp_path / "github_output.txt"
+    (tmp_path / "README.md").write_text("# AIdenID\n\nAgent access layer.\n", encoding="utf-8")
+    (tmp_path / "package.json").write_text(
+        json.dumps({"dependencies": {"next": "15.0.0", "react": "19.0.0"}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "apps" / "api").mkdir(parents=True)
+    (tmp_path / "apps" / "web").mkdir(parents=True)
     local_dir = tmp_path / ".omargate" / "local"
     local_dir.mkdir(parents=True)
     local_finding = {
@@ -460,10 +467,34 @@ def test_main_upserts_pr_comment_and_persistent_artifacts(
         json.dumps(local_finding, separators=(",", ":")) + "\n",
         encoding="utf-8",
     )
+    api_requests: list[dict[str, object]] = []
     github_requests: list[dict[str, object]] = []
 
     def _fake_api_request(**kwargs: object) -> dict[str, object]:
-        return {"status": "accepted", "investigation_run_id": "run-1"}
+        api_requests.append(dict(kwargs))
+        if str(kwargs.get("method") or "GET") == "GET":
+            return {
+                "severity_counts": {"P0": 0, "P1": 0, "P2": 1, "P3": 1},
+                "findings_source": "pack_executor",
+                "findings": [
+                    {
+                        "severity": "P2",
+                        "category": "cicd",
+                        "title": "Release gate is not coupled to smoke evidence.",
+                        "impact": "A deploy could promote without the expected smoke proof.",
+                        "remediation_guidance": "Make the smoke job a required release input.",
+                        "scope": {
+                            "path": ".github/workflows/release.yml",
+                            "line_start": 12,
+                        },
+                    }
+                ],
+            }
+        return {
+            "status": "accepted",
+            "investigation_run_id": "run-1",
+            "run_result_token": "run-read-token-1",
+        }
 
     def _fake_github_request(**kwargs: object) -> object:
         github_requests.append(dict(kwargs))
@@ -486,13 +517,26 @@ def test_main_upserts_pr_comment_and_persistent_artifacts(
     exit_code = main()
 
     assert exit_code == 0
+    findings_gets = [
+        req
+        for req in api_requests
+        if str(req.get("method") or "GET") == "GET"
+        and str(req.get("url") or "").endswith("/runs/run-1/findings?limit=100")
+    ]
+    assert findings_gets
+    assert findings_gets[0]["token"] == "run-read-token-1"
     post_requests = [req for req in github_requests if req.get("method") == "POST"]
     assert len(post_requests) == 1
     comment_body = post_requests[0]["payload"]["body"]  # type: ignore[index]
     assert "sentinelayer:omar-gate:owner/repo:pr-42" in comment_body
-    assert "## Omar Gate Compatibility Bridge" in comment_body
+    assert "## 🛡️ Omar Gate: ✅ PASSED" in comment_body
+    assert "Result: Passed (severity_gate=P1): no P0/P1 findings" in comment_body
+    assert "| P2 (Medium) | 1 | No |" in comment_body
+    assert "Codebase Synopsis: README.md: AIdenID. Architecture: apps workspace. Stack: Node.js, Next.js, React." in comment_body
     assert "### Top Findings" in comment_body
-    assert "**P2** [`apps/api/app/routes/traffic.py:87`]" in comment_body
+    assert "**P2** [`.github/workflows/release.yml:12`]" in comment_body
+    assert "Release gate is not coupled to smoke evidence." in comment_body
+    assert "Compatibility Bridge" not in comment_body
     assert "run-1" in comment_body
 
     run_dir = tmp_path / ".sentinelayer" / "runs" / "run-1"

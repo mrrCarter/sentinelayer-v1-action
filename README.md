@@ -191,7 +191,8 @@ See also: [Comment Command Reference](docs/comment-command-reference.md).
 
 ## Runtime Model Routing
 
-This action is a compatibility bridge that only forwards orchestration metadata to Sentinelayer API.  
+This action forwards orchestration metadata to Sentinelayer API and renders the
+Omar Gate review back onto the pull request.  
 Model/provider routing is managed server-side by Sentinelayer runtime policy; it is not configured through this action input contract.
 
 If you need custom model routing, configure it in your Sentinelayer runtime/control-plane settings rather than in `with:` inputs.
