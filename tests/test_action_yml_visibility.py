@@ -124,3 +124,47 @@ def test_existing_omar_step_id_is_omar() -> None:
         "the Execute Omar Gate step must keep id=omar so downstream annotation "
         "step can reference steps.omar.outputs.gate_status"
     )
+
+
+def test_local_gates_exposes_persona_dispatch_inputs_safely() -> None:
+    text = _action_yml_text()
+
+    for input_name in (
+        "local_gates_persona_dispatch",
+        "local_gates_persona_cli_path",
+        "local_gates_persona_dispatch_dry_run",
+    ):
+        assert re.search(rf"^\s{{2}}{input_name}:\s*$", text, flags=re.MULTILINE), (
+            f"action.yml must expose {input_name} so workflows can opt into local "
+            "persona dispatch without editing the action"
+        )
+
+    assert re.search(
+        r"local_gates_persona_dispatch:\n(?:    .+\n)*    default: 'false'",
+        text,
+    ), "persona dispatch must be opt-in so existing workflows remain deterministic"
+    assert re.search(
+        r"local_gates_persona_dispatch_dry_run:\n(?:    .+\n)*    default: 'false'",
+        text,
+    ), "persona dispatch dry-run must not silently change behavior unless requested"
+    assert "INPUT_LOCAL_GATES_PERSONA_DISPATCH" in text, (
+        "the composite action must pass persona dispatch enablement into the "
+        "local gate step"
+    )
+    assert "INPUT_LOCAL_GATES_PERSONA_CLI_PATH" in text, (
+        "the composite action must pass the optional create-sentinelayer CLI path "
+        "into the local gate step"
+    )
+    assert "INPUT_LOCAL_GATES_PERSONA_DISPATCH_DRY_RUN" in text, (
+        "the composite action must pass dry-run mode into the local gate step"
+    )
+    assert "persona_args=()" in text, (
+        "persona dispatch flags must be built as a bash array, not string-concatenated"
+    )
+    assert "persona_args+=(--enable-persona-dispatch)" in text
+    assert 'persona_args+=(--persona-cli-path "${persona_cli_path}")' in text
+    assert "persona_args+=(--persona-dispatch-dry-run)" in text
+    assert '"${persona_args[@]}"' in text, (
+        "local_gates must receive persona args via array expansion so custom CLI "
+        "paths with spaces are safe"
+    )

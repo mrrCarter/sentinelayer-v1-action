@@ -311,6 +311,12 @@ Use these in subsequent workflow steps:
 | `wait_timeout_seconds` | `900` | Max wait time (seconds). |
 | `wait_poll_seconds` | `10` | Poll interval (seconds). |
 | `pr_number` | empty | Optional PR number override (`workflow_dispatch`). |
+| `local_gates_enabled` | `true` | Run the action-local Omar Gate 2.0 gate runner before the backend bridge. |
+| `local_gates_output_dir` | `.omargate/local` | Output directory for local gate `FINDINGS.jsonl` and `SUMMARY.json`. |
+| `local_gates_fail_severity` | `P1` | Minimum severity that makes the local gate runner block (`P0`, `P1`, `P2`, `P3`, `never`). |
+| `local_gates_persona_dispatch` | `false` | Opt into local persona dispatch for scaffold-mapped findings after the local gate runner finishes. |
+| `local_gates_persona_cli_path` | empty | Optional `create-sentinelayer` CLI path for persona dispatch. Empty uses PATH discovery. |
+| `local_gates_persona_dispatch_dry_run` | `false` | Include persona routing in the local-gates summary without spawning persona review commands. |
 | `playwright_mode` | `off` | Optional browser gate profile: `off`, `baseline`, `audit`. |
 | `playwright_node_version` | `20` | Node version used when `playwright_mode != off`. |
 | `playwright_base_url` | empty | Optional `PLAYWRIGHT_TEST_BASE_URL` override for test execution. |
