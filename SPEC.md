@@ -27,6 +27,11 @@ comment, and writes downloadable evidence artifacts.
   and optional Playwright/SBOM status outputs stable for callers.
 - GitHub API writes must use the caller-provided `github_token`; Sentinelayer API
   requests must use `sentinelayer_token`.
+- The optional `/omar fix <finding_id>` handoff workflow must verify the
+  commenter has write, maintain, or admin permission before checking out PR
+  code, download the current run-scoped `omar-gate-findings-*` artifact, and
+  distinguish declined/no-op fix requests from runner errors so the PR still
+  receives a decision acknowledgement.
 
 ## Security Constraints
 
@@ -38,6 +43,9 @@ comment, and writes downloadable evidence artifacts.
 - Fork PRs must not receive repository secrets through the dogfooding workflow.
 - Local findings are advisory unless their configured severity threshold blocks;
   backend severity counts remain the bridge output contract.
+- The `/omar fix <finding_id>` handoff must be opt-in and deny-by-default for
+  unauthorized commenters. It must not trust author association as a substitute
+  for repository permission.
 
 ## Validation
 

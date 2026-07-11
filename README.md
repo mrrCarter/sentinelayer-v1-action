@@ -171,6 +171,7 @@ If your repo has the Sentinelayer GitHub App installed, post one of these PR com
 | `/omar deep-scan` | Runs the standard deep review profile over changed and related high-risk scope. |
 | `/omar full-depth` | Runs full-depth audit orchestration with broader persona/domain coverage. |
 | `/omar fix-plan` | Produces remediation plan artifacts based on current findings and policies. |
+| `/omar fix <finding_id>` | Dispatches one reviewed finding into a maintainer-authorized persona codegen handoff workflow. |
 | `/omar report` | Publishes a dashboard-linked report package for reviewer/HITL handoff. |
 
 Examples:
@@ -178,12 +179,16 @@ Examples:
 ```bash
 gh pr comment <pr-number> --body "/omar deep-scan"
 gh pr comment <pr-number> --body "/omar fix-plan"
+gh pr comment <pr-number> --body "/omar fix crypto.md5"
 ```
 
 Notes:
 - `scan_mode: baseline|deep|audit|full-depth` in the action maps to Omar commands under the hood.
 - `scan_mode: audit` maps to `/omar full-depth`.
 - Keep branch protection tied to the Omar Gate check for merge control; use comment commands for extra depth.
+- `/omar fix <finding_id>` requires the opt-in reference workflow in
+  [examples/workflows/omar-fix-comment.yml](examples/workflows/omar-fix-comment.yml)
+  so maintainers can gate codegen handoffs by repository permission.
 
 See also: [Comment Command Reference](docs/comment-command-reference.md).
 
@@ -502,7 +507,11 @@ See [Supply-Chain Attestation Guide](docs/supply-chain-attestation.md) for an en
 ### PR comment command does nothing
 **Cause:** GitHub App not installed on the repo/org, webhook delivery disabled, or comment command not recognized.
 **Fix:** Install Sentinelayer GitHub App, verify repo access and webhook health, then retry with one of:
-`/omar baseline`, `/omar deep-scan`, `/omar full-depth`, `/omar fix-plan`, `/omar report`.
+`/omar baseline`, `/omar deep-scan`, `/omar full-depth`, `/omar fix-plan`, `/omar fix <finding_id>`, `/omar report`.
+
+### `/omar fix <finding_id>` does not open a draft PR
+**Cause:** The optional fix handoff workflow is missing, the commenter lacks write/maintain/admin permission, no completed Omar Gate artifact exists for the PR head SHA, or the requested finding id is not in the latest `FINDINGS.jsonl`.
+**Fix:** Add [examples/workflows/omar-fix-comment.yml](examples/workflows/omar-fix-comment.yml), confirm the latest `omar-gate-findings-*` artifact exists, and retry with a finding `ruleId` from the Omar Gate artifact.
 
 ---
 

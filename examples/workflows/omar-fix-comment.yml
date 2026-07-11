@@ -18,8 +18,9 @@
 #      is the handoff point: a downstream LLM-authoring job (with API keys
 #      and `write` permission) consumes the envelope and pushes the diff.
 #
-# Security posture: only users with `write` or `admin` permission on the
-# repo can trigger the fix handoff. Deny-by-default for everyone else.
+# Security posture: only users with `write`, `maintain`, or `admin` permission
+# on the repo can trigger the fix handoff. Deny-by-default for everyone else,
+# and check that permission before checking out PR code.
 
 name: Omar Fix Handoff
 
@@ -28,7 +29,9 @@ on:
     types: [created]
 
 permissions:
+  actions: read
   contents: write
+  issues: write
   pull-requests: write
 
 jobs:
@@ -36,25 +39,45 @@ jobs:
     if: |
       github.event.issue.pull_request != null
         && contains(github.event.comment.body, '/omar fix')
-        && (
-          github.event.comment.author_association == 'OWNER'
-            || github.event.comment.author_association == 'MEMBER'
-            || github.event.comment.author_association == 'COLLABORATOR'
-        )
     runs-on: ubuntu-latest
     steps:
+      - name: Authorize commenter
+        id: authz
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          permission="$(
+            gh api "repos/${GITHUB_REPOSITORY}/collaborators/${COMMENT_AUTHOR}/permission" \
+              --jq '.permission' 2>/tmp/omar-fix-authz-error.log || true
+          )"
+          case "${permission}" in
+            admin|maintain|write)
+              echo "authorized=1" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::warning::Ignoring /omar fix from ${COMMENT_AUTHOR}: permission=${permission:-none}; write, maintain, or admin required."
+              echo "authorized=0" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
       - name: Checkout PR head
+        if: steps.authz.outputs.authorized == '1'
         uses: actions/checkout@v4
         with:
           ref: refs/pull/${{ github.event.issue.number }}/merge
           fetch-depth: 0
 
       - name: Setup Python
+        if: steps.authz.outputs.authorized == '1'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install Omar Gate runner
+        if: steps.authz.outputs.authorized == '1'
         shell: bash
         run: |
           set -euo pipefail
@@ -65,6 +88,7 @@ jobs:
             gh repo clone mrrCarter/sentinelayer-v1-action .omar-gate-action -- --depth 1
 
       - name: Download latest FINDINGS.jsonl
+        if: steps.authz.outputs.authorized == '1'
         id: findings
         env:
           GH_TOKEN: ${{ github.token }}
@@ -83,11 +107,23 @@ jobs:
             echo "skipped=1" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          gh run download "${run_id}" -n omar-gate-findings -D "${GITHUB_WORKSPACE}/.omargate/latest" || {
-            echo "::warning::FINDINGS.jsonl artifact not available on run ${run_id}; skipping handoff."
+          artifact_name="$(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" \
+              --jq '[.artifacts[] | select(.expired == false and (.name | startswith("omar-gate-findings-")))][0].name // empty'
+          )"
+          if [ -z "${artifact_name}" ]; then
+            echo "::warning::No omar-gate-findings-* artifact available on run ${run_id}; skipping handoff."
             echo "skipped=1" >> "$GITHUB_OUTPUT"
             exit 0
-          }
+          fi
+          gh run download "${run_id}" -n "${artifact_name}" -D "${GITHUB_WORKSPACE}/.omargate/latest"
+          findings_file="$(find "${GITHUB_WORKSPACE}/.omargate/latest" -type f -name FINDINGS.jsonl | head -n 1)"
+          if [ -z "${findings_file}" ]; then
+            echo "::warning::Artifact ${artifact_name} did not contain FINDINGS.jsonl; skipping handoff."
+            echo "skipped=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "findings_file=${findings_file}" >> "$GITHUB_OUTPUT"
           echo "skipped=0" >> "$GITHUB_OUTPUT"
 
       - name: Parse command and build plan
@@ -98,13 +134,23 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
           set -euo pipefail
-          echo "${COMMENT_BODY}" > /tmp/omar-fix-comment.md
+          printf '%s\n' "${COMMENT_BODY}" > /tmp/omar-fix-comment.md
+          set +e
           PYTHONPATH="${GITHUB_WORKSPACE}/.omar-gate-action/src" python -m omargate.fix_handoff_cli \
             --path "${GITHUB_WORKSPACE}" \
-            --findings-file "${GITHUB_WORKSPACE}/.omargate/latest/FINDINGS.jsonl" \
+            --findings-file "${{ steps.findings.outputs.findings_file }}" \
             --comment-body-file /tmp/omar-fix-comment.md \
             > /tmp/omar-fix-plan.json
+          cli_rc=$?
+          set -e
+          if [ "${cli_rc}" -eq 2 ]; then
+            cat /tmp/omar-fix-plan.json
+            exit 2
+          fi
           echo "plan_file=/tmp/omar-fix-plan.json" >> "$GITHUB_OUTPUT"
+          echo "exit_code=${cli_rc}" >> "$GITHUB_OUTPUT"
+          has_plan="$(PLAN_FILE=/tmp/omar-fix-plan.json python -c 'import json,os; print("1" if json.load(open(os.environ["PLAN_FILE"])).get("plan") else "0")')"
+          echo "has_plan=${has_plan}" >> "$GITHUB_OUTPUT"
           cat /tmp/omar-fix-plan.json | python -m json.tool
 
       - name: Acknowledge on PR (decision)
@@ -142,24 +188,19 @@ jobs:
             });
 
       - name: Setup Node (for create-sentinelayer CLI)
-        if: steps.plan.outputs.plan_file
+        if: steps.plan.outputs.has_plan == '1'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Spawn codegen envelope via create-sentinelayer
-        if: steps.plan.outputs.plan_file
+        if: steps.plan.outputs.has_plan == '1'
         id: codegen
         shell: bash
         env:
           PLAN_FILE: ${{ steps.plan.outputs.plan_file }}
         run: |
           set -euo pipefail
-          accepted="$(python -c 'import json,os,sys; sys.exit(0 if json.load(open(os.environ["PLAN_FILE"])).get("plan") else 1)')" || {
-            echo "::notice::No plan emitted — skipping codegen spawn."
-            echo "skipped=1" >> "$GITHUB_OUTPUT"
-            exit 0
-          }
           persona="$(python -c 'import json,os; print(json.load(open(os.environ["PLAN_FILE"]))["plan"]["persona"])')"
           files_csv="$(python -c 'import json,os; print(",".join(json.load(open(os.environ["PLAN_FILE"]))["plan"]["files"]))')"
           branch="$(python -c 'import json,os; print(json.load(open(os.environ["PLAN_FILE"]))["plan"]["branch_name"])')"
