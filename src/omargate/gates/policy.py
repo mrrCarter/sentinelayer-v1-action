@@ -161,6 +161,17 @@ _SCAN_EXCLUDED_PREFIXES = EXCLUDED_PATH_PREFIXES | frozenset(
 )
 
 _MAX_POLICY_FILE_BYTES = 1_000_000
+_MAX_POLICY_PATTERN_CHARS = 500
+_REGEX_QUANTIFIER = r"(?:[*+]|\{\d+(?:,\d*)?\})"
+_UNSAFE_NESTED_QUANTIFIER_RE = re.compile(
+    rf"\((?:\?:|\?P<[^>]+>)?(?:(?:\\.)|[^()])*{_REGEX_QUANTIFIER}"
+    rf"(?:(?:\\.)|[^()])*\)\s*{_REGEX_QUANTIFIER}"
+)
+_UNSAFE_QUANTIFIED_BRANCH_RE = re.compile(
+    rf"\((?:\?:|\?P<[^>]+>)?(?:(?:\\.)|[^()])*\|"
+    rf"(?:(?:\\.)|[^()])*\)\s*{_REGEX_QUANTIFIER}"
+)
+_BACKREFERENCE_RE = re.compile(r"(?:\\[1-9]|\(\?P=)")
 
 
 # ---------- parsers ----------
@@ -404,16 +415,23 @@ class PolicyGate:
         findings: list[Finding] = []
         patterns = list(self._policy.forbid_patterns)
 
-        compiled: list[tuple[int, ForbidPattern, re.Pattern[str] | None, str | None]] = []
+        compiled: list[
+            tuple[int, ForbidPattern, re.Pattern[str] | None, str | None, str | None]
+        ] = []
         for idx, pattern in enumerate(patterns, start=1):
+            unsafe_reason = _unsafe_forbid_pattern_reason(pattern.pattern)
+            if unsafe_reason is not None:
+                compiled.append((idx, pattern, None, unsafe_reason, "unsafe-regex"))
+                continue
             try:
-                compiled.append((idx, pattern, re.compile(pattern.pattern), None))
+                compiled.append((idx, pattern, re.compile(pattern.pattern), None, None))
             except re.error as exc:
-                compiled.append((idx, pattern, None, str(exc)))
+                compiled.append((idx, pattern, None, str(exc), "invalid-regex"))
 
         policy_file = _policy_path_for_finding(ctx.repo_root, self._policy_path)
-        for idx, pattern, regex, error in compiled:
+        for idx, pattern, regex, error, error_kind in compiled:
             if error is not None:
+                is_unsafe = error_kind == "unsafe-regex"
                 findings.append(
                     Finding(
                         gate_id=self.gate_id,
@@ -421,9 +439,17 @@ class PolicyGate:
                         severity="P1",
                         file=policy_file,
                         line=0,
-                        title="Invalid policy forbid pattern",
-                        description=f"Pattern {idx} failed to compile: {error}",
-                        rule_id=f"policy:forbid-pattern:{idx}:invalid-regex",
+                        title=(
+                            "Unsafe policy forbid pattern"
+                            if is_unsafe
+                            else "Invalid policy forbid pattern"
+                        ),
+                        description=(
+                            f"Pattern {idx} was rejected before scanning: {error}"
+                            if is_unsafe
+                            else f"Pattern {idx} failed to compile: {error}"
+                        ),
+                        rule_id=f"policy:forbid-pattern:{idx}:{error_kind or 'invalid-regex'}",
                         decision="deny",
                     )
                 )
@@ -451,6 +477,28 @@ def _policy_path_for_finding(repo_root: Path, policy_path: Path | None) -> str:
         return policy_path.resolve().relative_to(repo_root.resolve()).as_posix()
     except ValueError:
         return policy_path.as_posix()
+
+
+def _unsafe_forbid_pattern_reason(pattern: str) -> str | None:
+    """Reject regex shapes that can catastrophically backtrack in CI.
+
+    Python's stdlib `re` has no per-match timeout. Policy files may be
+    auto-discovered from PR-controlled content, so this gate must reject risky
+    patterns before scanning repository text. This conservative guard favors
+    explicit deny findings over a hung runner.
+    """
+    if len(pattern) > _MAX_POLICY_PATTERN_CHARS:
+        return (
+            f"pattern length {len(pattern)} exceeds "
+            f"{_MAX_POLICY_PATTERN_CHARS} characters"
+        )
+    if _BACKREFERENCE_RE.search(pattern):
+        return "backreferences are not allowed in policy forbid patterns"
+    if _UNSAFE_NESTED_QUANTIFIER_RE.search(pattern):
+        return "nested quantified groups are not allowed in policy forbid patterns"
+    if _UNSAFE_QUANTIFIED_BRANCH_RE.search(pattern):
+        return "quantified alternation groups are not allowed in policy forbid patterns"
+    return None
 
 
 def _scan_for_pattern(
