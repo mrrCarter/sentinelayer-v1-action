@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -393,6 +394,57 @@ class PolicyGateTests(unittest.TestCase):
             self.assertEqual(len(result.findings), 1)
             self.assertEqual(result.findings[0].severity, "P1")
             self.assertIn("Invalid policy forbid pattern", result.findings[0].title)
+
+    def test_policy_gate_rejects_nested_quantifier_redos_pattern(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "app.txt").write_text(("a" * 28) + "!\n", encoding="utf-8")
+            policy = parse_policy({
+                "gates": [
+                    {
+                        "id": "policy",
+                        "enabled": True,
+                        "config": {
+                            "forbid_patterns": [
+                                {"pattern": "(a+)+$", "severity": "P1"},
+                            ],
+                        },
+                    }
+                ],
+            })
+
+            started = time.monotonic()
+            result = PolicyGate(policy).run(GateContext(repo_root=repo))
+            elapsed = time.monotonic() - started
+
+            self.assertLess(elapsed, 1.0)
+            self.assertEqual(len(result.findings), 1)
+            finding = result.findings[0]
+            self.assertEqual(finding.severity, "P1")
+            self.assertIn("Unsafe policy forbid pattern", finding.title)
+            self.assertEqual(finding.rule_id, "policy:forbid-pattern:1:unsafe-regex")
+
+    def test_policy_gate_rejects_quantified_alternation_pattern(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            policy = parse_policy({
+                "gates": [
+                    {
+                        "id": "policy",
+                        "enabled": True,
+                        "config": {
+                            "forbid_patterns": [
+                                {"pattern": "(a|aa)+$", "severity": "P1"},
+                            ],
+                        },
+                    }
+                ],
+            })
+
+            result = PolicyGate(policy).run(GateContext(repo_root=repo))
+
+            self.assertEqual(len(result.findings), 1)
+            self.assertIn("Unsafe policy forbid pattern", result.findings[0].title)
 
 
 if __name__ == "__main__":
