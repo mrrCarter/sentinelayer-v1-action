@@ -1513,6 +1513,7 @@ def main() -> int:
         )
 
         run_id = str(trigger_response.get("investigation_run_id") or "").strip()
+        trigger_delivery_id = str(trigger_response.get("delivery_id") or "").strip()
         run_read_token = (
             str(trigger_response.get("run_result_token") or "").strip()
             or config.status_poll_token
@@ -1525,6 +1526,11 @@ def main() -> int:
             deadline = time.time() + float(config.wait_timeout_seconds)
             while time.time() < deadline:
                 status_url = f"{config.api_url}/api/v1/github-app/runs/{run_id}/status"
+                if trigger_delivery_id:
+                    status_url = (
+                        f"{status_url}?delivery_id="
+                        f"{urllib.parse.quote(trigger_delivery_id, safe='')}"
+                    )
                 status_payload = _api_json_request(
                     method="GET",
                     url=status_url,

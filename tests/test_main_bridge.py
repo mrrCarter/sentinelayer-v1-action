@@ -547,6 +547,67 @@ def test_main_upserts_pr_comment_and_persistent_artifacts(
     assert (artifacts_dir / "BRIDGE_SUMMARY.md").exists()
 
 
+def test_main_polls_status_for_exact_trigger_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _bridge_config(tmp_path, wait_for_completion=True)
+    output_path = tmp_path / "github_output.txt"
+    api_requests: list[dict[str, object]] = []
+    github_requests: list[dict[str, object]] = []
+
+    def _fake_api_request(**kwargs: object) -> dict[str, object]:
+        api_requests.append(dict(kwargs))
+        url = str(kwargs.get("url") or "")
+        if str(kwargs.get("method") or "GET") == "POST":
+            return {
+                "status": "accepted",
+                "delivery_id": "manual/current+1",
+                "investigation_run_id": "run-1",
+                "run_result_token": "run-read-token-1",
+            }
+        if url.endswith("/runs/run-1/status?delivery_id=manual%2Fcurrent%2B1"):
+            return {
+                "status": "completed",
+                "progress_label": "completed:pack-executor",
+                "severity_counts": {"P0": 0, "P1": 0, "P2": 0, "P3": 0},
+            }
+        if url.endswith("/runs/run-1/findings?limit=100"):
+            return {
+                "findings": [],
+                "severity_counts": {"P0": 0, "P1": 0, "P2": 0, "P3": 0},
+            }
+        raise AssertionError(f"unexpected API URL: {url}")
+
+    def _fake_github_request(**kwargs: object) -> object:
+        github_requests.append(dict(kwargs))
+        if str(kwargs.get("method") or "GET") == "GET":
+            return []
+        return {"html_url": "https://github.com/owner/repo/pull/42#issuecomment-new"}
+
+    monkeypatch.setattr("omargate.main._load_config", lambda: config)
+    monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._execute_sbom_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._api_json_request", _fake_api_request)
+    monkeypatch.setattr("omargate.main._github_api_json_request", _fake_github_request)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv("GITHUB_SHA", "abc123")
+
+    exit_code = main()
+
+    assert exit_code == 0
+    status_gets = [
+        req
+        for req in api_requests
+        if str(req.get("url") or "").endswith(
+            "/runs/run-1/status?delivery_id=manual%2Fcurrent%2B1"
+        )
+    ]
+    assert status_gets
+    assert status_gets[0]["token"] == "run-read-token-1"
+
+
 def test_main_updates_existing_omar_pr_comment(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
