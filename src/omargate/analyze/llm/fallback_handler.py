@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import List, Literal, Optional
 
 from ...fix_plan import ensure_fix_plan
+from ...redaction import sanitize_public_error
 from .llm_client import LLMResponse
 from .response_parser import ParsedFinding
 
@@ -55,6 +56,7 @@ def handle_llm_failure(
         )
         for finding in deterministic_findings
     ]
+    public_error = sanitize_public_error(llm_response.error or "unknown error")
 
     if policy == "block":
         synthetic = ParsedFinding(
@@ -65,7 +67,7 @@ def handle_llm_failure(
             line_end=0,
             message=(
                 "LLM analysis failed: "
-                f"{llm_response.error}. Blocking merge per fail-closed policy."
+                f"{public_error}. Blocking merge per fail-closed policy."
             ),
             recommendation="Retry the scan or investigate the LLM error.",
             fix_plan=(
@@ -91,7 +93,7 @@ def handle_llm_failure(
             fallback_used=False,
             policy_applied="deterministic_only",
             warning_message=(
-                f"LLM analysis failed ({llm_response.error}). "
+                f"LLM analysis failed ({public_error}). "
                 "Only deterministic scan results shown."
             ),
             usage=None,
@@ -103,7 +105,7 @@ def handle_llm_failure(
         fallback_used=False,
         policy_applied="allow_with_warning",
         warning_message=(
-            f"LLM analysis failed ({llm_response.error}). "
+            f"LLM analysis failed ({public_error}). "
             "Proceeding with deterministic results only."
         ),
         usage=None,

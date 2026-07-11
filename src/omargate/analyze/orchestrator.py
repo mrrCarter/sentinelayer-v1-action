@@ -20,6 +20,7 @@ from ..harness import HarnessRunner
 from ..logging import OmarLogger
 from ..package.fingerprint import add_fingerprints_to_findings
 from ..fix_plan import ensure_fix_plan
+from ..redaction import sanitize_public_error
 from .codex import CodexPromptBuilder, CodexRunner
 from .deterministic import ConfigScanner, EngQualityScanner, PatternScanner, scan_for_secrets
 from .llm import ContextBuilder, LLMClient, PromptLoader, ResponseParser, handle_llm_failure
@@ -275,7 +276,10 @@ class AnalysisOrchestrator:
                         model=self.config.model,
                         error=str(exc),
                     )
-                    warnings.append(f"{self.config.model} LLM analysis failed: {exc}")
+                    warnings.append(
+                        f"{self.config.model} LLM analysis failed: "
+                        f"{sanitize_public_error(exc)}"
+                    )
 
         if self.allow_llm and self.config.use_codex:
             with self.logger.stage("deep_scan"):
@@ -309,7 +313,9 @@ class AnalysisOrchestrator:
                         model=codex_model,
                         error=str(exc),
                     )
-                    warnings.append(f"{codex_model} Codex scan failed: {exc}")
+                    warnings.append(
+                        f"{codex_model} Codex scan failed: {sanitize_public_error(exc)}"
+                    )
             if not llm_success and not self.config.codex_only and self._should_run_llm():
                 await run_llm_stage("llm_fallback", "LLM fallback complete")
             elif not llm_success and not self.config.codex_only:
@@ -561,7 +567,7 @@ class AnalysisOrchestrator:
                 policy=self.config.llm_failure_policy,
             )
             warning = fallback_result.warning_message or (
-                f"LLM analysis failed ({response.error})."
+                f"LLM analysis failed ({sanitize_public_error(response.error)})."
             )
             non_det_findings = [
                 f for f in fallback_result.findings if f.source != "deterministic"
@@ -643,7 +649,7 @@ class AnalysisOrchestrator:
             timeout=int(self.config.codex_timeout),
         )
         if not result.success:
-            warn = result.error or "Codex audit failed"
+            warn = sanitize_public_error(result.error or "Codex audit failed")
             # Observability-only diagnostic (no control-flow change): surface WHY the
             # codex-cli primary failed (returncode vs unparseable output) so the LLM-
             # fallback masking can be root-caused. Bounded snippet, failing-path only.

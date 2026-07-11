@@ -16,6 +16,7 @@ from .providers import (
     XAIProvider,
     detect_provider_from_model,
 )
+from ...redaction import sanitize_public_error
 
 
 @dataclass
@@ -428,11 +429,14 @@ class LLMClient:
             fallback_response.usage.route = "managed_after_byo_capacity_failed"
             fallback_response.usage.fallback_chain = managed_response.usage.fallback_chain
 
-        primary_error = primary_response.error or "unknown error"
-        fallback_error = fallback_response.error or "unknown error"
+        primary_error = sanitize_public_error(primary_response.error or "unknown error")
+        fallback_error = sanitize_public_error(fallback_response.error or "unknown error")
         combined_error = f"Primary failed: {primary_error}; Fallback failed: {fallback_error}"
         if managed_error:
-            combined_error = f"{combined_error}; Managed fallback failed: {managed_error}"
+            combined_error = (
+                f"{combined_error}; Managed fallback failed: "
+                f"{sanitize_public_error(managed_error)}"
+            )
         return LLMResponse(
             content="",
             usage=fallback_response.usage,
@@ -466,7 +470,7 @@ class LLMClient:
                     )
                     if response.success:
                         return response
-                    last_error = response.error
+                    last_error = sanitize_public_error(response.error)
                 else:
                     start = time.time()
                     response = await provider.call(
@@ -497,7 +501,7 @@ class LLMClient:
             except asyncio.TimeoutError:
                 last_error = f"Timeout after {self.timeout}s"
             except Exception as exc:
-                last_error = str(exc)
+                last_error = sanitize_public_error(exc)
 
             if attempt < self.max_retries - 1:
                 await asyncio.sleep(2**attempt)

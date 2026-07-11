@@ -7,6 +7,7 @@ from typing import Dict, Iterable, List, Optional
 from .priority_ranker import CATEGORY_SCORE, CATEGORIES, SEVERITY_SCORE, detect_categories, rank_files
 from ..fix_plan import ensure_fix_plan
 from ..ingest.codebase_snapshot import build_codebase_snapshot, build_codebase_synopsis
+from ..redaction import sanitize_public_error
 
 CATEGORY_ACTIONS = {
     "auth": "Review auth and session controls",
@@ -169,11 +170,12 @@ def _format_fix_plan_section(findings: List[dict]) -> List[str]:
         category = str(finding.get("category") or "issue")
         path = str(finding.get("file_path") or "unknown").replace("\\", "/")
         line = int(finding.get("line_start") or 1)
-        message = _truncate_message(str(finding.get("message") or "No description"), 220)
+        raw_message = sanitize_public_error(str(finding.get("message") or "No description"))
+        message = _truncate_message(raw_message, 220)
         fix_plan = ensure_fix_plan(
-            fix_plan=finding.get("fix_plan", ""),
-            recommendation=finding.get("recommendation", ""),
-            message=finding.get("message", ""),
+            fix_plan=sanitize_public_error(finding.get("fix_plan", "")),
+            recommendation=sanitize_public_error(finding.get("recommendation", "")),
+            message=raw_message,
         )
         lines.append(
             f"{idx}. **{severity}** `{path}:{line}` · **{category}**: {message}"

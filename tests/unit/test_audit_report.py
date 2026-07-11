@@ -82,3 +82,20 @@ def test_write_audit_report(sample_data, tmp_path: Path):
     assert report_path.exists()
     content = report_path.read_text(encoding="utf-8")
     assert "Omar Gate Audit Report" in content
+
+
+def test_report_redacts_provider_error_details(sample_data):
+    sample_data["summary"]["errors"] = [
+        "Google 403 PERMISSION_DENIED consumer projects/123456789012 key=AIzaSyDUMMYDUMMYDUMMYDUMMYDUMMY"
+    ]
+    sample_data["findings"][0]["message"] = (
+        "LLM failed for project_id=my-prod-project with token sk-testtesttesttest"
+    )
+
+    report = generate_audit_report(**sample_data)
+
+    assert "PERMISSION_DENIED" in report
+    assert "123456789012" not in report
+    assert "my-prod-project" not in report
+    assert "AIza" not in report
+    assert "sk-testtesttesttest" not in report
