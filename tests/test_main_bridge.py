@@ -443,7 +443,7 @@ def test_main_forwards_llm_policy_to_backend_trigger(
     assert outputs["codex_model"] == "gpt-5.3-codex"
 
 
-def test_main_deterministic_only_skips_backend_trigger(
+def test_main_deterministic_only_publishes_backend_check_without_polling(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -455,14 +455,29 @@ def test_main_deterministic_only_skips_backend_trigger(
         llm_failure_policy="deterministic_only",
     )
     output_path = tmp_path / "github_output.txt"
+    captured_requests: list[dict[str, object]] = []
 
-    def _unexpected_api_request(**_kwargs: object) -> dict[str, object]:
-        raise AssertionError("deterministic_only must not call backend trigger/status/findings")
+    def _capture_api_request(**kwargs: object) -> dict[str, object]:
+        captured_requests.append(dict(kwargs))
+        assert kwargs["method"] == "POST"
+        assert str(kwargs["url"]).endswith("/api/v1/github-app/trigger")
+        payload = kwargs["payload"]
+        assert isinstance(payload, dict)
+        assert payload["repository_full_name"] == "owner/repo"
+        assert payload["pr_number"] == 42
+        llm_policy = payload["llm_policy"]
+        assert isinstance(llm_policy, dict)
+        assert llm_policy["llm_failure_policy"] == "deterministic_only"
+        return {
+            "status": "accepted",
+            "delivery_id": "manual-deterministic",
+            "investigation_run_id": "ghdeep_owner-repo_deterministic",
+        }
 
     monkeypatch.setattr("omargate.main._load_config", lambda: config)
     monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _config: ("skipped", "ok"))
     monkeypatch.setattr("omargate.main._execute_sbom_gate", lambda _config: ("skipped", "ok"))
-    monkeypatch.setattr("omargate.main._api_json_request", _unexpected_api_request)
+    monkeypatch.setattr("omargate.main._api_json_request", _capture_api_request)
     monkeypatch.setattr(
         "omargate.main._github_api_json_request",
         lambda **kwargs: [] if str(kwargs.get("method") or "GET") == "GET" else {"html_url": ""},
@@ -474,6 +489,7 @@ def test_main_deterministic_only_skips_backend_trigger(
     exit_code = main()
 
     assert exit_code == 0
+    assert len(captured_requests) == 1
     outputs = {}
     for line in output_path.read_text(encoding="utf-8").splitlines():
         if "=" not in line:
@@ -486,6 +502,12 @@ def test_main_deterministic_only_skips_backend_trigger(
     assert (run_dir / "RUN_SUMMARY.json").exists()
     summary = json.loads((run_dir / "RUN_SUMMARY.json").read_text(encoding="utf-8"))
     assert summary["backend_findings_count"] == 0
+    assert summary["backend_check_publish"] == {
+        "attempted": True,
+        "delivery_id": "manual-deterministic",
+        "investigation_run_id": "ghdeep_owner-repo_deterministic",
+        "error": None,
+    }
     assert summary["llm_policy"]["llm_failure_policy"] == "deterministic_only"
     assert summary["progress"] == "completed:deterministic-local"
     review_brief = (run_dir / "REVIEW_BRIEF.md").read_text(encoding="utf-8")
@@ -523,7 +545,9 @@ def test_main_deterministic_only_blocks_on_local_findings(
     )
 
     def _unexpected_api_request(**_kwargs: object) -> dict[str, object]:
-        raise AssertionError("deterministic_only must not call backend trigger/status/findings")
+        raise AssertionError(
+            "deterministic_only must not publish a backend check when local findings block"
+        )
 
     monkeypatch.setattr("omargate.main._load_config", lambda: config)
     monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _config: ("skipped", "ok"))

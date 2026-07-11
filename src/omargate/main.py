@@ -485,6 +485,38 @@ def _api_json_request(
         raise RuntimeError(f"API request failed [{url}]: {exc}") from exc
 
 
+def _build_trigger_payload(
+    config: BridgeConfig,
+    *,
+    pr_number: int,
+    command: str,
+) -> dict[str, Any]:
+    trigger_payload: dict[str, Any] = {
+        "repository_full_name": config.repo_full_name,
+        "pr_number": pr_number,
+        "command": command,
+    }
+    if config.provider_installation_id and config.provider_installation_id > 0:
+        trigger_payload["provider_installation_id"] = int(config.provider_installation_id)
+    if config.spec_hash:
+        trigger_payload["spec_hash"] = config.spec_hash
+    if config.spec_id:
+        trigger_payload["spec_id"] = config.spec_id
+    trigger_payload["spec_binding_mode"] = config.spec_binding_mode
+    if config.spec_sources:
+        trigger_payload["spec_sources"] = config.spec_sources
+    trigger_payload["llm_policy"] = {
+        "sentinelayer_managed_llm": config.sentinelayer_managed_llm,
+        "model": config.model,
+        "model_fallback": config.model_fallback,
+        "use_codex": config.use_codex,
+        "codex_only": config.codex_only,
+        "codex_model": config.codex_model,
+        "llm_failure_policy": config.llm_failure_policy,
+    }
+    return trigger_payload
+
+
 def _github_api_json_request(
     *,
     url: str,
@@ -1567,36 +1599,16 @@ def main() -> int:
                 "using action-local findings without backend trigger."
             )
         else:
-            trigger_payload: dict[str, Any] = {
-                "repository_full_name": config.repo_full_name,
-                "pr_number": pr_number,
-                "command": command,
-            }
-            if config.provider_installation_id and config.provider_installation_id > 0:
-                trigger_payload["provider_installation_id"] = int(config.provider_installation_id)
-            if config.spec_hash:
-                trigger_payload["spec_hash"] = config.spec_hash
-            if config.spec_id:
-                trigger_payload["spec_id"] = config.spec_id
-            trigger_payload["spec_binding_mode"] = config.spec_binding_mode
-            if config.spec_sources:
-                trigger_payload["spec_sources"] = config.spec_sources
-            trigger_payload["llm_policy"] = {
-                "sentinelayer_managed_llm": config.sentinelayer_managed_llm,
-                "model": config.model,
-                "model_fallback": config.model_fallback,
-                "use_codex": config.use_codex,
-                "codex_only": config.codex_only,
-                "codex_model": config.codex_model,
-                "llm_failure_policy": config.llm_failure_policy,
-            }
-
             trigger_url = f"{config.api_url}/api/v1/github-app/trigger"
             trigger_response = _api_json_request(
                 method="POST",
                 url=trigger_url,
                 token=config.token,
-                payload=trigger_payload,
+                payload=_build_trigger_payload(
+                    config,
+                    pr_number=pr_number,
+                    command=command,
+                ),
             )
 
             run_id = str(trigger_response.get("investigation_run_id") or "").strip()
@@ -1649,6 +1661,36 @@ def main() -> int:
         elif config.wait_for_completion and run_id and status in {"failed", "error", "cancelled"}:
             gate_status = "error"
             exit_code = 2
+
+        backend_publish_error = ""
+        if deterministic_only and exit_code == 0:
+            trigger_url = f"{config.api_url}/api/v1/github-app/trigger"
+            try:
+                trigger_response = _api_json_request(
+                    method="POST",
+                    url=trigger_url,
+                    token=config.token,
+                    payload=_build_trigger_payload(
+                        config,
+                        pr_number=pr_number,
+                        command=command,
+                    ),
+                )
+                trigger_delivery_id = str(trigger_response.get("delivery_id") or "").strip()
+                backend_run_id = str(
+                    trigger_response.get("investigation_run_id") or ""
+                ).strip()
+                if backend_run_id:
+                    print(
+                        "::notice::Omar deterministic_only backend check publish queued: "
+                        f"{backend_run_id}"
+                    )
+            except Exception as exc:
+                backend_publish_error = str(exc)
+                print(
+                    "::warning::Omar deterministic_only backend check publish failed; "
+                    f"local deterministic gate remains authoritative. {exc}"
+                )
 
         _emit_outputs(
             gate_status=gate_status,
@@ -1710,6 +1752,15 @@ def main() -> int:
             "local_findings_count": len(local_findings),
             "run_url": run_url,
             "evidence_url": evidence_url,
+            "backend_check_publish": {
+                "attempted": bool(deterministic_only and exit_code == 0),
+                "delivery_id": trigger_delivery_id or None,
+                "investigation_run_id": (
+                    str(trigger_response.get("investigation_run_id") or "").strip()
+                    or None
+                ),
+                "error": backend_publish_error or None,
+            },
             "llm_policy": {
                 "sentinelayer_managed_llm": config.sentinelayer_managed_llm,
                 "model": config.model,

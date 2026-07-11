@@ -55,7 +55,7 @@ inputs:
     required: false
     default: 'gpt-5.3-codex'
   llm_failure_policy:
-    description: 'Failure policy for requested LLM adjudication metadata: block, warn, ignore, or deterministic_only. deterministic_only skips the backend trigger and gates on action-local deterministic findings.'
+    description: 'Failure policy for requested LLM adjudication metadata: block, warn, ignore, or deterministic_only. deterministic_only gates on action-local deterministic findings and publishes a backend App check only after the local gate passes.'
     required: false
     default: 'block'
   provider_installation_id:
