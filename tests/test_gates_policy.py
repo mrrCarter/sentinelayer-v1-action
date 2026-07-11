@@ -446,6 +446,32 @@ class PolicyGateTests(unittest.TestCase):
             self.assertEqual(len(result.findings), 1)
             self.assertIn("Unsafe policy forbid pattern", result.findings[0].title)
 
+    def test_policy_gate_rejects_wrapped_nested_quantifier_redos_pattern(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "app.txt").write_text(("a" * 28) + "!\n", encoding="utf-8")
+            policy = parse_policy({
+                "gates": [
+                    {
+                        "id": "policy",
+                        "enabled": True,
+                        "config": {
+                            "forbid_patterns": [
+                                {"pattern": "((a+))+$", "severity": "P1"},
+                            ],
+                        },
+                    }
+                ],
+            })
+
+            started = time.monotonic()
+            result = PolicyGate(policy).run(GateContext(repo_root=repo))
+            elapsed = time.monotonic() - started
+
+            self.assertLess(elapsed, 1.0)
+            self.assertEqual(len(result.findings), 1)
+            self.assertIn("Unsafe policy forbid pattern", result.findings[0].title)
+
 
 if __name__ == "__main__":
     unittest.main()
