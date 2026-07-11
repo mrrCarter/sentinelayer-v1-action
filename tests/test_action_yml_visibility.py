@@ -45,6 +45,10 @@ def test_upload_artifact_step_runs_always_with_pinned_sha() -> None:
         "upload-artifact path must also include .sentinelayer/runs/** as fallback "
         "in case prepare_artifacts_for_upload skipped"
     )
+    assert "steps.artifact_name.outputs.name" in context_window, (
+        "upload-artifact name must come from the resolver step so multiple Omar "
+        "invocations in one workflow run can use unique artifact names"
+    )
     assert "if-no-files-found: warn" in context_window, (
         "missing-files should warn, not fail — preflight failures must not break the run"
     )
@@ -82,8 +86,34 @@ def test_block_annotation_step_runs_when_gate_blocks() -> None:
     assert "p0_count" in context_window.lower() or "P0=" in context_window, (
         "block annotation should reference P0 count so the user knows scope of issue"
     )
-    assert "omar-gate-findings" in context_window, (
-        "block annotation should point at the artifact name for download instructions"
+    assert "steps.artifact_name.outputs.name" in context_window, (
+        "block annotation should point at the resolved artifact name for download instructions"
+    )
+
+
+def test_artifact_name_resolver_supports_safe_suffixes() -> None:
+    text = _action_yml_text()
+
+    assert "artifact_name_suffix" in text, (
+        "action.yml must expose artifact_name_suffix for workflows invoking Omar twice"
+    )
+    assert "id: artifact_name" in text, (
+        "action.yml must resolve the upload artifact name before upload/annotation"
+    )
+    assert "tr -c 'A-Za-z0-9_.-'" in text, (
+        "artifact_name_suffix must be sanitized before it reaches upload-artifact"
+    )
+    assert "omar-gate-findings-${{ github.run_id }}-${{ github.run_attempt }}" in text, (
+        "base artifact name must retain run_id and run_attempt for traceability"
+    )
+
+
+def test_llm_failure_policy_documents_deterministic_only() -> None:
+    text = _action_yml_text()
+
+    assert "deterministic_only" in text, (
+        "workflow break-glass uses deterministic_only, so action.yml must document it "
+        "as a supported llm_failure_policy value"
     )
 
 

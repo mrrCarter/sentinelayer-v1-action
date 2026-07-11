@@ -30,6 +30,9 @@ from omargate.main import (
 def _bridge_config(
     tmp_path: Path,
     *,
+    sentinelayer_managed_llm: bool = True,
+    use_codex: bool = True,
+    llm_failure_policy: str = "block",
     playwright_mode: str = "baseline",
     playwright_bootstrap: bool = True,
     playwright_base_url: str = "",
@@ -51,13 +54,13 @@ def _bridge_config(
         event_name="pull_request",
         scan_mode="deep",
         severity_gate="P1",
-        sentinelayer_managed_llm=True,
+        sentinelayer_managed_llm=sentinelayer_managed_llm,
         model="gpt-5.3-codex",
         model_fallback="gpt-4.1-mini",
-        use_codex=True,
+        use_codex=use_codex,
         codex_only=False,
         codex_model="gpt-5.3-codex",
-        llm_failure_policy="block",
+        llm_failure_policy=llm_failure_policy,
         command_override="",
         provider_installation_id=None,
         spec_hash=None,
@@ -185,6 +188,7 @@ def test_normalize_model_policy_inputs() -> None:
     assert _normalize_model_id("gpt-5.3-codex", default="fallback") == "gpt-5.3-codex"
     assert _normalize_model_id("bad model; rm -rf /", default="fallback") == "fallback"
     assert _normalize_llm_failure_policy("warn") == "warn"
+    assert _normalize_llm_failure_policy("deterministic_only") == "deterministic_only"
     assert _normalize_llm_failure_policy("invalid") == "block"
 
 
@@ -439,6 +443,137 @@ def test_main_forwards_llm_policy_to_backend_trigger(
     assert outputs["codex_model"] == "gpt-5.3-codex"
 
 
+def test_main_deterministic_only_publishes_backend_check_without_polling(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _bridge_config(
+        tmp_path,
+        wait_for_completion=True,
+        sentinelayer_managed_llm=False,
+        use_codex=False,
+        llm_failure_policy="deterministic_only",
+    )
+    output_path = tmp_path / "github_output.txt"
+    captured_requests: list[dict[str, object]] = []
+
+    def _capture_api_request(**kwargs: object) -> dict[str, object]:
+        captured_requests.append(dict(kwargs))
+        assert kwargs["method"] == "POST"
+        assert str(kwargs["url"]).endswith("/api/v1/github-app/trigger")
+        payload = kwargs["payload"]
+        assert isinstance(payload, dict)
+        assert payload["repository_full_name"] == "owner/repo"
+        assert payload["pr_number"] == 42
+        llm_policy = payload["llm_policy"]
+        assert isinstance(llm_policy, dict)
+        assert llm_policy["llm_failure_policy"] == "deterministic_only"
+        return {
+            "status": "accepted",
+            "delivery_id": "manual-deterministic",
+            "investigation_run_id": "ghdeep_owner-repo_deterministic",
+        }
+
+    monkeypatch.setattr("omargate.main._load_config", lambda: config)
+    monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._execute_sbom_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._api_json_request", _capture_api_request)
+    monkeypatch.setattr(
+        "omargate.main._github_api_json_request",
+        lambda **kwargs: [] if str(kwargs.get("method") or "GET") == "GET" else {"html_url": ""},
+    )
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv("GITHUB_SHA", "abc123")
+
+    exit_code = main()
+
+    assert exit_code == 0
+    assert len(captured_requests) == 1
+    outputs = {}
+    for line in output_path.read_text(encoding="utf-8").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        outputs[key] = value
+    assert outputs["gate_status"] == "passed"
+    assert outputs["run_id"].startswith("ghlocal_owner-repo_")
+    run_dir = tmp_path / ".sentinelayer" / "runs" / outputs["run_id"]
+    assert (run_dir / "RUN_SUMMARY.json").exists()
+    summary = json.loads((run_dir / "RUN_SUMMARY.json").read_text(encoding="utf-8"))
+    assert summary["backend_findings_count"] == 0
+    assert summary["backend_check_publish"] == {
+        "attempted": True,
+        "delivery_id": "manual-deterministic",
+        "investigation_run_id": "ghdeep_owner-repo_deterministic",
+        "error": None,
+    }
+    assert summary["llm_policy"]["llm_failure_policy"] == "deterministic_only"
+    assert summary["progress"] == "completed:deterministic-local"
+    review_brief = (run_dir / "REVIEW_BRIEF.md").read_text(encoding="utf-8")
+    assert "Backend findings source: `skipped:deterministic_only`" in review_brief
+    assert "Dashboard:" not in review_brief
+
+
+def test_main_deterministic_only_blocks_on_local_findings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _bridge_config(
+        tmp_path,
+        wait_for_completion=True,
+        sentinelayer_managed_llm=False,
+        use_codex=False,
+        llm_failure_policy="deterministic_only",
+    )
+    output_path = tmp_path / "github_output.txt"
+    local_dir = tmp_path / ".omargate" / "local"
+    local_dir.mkdir(parents=True)
+    (local_dir / "FINDINGS.jsonl").write_text(
+        json.dumps(
+            {
+                "severity": "P1",
+                "tool": "local",
+                "file": "src/app.py",
+                "line": 7,
+                "title": "Local deterministic finding",
+            },
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def _unexpected_api_request(**_kwargs: object) -> dict[str, object]:
+        raise AssertionError(
+            "deterministic_only must not publish a backend check when local findings block"
+        )
+
+    monkeypatch.setattr("omargate.main._load_config", lambda: config)
+    monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._execute_sbom_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._api_json_request", _unexpected_api_request)
+    monkeypatch.setattr(
+        "omargate.main._github_api_json_request",
+        lambda **kwargs: [] if str(kwargs.get("method") or "GET") == "GET" else {"html_url": ""},
+    )
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv("GITHUB_SHA", "abc123")
+
+    exit_code = main()
+
+    assert exit_code == 1
+    outputs = {}
+    for line in output_path.read_text(encoding="utf-8").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        outputs[key] = value
+    assert outputs["gate_status"] == "blocked"
+    assert outputs["p1_count"] == "1"
+
+
 def test_main_upserts_pr_comment_and_persistent_artifacts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -543,8 +678,82 @@ def test_main_upserts_pr_comment_and_persistent_artifacts(
     artifacts_dir = tmp_path / ".sentinelayer" / "artifacts" / "run-1"
     assert (run_dir / "RUN_SUMMARY.json").exists()
     assert (run_dir / "REVIEW_BRIEF.md").exists()
-    assert (run_dir / "FINDINGS.jsonl").read_text(encoding="utf-8").strip()
+    assert (run_dir / "AUDIT_REPORT.md").read_text(encoding="utf-8") == (
+        run_dir / "REVIEW_BRIEF.md"
+    ).read_text(encoding="utf-8")
+    persisted_findings = [
+        json.loads(line)
+        for line in (run_dir / "FINDINGS.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(persisted_findings) == 2
+    assert any(row.get("title") == "Example medium finding" for row in persisted_findings)
+    assert any(
+        row.get("title") == "Release gate is not coupled to smoke evidence."
+        for row in persisted_findings
+    )
     assert (artifacts_dir / "BRIDGE_SUMMARY.md").exists()
+
+
+def test_main_polls_status_for_exact_trigger_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _bridge_config(tmp_path, wait_for_completion=True)
+    output_path = tmp_path / "github_output.txt"
+    api_requests: list[dict[str, object]] = []
+    github_requests: list[dict[str, object]] = []
+
+    def _fake_api_request(**kwargs: object) -> dict[str, object]:
+        api_requests.append(dict(kwargs))
+        url = str(kwargs.get("url") or "")
+        if str(kwargs.get("method") or "GET") == "POST":
+            return {
+                "status": "accepted",
+                "delivery_id": "manual/current+1",
+                "investigation_run_id": "run-1",
+                "run_result_token": "run-read-token-1",
+            }
+        if url.endswith("/runs/run-1/status?delivery_id=manual%2Fcurrent%2B1"):
+            return {
+                "status": "completed",
+                "progress_label": "completed:pack-executor",
+                "severity_counts": {"P0": 0, "P1": 0, "P2": 0, "P3": 0},
+            }
+        if url.endswith("/runs/run-1/findings?limit=100"):
+            return {
+                "findings": [],
+                "severity_counts": {"P0": 0, "P1": 0, "P2": 0, "P3": 0},
+            }
+        raise AssertionError(f"unexpected API URL: {url}")
+
+    def _fake_github_request(**kwargs: object) -> object:
+        github_requests.append(dict(kwargs))
+        if str(kwargs.get("method") or "GET") == "GET":
+            return []
+        return {"html_url": "https://github.com/owner/repo/pull/42#issuecomment-new"}
+
+    monkeypatch.setattr("omargate.main._load_config", lambda: config)
+    monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._execute_sbom_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._api_json_request", _fake_api_request)
+    monkeypatch.setattr("omargate.main._github_api_json_request", _fake_github_request)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv("GITHUB_SHA", "abc123")
+
+    exit_code = main()
+
+    assert exit_code == 0
+    status_gets = [
+        req
+        for req in api_requests
+        if str(req.get("url") or "").endswith(
+            "/runs/run-1/status?delivery_id=manual%2Fcurrent%2B1"
+        )
+    ]
+    assert status_gets
+    assert status_gets[0]["token"] == "run-read-token-1"
 
 
 def test_main_updates_existing_omar_pr_comment(

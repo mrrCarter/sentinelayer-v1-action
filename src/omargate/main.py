@@ -170,7 +170,7 @@ def _normalize_model_id(value: str | None, *, default: str) -> str:
 
 def _normalize_llm_failure_policy(value: str | None) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"block", "warn", "ignore"}:
+    if normalized in {"block", "warn", "ignore", "deterministic_only"}:
         return normalized
     return "block"
 
@@ -483,6 +483,38 @@ def _api_json_request(
         raise RuntimeError(f"API request failed [{exc.code}] {url}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"API request failed [{url}]: {exc}") from exc
+
+
+def _build_trigger_payload(
+    config: BridgeConfig,
+    *,
+    pr_number: int,
+    command: str,
+) -> dict[str, Any]:
+    trigger_payload: dict[str, Any] = {
+        "repository_full_name": config.repo_full_name,
+        "pr_number": pr_number,
+        "command": command,
+    }
+    if config.provider_installation_id and config.provider_installation_id > 0:
+        trigger_payload["provider_installation_id"] = int(config.provider_installation_id)
+    if config.spec_hash:
+        trigger_payload["spec_hash"] = config.spec_hash
+    if config.spec_id:
+        trigger_payload["spec_id"] = config.spec_id
+    trigger_payload["spec_binding_mode"] = config.spec_binding_mode
+    if config.spec_sources:
+        trigger_payload["spec_sources"] = config.spec_sources
+    trigger_payload["llm_policy"] = {
+        "sentinelayer_managed_llm": config.sentinelayer_managed_llm,
+        "model": config.model,
+        "model_fallback": config.model_fallback,
+        "use_codex": config.use_codex,
+        "codex_only": config.codex_only,
+        "codex_model": config.codex_model,
+        "llm_failure_policy": config.llm_failure_policy,
+    }
+    return trigger_payload
 
 
 def _github_api_json_request(
@@ -1003,6 +1035,38 @@ def _load_local_findings(workspace: Path) -> list[dict[str, Any]]:
     return findings
 
 
+def _counts_for_findings(findings: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
+    for row in findings:
+        severity = str(row.get("severity") or "").strip().upper()
+        if severity in counts:
+            counts[severity] += 1
+    return counts
+
+
+def _local_deterministic_run_id(
+    *,
+    config: BridgeConfig,
+    pr_number: int,
+    commit_sha: str,
+    command: str,
+) -> str:
+    repo_slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", config.repo_full_name).strip(".-")
+    repo_slug = repo_slug[:80] or "repo"
+    payload = {
+        "command": command,
+        "commit_sha": commit_sha,
+        "pr_number": pr_number,
+        "repository_full_name": config.repo_full_name,
+        "scan_mode": config.scan_mode,
+        "source": "deterministic_only",
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()[:24]
+    return f"ghlocal_{repo_slug}_{digest}"
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -1299,6 +1363,13 @@ def _render_bridge_pr_comment(
         findings=display_findings,
     )
     status_icon = "✅" if gate_status == "passed" else ("❌" if gate_status in {"blocked", "error"} else "⏳")
+    findings_source = str((backend_findings_payload or {}).get("findings_source") or "").strip()
+    if not findings_source:
+        findings_source = (
+            "skipped:deterministic_only"
+            if config.llm_failure_policy == "deterministic_only"
+            else "run"
+        )
 
     lines = [
         marker,
@@ -1321,7 +1392,7 @@ def _render_bridge_pr_comment(
         top_findings,
         "",
         "### Run Details",
-        f"- Backend status: `{status}` / `{progress}`",
+        f"- Run status: `{status}` / `{progress}`",
         f"- Scan: `{command}`",
         (
             "- LLM policy: "
@@ -1329,7 +1400,7 @@ def _render_bridge_pr_comment(
             f"model={config.model} codex_model={config.codex_model} "
             f"fallback={config.model_fallback} failure_policy={config.llm_failure_policy}`"
         ),
-        f"- Backend findings source: `{str((backend_findings_payload or {}).get('findings_source') or 'run')}`",
+        f"- Backend findings source: `{findings_source}`",
         f"- Action-local gates: `P0={local_counts['P0']} P1={local_counts['P1']} P2={local_counts['P2']} P3={local_counts['P3']}`",
     ]
     if run_url:
@@ -1418,6 +1489,7 @@ def _write_bridge_artifacts(
     summary: dict[str, Any],
     comment_body: str,
     local_findings: list[dict[str, Any]],
+    backend_findings: list[dict[str, Any]] | None = None,
 ) -> None:
     slug = _safe_run_slug(run_id)
     run_dir = workspace / ".sentinelayer" / "runs" / slug
@@ -1428,17 +1500,41 @@ def _write_bridge_artifacts(
     summary_json = json.dumps(summary, indent=2, sort_keys=True)
     (run_dir / "RUN_SUMMARY.json").write_text(summary_json + "\n", encoding="utf-8")
     (run_dir / "REVIEW_BRIEF.md").write_text(comment_body + "\n", encoding="utf-8")
+    (run_dir / "AUDIT_REPORT.md").write_text(comment_body + "\n", encoding="utf-8")
     (artifacts_dir / "BRIDGE_SUMMARY.md").write_text(comment_body + "\n", encoding="utf-8")
 
     findings_path = run_dir / "FINDINGS.jsonl"
-    source_findings_path = workspace / _LOCAL_FINDINGS_RELATIVE_PATH
-    if source_findings_path.exists():
-        findings_path.write_text(source_findings_path.read_text(encoding="utf-8"), encoding="utf-8")
-    else:
-        with findings_path.open("w", encoding="utf-8") as handle:
-            for row in local_findings:
-                handle.write(json.dumps(row, separators=(",", ":"), sort_keys=True))
-                handle.write("\n")
+    merged_findings: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for row in list(backend_findings or []) + list(local_findings or []):
+        if not isinstance(row, dict):
+            continue
+        fingerprint = str(
+            row.get("finding_fingerprint")
+            or row.get("fingerprint")
+            or row.get("finding_id")
+            or ""
+        ).strip()
+        if not fingerprint:
+            file_path, line = _finding_scope(row)
+            fingerprint = "|".join(
+                [
+                    str(row.get("severity") or ""),
+                    str(row.get("category") or row.get("tool") or ""),
+                    file_path,
+                    str(line),
+                    str(row.get("title") or row.get("message") or row.get("impact") or ""),
+                ]
+            )
+        if fingerprint in seen_keys:
+            continue
+        seen_keys.add(fingerprint)
+        merged_findings.append(row)
+
+    with findings_path.open("w", encoding="utf-8") as handle:
+        for row in merged_findings:
+            handle.write(json.dumps(row, separators=(",", ":"), sort_keys=True))
+            handle.write("\n")
 
 
 def main() -> int:
@@ -1479,74 +1575,82 @@ def main() -> int:
             github_token=config.github_token,
         )
         command = config.command_override or _command_for_scan_mode(config.scan_mode)
+        workspace = _workspace_root()
+        local_findings = _load_local_findings(workspace)
+        deterministic_only = config.llm_failure_policy == "deterministic_only"
 
-        trigger_payload: dict[str, Any] = {
-            "repository_full_name": config.repo_full_name,
-            "pr_number": pr_number,
-            "command": command,
-        }
-        if config.provider_installation_id and config.provider_installation_id > 0:
-            trigger_payload["provider_installation_id"] = int(config.provider_installation_id)
-        if config.spec_hash:
-            trigger_payload["spec_hash"] = config.spec_hash
-        if config.spec_id:
-            trigger_payload["spec_id"] = config.spec_id
-        trigger_payload["spec_binding_mode"] = config.spec_binding_mode
-        if config.spec_sources:
-            trigger_payload["spec_sources"] = config.spec_sources
-        trigger_payload["llm_policy"] = {
-            "sentinelayer_managed_llm": config.sentinelayer_managed_llm,
-            "model": config.model,
-            "model_fallback": config.model_fallback,
-            "use_codex": config.use_codex,
-            "codex_only": config.codex_only,
-            "codex_model": config.codex_model,
-            "llm_failure_policy": config.llm_failure_policy,
-        }
-
-        trigger_url = f"{config.api_url}/api/v1/github-app/trigger"
-        trigger_response = _api_json_request(
-            method="POST",
-            url=trigger_url,
-            token=config.token,
-            payload=trigger_payload,
-        )
-
-        run_id = str(trigger_response.get("investigation_run_id") or "").strip()
-        run_read_token = (
-            str(trigger_response.get("run_result_token") or "").strip()
-            or config.status_poll_token
-        )
+        trigger_response: dict[str, Any] = {}
+        trigger_delivery_id = ""
+        run_read_token = config.status_poll_token
         counts = {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
-        status = str(trigger_response.get("status") or "accepted").strip().lower()
-        progress = "queued"
+        backend_findings_payload: dict[str, Any] | None = None
+        if deterministic_only:
+            run_id = _local_deterministic_run_id(
+                config=config,
+                pr_number=pr_number,
+                commit_sha=commit_sha,
+                command=command,
+            )
+            counts = _counts_for_findings(local_findings)
+            status = "completed"
+            progress = "completed:deterministic-local"
+            print(
+                "::notice::Omar deterministic_only mode selected: "
+                "using action-local findings without backend trigger."
+            )
+        else:
+            trigger_url = f"{config.api_url}/api/v1/github-app/trigger"
+            trigger_response = _api_json_request(
+                method="POST",
+                url=trigger_url,
+                token=config.token,
+                payload=_build_trigger_payload(
+                    config,
+                    pr_number=pr_number,
+                    command=command,
+                ),
+            )
 
-        if config.wait_for_completion and run_id:
-            deadline = time.time() + float(config.wait_timeout_seconds)
-            while time.time() < deadline:
-                status_url = f"{config.api_url}/api/v1/github-app/runs/{run_id}/status"
-                status_payload = _api_json_request(
-                    method="GET",
-                    url=status_url,
-                    token=run_read_token,
-                )
-                status = str(status_payload.get("status") or "queued").strip().lower()
-                progress = str(status_payload.get("progress_label") or "").strip() or status
-                payload_counts = status_payload.get("severity_counts")
-                if isinstance(payload_counts, dict):
-                    counts = {
-                        "P0": int(payload_counts.get("P0") or 0),
-                        "P1": int(payload_counts.get("P1") or 0),
-                        "P2": int(payload_counts.get("P2") or 0),
-                        "P3": int(payload_counts.get("P3") or 0),
-                    }
-                if _terminal_status(status):
-                    break
-                time.sleep(float(config.wait_poll_seconds))
-            else:
-                raise RuntimeError(
-                    f"Timed out waiting for run completion after {config.wait_timeout_seconds}s (run_id={run_id})"
-                )
+            run_id = str(trigger_response.get("investigation_run_id") or "").strip()
+            trigger_delivery_id = str(trigger_response.get("delivery_id") or "").strip()
+            run_read_token = (
+                str(trigger_response.get("run_result_token") or "").strip()
+                or config.status_poll_token
+            )
+            status = str(trigger_response.get("status") or "accepted").strip().lower()
+            progress = "queued"
+
+            if config.wait_for_completion and run_id:
+                deadline = time.time() + float(config.wait_timeout_seconds)
+                while time.time() < deadline:
+                    status_url = f"{config.api_url}/api/v1/github-app/runs/{run_id}/status"
+                    if trigger_delivery_id:
+                        status_url = (
+                            f"{status_url}?delivery_id="
+                            f"{urllib.parse.quote(trigger_delivery_id, safe='')}"
+                        )
+                    status_payload = _api_json_request(
+                        method="GET",
+                        url=status_url,
+                        token=run_read_token,
+                    )
+                    status = str(status_payload.get("status") or "queued").strip().lower()
+                    progress = str(status_payload.get("progress_label") or "").strip() or status
+                    payload_counts = status_payload.get("severity_counts")
+                    if isinstance(payload_counts, dict):
+                        counts = {
+                            "P0": int(payload_counts.get("P0") or 0),
+                            "P1": int(payload_counts.get("P1") or 0),
+                            "P2": int(payload_counts.get("P2") or 0),
+                            "P3": int(payload_counts.get("P3") or 0),
+                        }
+                    if _terminal_status(status):
+                        break
+                    time.sleep(float(config.wait_poll_seconds))
+                else:
+                    raise RuntimeError(
+                        f"Timed out waiting for run completion after {config.wait_timeout_seconds}s (run_id={run_id})"
+                    )
 
         blocking = _blocking_count(severity_gate=config.severity_gate, counts=counts)
         gate_status = "passed"
@@ -1557,6 +1661,36 @@ def main() -> int:
         elif config.wait_for_completion and run_id and status in {"failed", "error", "cancelled"}:
             gate_status = "error"
             exit_code = 2
+
+        backend_publish_error = ""
+        if deterministic_only and exit_code == 0:
+            trigger_url = f"{config.api_url}/api/v1/github-app/trigger"
+            try:
+                trigger_response = _api_json_request(
+                    method="POST",
+                    url=trigger_url,
+                    token=config.token,
+                    payload=_build_trigger_payload(
+                        config,
+                        pr_number=pr_number,
+                        command=command,
+                    ),
+                )
+                trigger_delivery_id = str(trigger_response.get("delivery_id") or "").strip()
+                backend_run_id = str(
+                    trigger_response.get("investigation_run_id") or ""
+                ).strip()
+                if backend_run_id:
+                    print(
+                        "::notice::Omar deterministic_only backend check publish queued: "
+                        f"{backend_run_id}"
+                    )
+            except Exception as exc:
+                backend_publish_error = str(exc)
+                print(
+                    "::warning::Omar deterministic_only backend check publish failed; "
+                    f"local deterministic gate remains authoritative. {exc}"
+                )
 
         _emit_outputs(
             gate_status=gate_status,
@@ -1573,19 +1707,14 @@ def main() -> int:
             sbom_mode=sbom_mode,
         )
 
-        run_url = f"{SENTINELAYER_WEB_BASE}/runs/{run_id}" if run_id else ""
+        run_url = f"{SENTINELAYER_WEB_BASE}/runs/{run_id}" if run_id and not deterministic_only else ""
         evidence_url = f"{run_url}/evidence" if run_url else ""
-        workspace = _workspace_root()
-        local_findings = _load_local_findings(workspace)
-        backend_findings_payload = (
-            _fetch_backend_run_findings(
+        if run_id and not deterministic_only:
+            backend_findings_payload = _fetch_backend_run_findings(
                 config=config,
                 run_id=run_id,
                 run_read_token=run_read_token,
             )
-            if run_id
-            else None
-        )
         comment_body = _render_bridge_pr_comment(
             config=config,
             pr_number=pr_number,
@@ -1623,6 +1752,15 @@ def main() -> int:
             "local_findings_count": len(local_findings),
             "run_url": run_url,
             "evidence_url": evidence_url,
+            "backend_check_publish": {
+                "attempted": bool(deterministic_only and exit_code == 0),
+                "delivery_id": trigger_delivery_id or None,
+                "investigation_run_id": (
+                    str(trigger_response.get("investigation_run_id") or "").strip()
+                    or None
+                ),
+                "error": backend_publish_error or None,
+            },
             "llm_policy": {
                 "sentinelayer_managed_llm": config.sentinelayer_managed_llm,
                 "model": config.model,
@@ -1639,6 +1777,7 @@ def main() -> int:
             summary=bridge_summary,
             comment_body=comment_body,
             local_findings=local_findings,
+            backend_findings=_backend_findings(backend_findings_payload),
         )
         comment_url = _upsert_omar_pr_comment(
             config=config,
@@ -1678,7 +1817,9 @@ def main() -> int:
             summary_lines.append(f"- PR comment: {comment_url}")
         _append_summary("\n".join(summary_lines) + "\n")
 
-        if run_id:
+        if run_id and deterministic_only:
+            print(f"::notice::Omar deterministic run ready: {run_id}")
+        elif run_id:
             print(f"::notice::Sentinelayer run ready: {run_id}")
         return exit_code
     except Exception as exc:
