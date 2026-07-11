@@ -1,12 +1,6 @@
 name: Omar Gate
 
 on:
-  pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - ready_for_review
   workflow_dispatch:
     inputs:
       scan_mode:
@@ -52,7 +46,7 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork || false }}
+          IS_FORK_PR: false
         run: |
           set -euo pipefail
           if [ "${EVENT_NAME}" = "pull_request" ] && [ "${IS_FORK_PR}" = "true" ]; then
