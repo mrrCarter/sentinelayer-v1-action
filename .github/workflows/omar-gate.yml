@@ -57,8 +57,10 @@ jobs:
           set -euo pipefail
           test -n "${SENTINELAYER_TOKEN}" || (echo "Missing SENTINELAYER_TOKEN" && exit 1)
 
-      - name: Run Omar Gate
-        id: omar
+      - name: Run managed Omar Gate
+        id: managed_omar
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.scan_mode == 'baseline') }}
+        continue-on-error: true
         uses: ./
         with:
           github_token: ${{ github.token }}
@@ -74,6 +76,111 @@ jobs:
           codex_only: "false"
           llm_failure_policy: block
 
+      - name: Classify managed Omar failure
+        id: managed_failure
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.scan_mode == 'baseline') && steps.managed_omar.outcome == 'failure' }}
+        shell: bash
+        env:
+          MANAGED_RUN_ID: ${{ steps.managed_omar.outputs.run_id || '' }}
+        run: |
+          set -euo pipefail
+          normalized_run_id="$(echo "${MANAGED_RUN_ID}" | tr -d '\r' | xargs)"
+          if [[ ! "${normalized_run_id}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Managed Omar run_id is invalid or missing."
+            exit 1
+          fi
+          findings=".sentinelayer/runs/${normalized_run_id}/FINDINGS.jsonl"
+          python scripts/ci/classify_omar_provider_outage.py \
+            --findings "${findings}" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Run deterministic Omar Gate fallback
+        id: baseline_omar
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.scan_mode == 'baseline') || steps.managed_failure.outputs.provider_outage_break_glass == 'true' }}
+        uses: ./
+        with:
+          github_token: ${{ github.token }}
+          sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+          sentinelayer_managed_llm: "false"
+          scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
+          severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
+          pr_number: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || '' }}
+          model: gpt-5.3-codex
+          codex_model: gpt-5.3-codex
+          model_fallback: gpt-4.1-mini
+          use_codex: "false"
+          codex_only: "false"
+          llm_failure_policy: deterministic_only
+
+      - name: Select Omar Gate result
+        id: omar_result
+        shell: bash
+        env:
+          MANUAL_BASELINE: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode == 'baseline' }}
+          PROVIDER_OUTAGE_BREAK_GLASS: ${{ steps.managed_failure.outputs.provider_outage_break_glass || 'false' }}
+          PROVIDER_OUTAGE_REASON: ${{ steps.managed_failure.outputs.reason || '' }}
+          MANAGED_OUTCOME: ${{ steps.managed_omar.outcome || '' }}
+          MANAGED_GATE_STATUS: ${{ steps.managed_omar.outputs.gate_status || '' }}
+          MANAGED_P0_COUNT: ${{ steps.managed_omar.outputs.p0_count || '' }}
+          MANAGED_P1_COUNT: ${{ steps.managed_omar.outputs.p1_count || '' }}
+          MANAGED_P2_COUNT: ${{ steps.managed_omar.outputs.p2_count || '' }}
+          MANAGED_P3_COUNT: ${{ steps.managed_omar.outputs.p3_count || '' }}
+          MANAGED_RUN_ID: ${{ steps.managed_omar.outputs.run_id || '' }}
+          BASELINE_GATE_STATUS: ${{ steps.baseline_omar.outputs.gate_status || '' }}
+          BASELINE_P0_COUNT: ${{ steps.baseline_omar.outputs.p0_count || '' }}
+          BASELINE_P1_COUNT: ${{ steps.baseline_omar.outputs.p1_count || '' }}
+          BASELINE_P2_COUNT: ${{ steps.baseline_omar.outputs.p2_count || '' }}
+          BASELINE_P3_COUNT: ${{ steps.baseline_omar.outputs.p3_count || '' }}
+          BASELINE_RUN_ID: ${{ steps.baseline_omar.outputs.run_id || '' }}
+        run: |
+          set -euo pipefail
+          write_output() {
+            echo "$1=$2" >> "${GITHUB_OUTPUT}"
+          }
+
+          if [ "${MANUAL_BASELINE}" = "true" ] || [ "${PROVIDER_OUTAGE_BREAK_GLASS}" = "true" ]; then
+            selected="baseline"
+            gate_status="${BASELINE_GATE_STATUS}"
+            p0_count="${BASELINE_P0_COUNT:-0}"
+            p1_count="${BASELINE_P1_COUNT:-0}"
+            p2_count="${BASELINE_P2_COUNT:-0}"
+            p3_count="${BASELINE_P3_COUNT:-0}"
+            run_id="${BASELINE_RUN_ID}"
+            if [ "${PROVIDER_OUTAGE_BREAK_GLASS}" = "true" ]; then
+              echo "Provider-outage break-glass selected deterministic Omar result (reason='${PROVIDER_OUTAGE_REASON}')."
+            fi
+          else
+            selected="managed"
+            if [ "${MANAGED_OUTCOME}" != "success" ]; then
+              echo "::error::Managed Omar failed and did not qualify for provider-outage break-glass (outcome='${MANAGED_OUTCOME}', reason='${PROVIDER_OUTAGE_REASON:-not_classified}')."
+              exit 1
+            fi
+            gate_status="${MANAGED_GATE_STATUS}"
+            p0_count="${MANAGED_P0_COUNT:-0}"
+            p1_count="${MANAGED_P1_COUNT:-0}"
+            p2_count="${MANAGED_P2_COUNT:-0}"
+            p3_count="${MANAGED_P3_COUNT:-0}"
+            run_id="${MANAGED_RUN_ID}"
+          fi
+
+          if [ "${gate_status}" != "passed" ]; then
+            echo "::error::Selected Omar run did not pass (source='${selected}', gate_status='${gate_status}')."
+            exit 1
+          fi
+          if [ -z "${run_id}" ]; then
+            echo "::error::Selected Omar run is missing run_id."
+            exit 1
+          fi
+
+          write_output selected_source "${selected}"
+          write_output gate_status "${gate_status}"
+          write_output p0_count "${p0_count}"
+          write_output p1_count "${p1_count}"
+          write_output p2_count "${p2_count}"
+          write_output p3_count "${p3_count}"
+          write_output run_id "${run_id}"
+          echo "Selected Omar source '${selected}' with run_id='${run_id}'."
+
       - name: Summarize Omar outputs
         if: always()
         shell: bash
@@ -81,7 +188,10 @@ jobs:
           set -euo pipefail
           {
             echo "## Omar Gate"
-            echo "- run_id: \`${{ steps.omar.outputs.run_id }}\`"
-            echo "- gate_status: \`${{ steps.omar.outputs.gate_status }}\`"
-            echo "- findings: \`P0=${{ steps.omar.outputs.p0_count }} P1=${{ steps.omar.outputs.p1_count }} P2=${{ steps.omar.outputs.p2_count }} P3=${{ steps.omar.outputs.p3_count }}\`"
+            echo "- selected_source: \`${{ steps.omar_result.outputs.selected_source }}\`"
+            echo "- run_id: \`${{ steps.omar_result.outputs.run_id }}\`"
+            echo "- gate_status: \`${{ steps.omar_result.outputs.gate_status }}\`"
+            echo "- findings: \`P0=${{ steps.omar_result.outputs.p0_count }} P1=${{ steps.omar_result.outputs.p1_count }} P2=${{ steps.omar_result.outputs.p2_count }} P3=${{ steps.omar_result.outputs.p3_count }}\`"
+            echo "- managed_outcome: \`${{ steps.managed_omar.outcome || 'skipped' }}\`"
+            echo "- provider_outage_break_glass: \`${{ steps.managed_failure.outputs.provider_outage_break_glass || 'false' }}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
