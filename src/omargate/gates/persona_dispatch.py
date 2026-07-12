@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .findings import Finding, Severity
+from .llm_judge_contract import filter_llm_findings
 from .sandbox import SandboxConfig, SandboxUnavailable, execute_in_sandbox
 
 
@@ -142,42 +143,35 @@ def normalize_persona_finding(
     persona: str,
     default_severity: Severity = "P2",
 ) -> Finding | None:
-    """Parse a persona's raw JSON output into a Finding, or None if malformed."""
+    """Parse a persona's raw JSON output through the §5.3 Finding contract."""
     if not isinstance(raw, dict):
         return None
-    severity_raw = str(raw.get("severity") or default_severity).upper()
-    if severity_raw not in {"P0", "P1", "P2", "P3"}:
-        severity_raw = default_severity
+
+    # Keep the public argument for compatibility, but never let it hide an
+    # explicitly invalid persona severity. Missing severity remains a controlled
+    # fallback for older persona CLIs; all other schema rules are contract-owned.
+    severity_value = raw.get("severity")
+    severity_raw = str(severity_value or default_severity).strip().upper()
+
     file_path = str(raw.get("file") or "").strip().replace("\\", "/")
     if not file_path:
         return None
-    title = str(raw.get("title") or raw.get("message") or f"{persona} finding").strip()
-    description = str(raw.get("rootCause") or raw.get("description") or "").strip()
-    rule_id = raw.get("kind") or raw.get("ruleId")
-    confidence_raw = raw.get("confidence")
-    try:
-        confidence = float(confidence_raw) if confidence_raw is not None else 0.8
-    except (TypeError, ValueError):
-        confidence = 0.8
-    confidence = max(0.0, min(1.0, confidence))
-    line_raw = raw.get("line", 0)
-    try:
-        line = max(0, int(line_raw))
-    except (TypeError, ValueError):
-        line = 0
-    return Finding(
+
+    prepared = {
+        **raw,
+        "severity": severity_raw,
+        "file": file_path,
+        "title": str(raw.get("title") or raw.get("message") or "").strip(),
+        "description": str(raw.get("rootCause") or raw.get("description") or "").strip(),
+        "recommended_fix": raw.get("recommendedFix") or raw.get("recommended_fix"),
+        "evidence": raw.get("evidence"),
+    }
+    result = filter_llm_findings(
+        [prepared],
         gate_id="persona_dispatch",
         tool=persona,
-        severity=severity_raw,  # type: ignore[arg-type]
-        file=file_path,
-        line=line,
-        title=title[:200],
-        description=description[:800],
-        rule_id=str(rule_id)[:120] if rule_id else None,
-        confidence=confidence,
-        recommended_fix=(str(raw.get("recommendedFix") or "")[:800]) or None,
-        evidence=(str(raw.get("evidence") or "")[:400]) or None,
     )
+    return result.accepted[0] if result.accepted else None
 
 
 def _spawn_persona_cli(

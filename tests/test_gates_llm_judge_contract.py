@@ -58,7 +58,7 @@ class ConfidenceFloorTests(unittest.TestCase):
         self.assertEqual(len(r.schema_failure), 1)
 
     def test_explicit_global_floor_overrides_tier(self) -> None:
-        # When caller passes confidence_floor=0.90, that wins over the P1 tier (0.75).
+        # When caller passes confidence_floor=0.90, that wins over the P1 tier (0.80).
         r = filter_llm_findings(
             [{**_BASE_FINDING, "confidence": 0.85}],
             confidence_floor=0.90,
@@ -66,25 +66,30 @@ class ConfidenceFloorTests(unittest.TestCase):
         self.assertEqual(len(r.accepted), 0)
         self.assertEqual(len(r.below_confidence_floor), 1)
 
+    def test_confidence_above_one_rejected_as_schema(self) -> None:
+        r = filter_llm_findings([{**_BASE_FINDING, "confidence": 1.01}])
+        self.assertEqual(len(r.accepted), 0)
+        self.assertEqual(len(r.schema_failure), 1)
+
 
 class CalibratedTieredFloorsTests(unittest.TestCase):
-    """PR 3: per-severity confidence floors lifted from src/commands/security-review.ts."""
+    """A6: per-severity floors must never weaken the §5.3 0.8 floor."""
 
     def test_floors_match_calibrated_tiers(self) -> None:
-        self.assertEqual(CONFIDENCE_FLOORS["P0"], 0.60)
-        self.assertEqual(CONFIDENCE_FLOORS["P1"], 0.75)
+        self.assertEqual(CONFIDENCE_FLOORS["P0"], 0.80)
+        self.assertEqual(CONFIDENCE_FLOORS["P1"], 0.80)
         self.assertEqual(CONFIDENCE_FLOORS["P2"], 0.85)
         self.assertEqual(CONFIDENCE_FLOORS["P3"], 0.95)
 
-    def test_p0_critical_accepts_lower_confidence(self) -> None:
-        # P0 floor is 0.60 — under the prior global 0.8, this would have been rejected.
-        # Calibrated tiers preserve critical findings even at moderate confidence.
+    def test_p0_critical_rejects_below_contract_floor(self) -> None:
         r = filter_llm_findings([{**_BASE_FINDING, "severity": "P0", "confidence": 0.65}])
-        self.assertEqual(len(r.accepted), 1, f"rejected: {[x.reason for x in r.rejected]}")
+        self.assertEqual(len(r.accepted), 0)
+        self.assertEqual(len(r.below_confidence_floor), 1)
 
-    def test_p1_high_accepts_above_p1_floor(self) -> None:
+    def test_p1_high_rejects_below_contract_floor(self) -> None:
         r = filter_llm_findings([{**_BASE_FINDING, "severity": "P1", "confidence": 0.78}])
-        self.assertEqual(len(r.accepted), 1)
+        self.assertEqual(len(r.accepted), 0)
+        self.assertEqual(len(r.below_confidence_floor), 1)
 
     def test_p2_medium_floor_higher_than_p1(self) -> None:
         # 0.80 is below the P2 floor (0.85). Same confidence at P1 would accept.
@@ -104,13 +109,21 @@ class CalibratedTieredFloorsTests(unittest.TestCase):
         r_above = filter_llm_findings([{**_BASE_FINDING, "severity": "P3", "confidence": 0.96}])
         self.assertEqual(len(r_above.accepted), 1)
 
-    def test_custom_floors_override_tiers(self) -> None:
-        # Caller can pass their own per-severity dict.
+    def test_custom_floors_cannot_weaken_contract_floor(self) -> None:
         r = filter_llm_findings(
             [{**_BASE_FINDING, "severity": "P0", "confidence": 0.55}],
             confidence_floors={"P0": 0.50},
         )
-        self.assertEqual(len(r.accepted), 1)
+        self.assertEqual(len(r.accepted), 0)
+        self.assertEqual(len(r.below_confidence_floor), 1)
+
+    def test_global_floor_cannot_weaken_contract_floor(self) -> None:
+        r = filter_llm_findings(
+            [{**_BASE_FINDING, "severity": "P1", "confidence": 0.75}],
+            confidence_floor=0.50,
+        )
+        self.assertEqual(len(r.accepted), 0)
+        self.assertEqual(len(r.below_confidence_floor), 1)
 
     def test_partial_custom_floors_fall_back_to_default(self) -> None:
         # P1 in the custom dict, P2 finding falls back to the default tier (0.85).
@@ -126,6 +139,11 @@ class CalibratedTieredFloorsTests(unittest.TestCase):
         self.assertEqual(len(r.below_confidence_floor), 1)
         self.assertIn("P3", r.below_confidence_floor[0].reason)
         self.assertIn("0.95", r.below_confidence_floor[0].reason)
+
+    def test_rule_id_fields_are_preserved(self) -> None:
+        r = filter_llm_findings([{**_BASE_FINDING, "kind": "security.sql.raw"}])
+        self.assertEqual(len(r.accepted), 1)
+        self.assertEqual(r.accepted[0].rule_id, "security.sql.raw")
 
 
 class SchemaValidationTests(unittest.TestCase):

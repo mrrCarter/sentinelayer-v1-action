@@ -102,28 +102,88 @@ class NormalizePersonaFindingTests(unittest.TestCase):
         self.assertEqual(f.rule_id, "crypto.md5")
         self.assertAlmostEqual(f.confidence, 0.9, places=6)
 
-    def test_invalid_severity_falls_back_to_default(self) -> None:
-        f = normalize_persona_finding({"file": "x.ts", "severity": "CRITICAL"}, persona="backend")
-        assert f is not None
-        self.assertEqual(f.severity, "P2")
+    def test_invalid_severity_returns_none(self) -> None:
+        f = normalize_persona_finding(
+            {
+                "file": "x.ts",
+                "severity": "CRITICAL",
+                "title": "unsafe query",
+                "confidence": 0.9,
+            },
+            persona="backend",
+        )
+        self.assertIsNone(f)
 
     def test_missing_file_returns_none(self) -> None:
         self.assertIsNone(normalize_persona_finding({"severity": "P1"}, persona="backend"))
 
-    def test_clamps_confidence(self) -> None:
-        too_high = normalize_persona_finding(
-            {"file": "x.ts", "severity": "P1", "confidence": 42},
+    def test_rejects_missing_confidence(self) -> None:
+        f = normalize_persona_finding(
+            {"file": "x.ts", "severity": "P1", "title": "unsafe query"},
             persona="backend",
         )
-        assert too_high is not None
-        self.assertEqual(too_high.confidence, 1.0)
+        self.assertIsNone(f)
+
+    def test_rejects_confidence_outside_contract_range(self) -> None:
+        too_high = normalize_persona_finding(
+            {
+                "file": "x.ts",
+                "severity": "P1",
+                "title": "unsafe query",
+                "confidence": 42,
+            },
+            persona="backend",
+        )
+        self.assertIsNone(too_high)
 
         too_low = normalize_persona_finding(
-            {"file": "x.ts", "severity": "P1", "confidence": -0.5},
+            {
+                "file": "x.ts",
+                "severity": "P1",
+                "title": "unsafe query",
+                "confidence": -0.5,
+            },
             persona="backend",
         )
-        assert too_low is not None
-        self.assertEqual(too_low.confidence, 0.0)
+        self.assertIsNone(too_low)
+
+    def test_rejects_below_contract_floor(self) -> None:
+        f = normalize_persona_finding(
+            {
+                "file": "x.ts",
+                "severity": "P1",
+                "title": "unsafe query",
+                "confidence": 0.79,
+            },
+            persona="backend",
+        )
+        self.assertIsNone(f)
+
+    def test_hard_exclusion_returns_none(self) -> None:
+        f = normalize_persona_finding(
+            {
+                "file": "x.ts",
+                "severity": "P1",
+                "title": "Denial of Service via loop",
+                "confidence": 0.98,
+            },
+            persona="backend",
+        )
+        self.assertIsNone(f)
+
+    def test_precedent_returns_none(self) -> None:
+        f = normalize_persona_finding(
+            {
+                "file": "x.ts",
+                "severity": "P1",
+                "title": "Potential XSS",
+                "description": "React auto-escapes XSS here.",
+                "category": "xss",
+                "confidence": 0.98,
+            },
+            persona="frontend",
+        )
+        self.assertIsNone(f)
 
 
 class DispatchPersonasTests(unittest.TestCase):
