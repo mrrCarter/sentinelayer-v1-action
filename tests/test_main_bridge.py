@@ -17,6 +17,7 @@ from omargate.main import (
     _detect_pr_number,
     _execute_playwright_gate,
     _execute_sbom_gate,
+    _has_quota_headers,
     _normalize_llm_failure_policy,
     _normalize_model_id,
     _normalize_playwright_mode,
@@ -523,6 +524,17 @@ def test_main_exposes_throttled_quota_outputs_on_429(
     assert outputs["quota_state"] == "throttled"
     assert outputs["quota_warn"] == "true"
     assert "retry_after=12s" in outputs["quota_reason"]
+
+
+def test_quota_header_detection_ignores_generic_api_rate_limit_headers() -> None:
+    assert not _has_quota_headers({
+        "x-ratelimit-limit": "100",
+        "x-ratelimit-remaining": "99",
+    })
+    assert _has_quota_headers({
+        "ratelimit-unified-status": "allowed",
+        "ratelimit-unified-5h-utilization": "0.91",
+    })
 
 
 def test_main_deterministic_only_publishes_backend_check_without_polling(

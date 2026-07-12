@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from omargate.gates.budget import QuotaState, TokenBudgetTracker
+from omargate.gates.budget import QuotaState, TokenBudgetTracker, parse_rate_limit_headers
 
 ACTION_VERSION = "1.5.8"
 SENTINELAYER_WEB_BASE = "https://sentinelayer.com"
@@ -499,13 +499,17 @@ def _capture_response_headers(
 
 
 def _has_quota_headers(headers: dict[str, str]) -> bool:
-    for name in headers:
-        normalized = str(name or "").strip().lower()
-        if not normalized:
-            continue
-        if "ratelimit" in normalized or normalized in {"retry-after", "overage-status"}:
-            return True
-    return False
+    parsed = parse_rate_limit_headers(headers)
+    return any(
+        value is not None
+        for value in (
+            parsed.status,
+            parsed.util_5h,
+            parsed.util_7d,
+            parsed.resets_at,
+            parsed.overage_status,
+        )
+    )
 
 
 def _quota_output_fields(tracker: TokenBudgetTracker) -> dict[str, str]:
