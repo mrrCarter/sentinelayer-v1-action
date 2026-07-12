@@ -162,7 +162,7 @@ _SCAN_EXCLUDED_PREFIXES = EXCLUDED_PATH_PREFIXES | frozenset(
 
 _MAX_POLICY_FILE_BYTES = 1_000_000
 _MAX_POLICY_PATTERN_CHARS = 500
-_REGEX_QUANTIFIER = r"(?:[*+]|\{\d+(?:,\d*)?\})"
+_REGEX_QUANTIFIER = r"(?:[*+?]|\{\d+(?:,\d*)?\})"
 _UNSAFE_NESTED_QUANTIFIER_RE = re.compile(
     rf"\((?:\?:|\?P<[^>]+>)?(?:(?:\\.)|[^()])*{_REGEX_QUANTIFIER}"
     rf"(?:(?:\\.)|[^()])*\)\s*{_REGEX_QUANTIFIER}"
@@ -499,10 +499,6 @@ def _unsafe_forbid_pattern_reason(pattern: str) -> str | None:
             "quantified groups containing nested groups, quantifiers, or "
             "alternation are not allowed in policy forbid patterns"
         )
-    if _UNSAFE_NESTED_QUANTIFIER_RE.search(pattern):
-        return "nested quantified groups are not allowed in policy forbid patterns"
-    if _UNSAFE_QUANTIFIED_BRANCH_RE.search(pattern):
-        return "quantified alternation groups are not allowed in policy forbid patterns"
     return None
 
 
@@ -554,7 +550,7 @@ def _next_token_is_quantifier(pattern: str, start: int) -> bool:
     if start >= len(pattern):
         return False
     ch = pattern[start]
-    if ch in {"*", "+"}:
+    if ch in {"*", "+", "?"}:
         return True
     if ch == "{":
         close = pattern.find("}", start + 1)
@@ -569,6 +565,7 @@ def _next_token_is_quantifier(pattern: str, start: int) -> bool:
 
 
 def _group_body_is_complex(body: str) -> bool:
+    body = _strip_group_prefix(body)
     escaped = False
     in_class = False
     idx = 0
@@ -593,12 +590,22 @@ def _group_body_is_complex(body: str) -> bool:
         if in_class:
             idx += 1
             continue
-        if ch in {"(", ")", "|", "*", "+"}:
+        if ch in {"(", ")", "|", "*", "+", "?"}:
             return True
         if _next_token_is_quantifier(body, idx):
             return True
         idx += 1
     return False
+
+
+def _strip_group_prefix(body: str) -> str:
+    if body.startswith("?:"):
+        return body[2:]
+    if body.startswith("?P<"):
+        close = body.find(">")
+        if close != -1:
+            return body[close + 1 :]
+    return body
 
 
 def _scan_for_pattern(
