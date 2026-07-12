@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .findings import Finding, Severity
+from .sandbox import SandboxConfig, SandboxUnavailable, execute_in_sandbox
 
 
 __all__ = [
@@ -76,7 +77,7 @@ class PersonaDispatchConfig:
     blocking_severities: tuple[Severity, ...] = DEFAULT_BLOCKING_SEVERITIES
     per_persona_max_files: int = DEFAULT_PER_PERSONA_MAX_FILES
     timeout_s: int = DEFAULT_TIMEOUT_S
-    strict_sandbox: bool = False             # reserved for #A5 integration
+    strict_sandbox: bool = False             # fail closed if sandbox unavailable
     dry_run: bool = False                    # skip the subprocess call
     mode: str = DEFAULT_PERSONA_MODE         # "audit" or "codegen" — passed to
                                              # create-sentinelayer persona run
@@ -201,6 +202,20 @@ def _spawn_persona_cli(
     if files:
         args.extend(["--files", ",".join(files)])
     args.append("--json")
+
+    if config.strict_sandbox:
+        try:
+            result = execute_in_sandbox(
+                args,
+                cwd=config.repo_root,
+                config=SandboxConfig(),
+                timeout_s=config.timeout_s,
+                strict=True,
+            )
+        except SandboxUnavailable as exc:
+            return 126, "", f"strict persona sandbox unavailable: {exc}"
+        return result.exit_code, result.stdout or "", result.stderr or ""
+
     try:
         proc = subprocess.run(
             args,
@@ -214,6 +229,34 @@ def _spawn_persona_cli(
     except FileNotFoundError as exc:
         return 127, "", f"persona CLI not found: {exc}"
     return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+
+def _strict_persona_failure_finding(
+    *,
+    persona: str,
+    files: list[str],
+    exit_code: int,
+    stdout: str,
+    stderr: str,
+) -> Finding:
+    detail = (stderr or stdout or "persona dispatch failed").strip()
+    if not detail:
+        detail = "persona dispatch failed"
+    return Finding(
+        gate_id="persona_dispatch",
+        tool=persona,
+        severity="P1",
+        file=files[0] if files else "",
+        line=0,
+        title="Persona dispatch failed under strict sandbox",
+        description=(
+            f"Strict sandbox persona dispatch failed with exit code {exit_code}: "
+            f"{detail}"
+        )[:800],
+        rule_id="persona_dispatch:strict-sandbox-failed",
+        confidence=1.0,
+        decision="deny",
+    )
 
 
 def _parse_cli_output(stdout: str, persona: str) -> list[Finding]:
@@ -261,6 +304,16 @@ def dispatch_personas(
         if exit_code not in (0, 1):
             # 0 = clean, 1 = findings emitted. Anything else = persona crashed.
             result.personas_failed.append(persona)
+            if config.strict_sandbox:
+                result.persona_findings.append(
+                    _strict_persona_failure_finding(
+                        persona=persona,
+                        files=deduped,
+                        exit_code=exit_code,
+                        stdout=stdout,
+                        stderr=stderr,
+                    )
+                )
             continue
         parsed = _parse_cli_output(stdout, persona)
         if parsed:

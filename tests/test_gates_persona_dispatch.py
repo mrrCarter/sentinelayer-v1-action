@@ -202,6 +202,34 @@ class DispatchPersonasTests(unittest.TestCase):
         self.assertEqual(result.personas_invoked, [])
         self.assertEqual(result.personas_failed, ["backend"])
 
+    def test_strict_sandbox_crash_emits_blocking_finding(self) -> None:
+        with patch(
+            "omargate.gates.persona_dispatch._spawn_persona_cli",
+            return_value=(126, "", "strict persona sandbox unavailable"),
+        ):
+            config = PersonaDispatchConfig(
+                cli_path=Path("create-sentinelayer"),
+                repo_root=Path("/tmp/repo"),
+                dry_run=False,
+                strict_sandbox=True,
+            )
+            result = dispatch_personas(
+                [make_finding(file="app/users.ts", severity="P1")],
+                {"app/users.ts": "backend"},
+                config,
+            )
+        self.assertEqual(result.personas_invoked, [])
+        self.assertEqual(result.personas_failed, ["backend"])
+        self.assertEqual(len(result.persona_findings), 1)
+        finding = result.persona_findings[0]
+        self.assertEqual(finding.gate_id, "persona_dispatch")
+        self.assertEqual(finding.tool, "backend")
+        self.assertEqual(finding.severity, "P1")
+        self.assertEqual(finding.file, "app/users.ts")
+        self.assertEqual(finding.rule_id, "persona_dispatch:strict-sandbox-failed")
+        self.assertEqual(finding.decision, "deny")
+        self.assertIn("strict persona sandbox unavailable", finding.description)
+
     def test_respects_per_persona_max_files(self) -> None:
         findings = [
             make_finding(file=f"app/f{i}.ts", severity="P1") for i in range(100)
@@ -286,6 +314,70 @@ class SpawnPersonaCliArgsTests(unittest.TestCase):
         self.assertIn("--mode", args)
         self.assertEqual(args[args.index("--mode") + 1], "audit")
         self.assertEqual(args[-1], "--json")
+
+    def test_strict_spawn_uses_sandbox_wrapper(self) -> None:
+        from omargate.gates.persona_dispatch import _spawn_persona_cli
+
+        captured: dict[str, object] = {}
+
+        class _FakeSandboxResult:
+            exit_code = 1
+            stdout = '{"findings": []}'
+            stderr = ""
+
+        def _fake_execute(command, **kwargs):  # noqa: ANN001
+            captured["command"] = list(command)
+            captured["kwargs"] = dict(kwargs)
+            return _FakeSandboxResult()
+
+        with patch(
+            "omargate.gates.persona_dispatch.execute_in_sandbox",
+            _fake_execute,
+        ):
+            config = PersonaDispatchConfig(
+                cli_path=Path("create-sentinelayer"),
+                repo_root=Path("/tmp/repo"),
+                strict_sandbox=True,
+            )
+            rc, stdout, stderr = _spawn_persona_cli(
+                config,
+                "security",
+                ["app/a.ts"],
+            )
+
+        self.assertEqual((rc, stdout, stderr), (1, '{"findings": []}', ""))
+        command = captured["command"]
+        assert isinstance(command, list)
+        self.assertEqual(command[:4], [
+            "create-sentinelayer",
+            "persona",
+            "run",
+            "security",
+        ])
+        kwargs = captured["kwargs"]
+        assert isinstance(kwargs, dict)
+        self.assertEqual(kwargs["cwd"], Path("/tmp/repo"))
+        self.assertTrue(kwargs["strict"])
+        self.assertEqual(kwargs["timeout_s"], 300)
+
+    def test_strict_spawn_reports_unavailable_sandbox(self) -> None:
+        from omargate.gates.persona_dispatch import _spawn_persona_cli
+        from omargate.gates.sandbox import SandboxUnavailable
+
+        with patch(
+            "omargate.gates.persona_dispatch.execute_in_sandbox",
+            side_effect=SandboxUnavailable("no bwrap"),
+        ):
+            config = PersonaDispatchConfig(
+                cli_path=Path("create-sentinelayer"),
+                repo_root=Path("/tmp/repo"),
+                strict_sandbox=True,
+            )
+            rc, stdout, stderr = _spawn_persona_cli(config, "backend", [])
+
+        self.assertEqual(rc, 126)
+        self.assertEqual(stdout, "")
+        self.assertIn("strict persona sandbox unavailable", stderr)
 
 
 class DefaultCliPathTests(unittest.TestCase):

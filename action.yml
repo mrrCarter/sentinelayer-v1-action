@@ -166,6 +166,10 @@ inputs:
     description: 'When true, evaluate persona routing and include the dispatch summary without spawning persona review commands.'
     required: false
     default: 'false'
+  local_gates_persona_strict_sandbox:
+    description: 'When true, run persona dispatch subprocesses through the strict OS sandbox envelope and fail visibly if sandboxing is unavailable or the persona command fails.'
+    required: false
+    default: 'false'
   artifact_name_suffix:
     description: 'Optional suffix appended to the uploaded findings artifact name; useful when invoking this action more than once in a workflow run'
     required: false
@@ -244,6 +248,7 @@ runs:
         INPUT_LOCAL_GATES_PERSONA_DISPATCH: ${{ inputs.local_gates_persona_dispatch }}
         INPUT_LOCAL_GATES_PERSONA_CLI_PATH: ${{ inputs.local_gates_persona_cli_path }}
         INPUT_LOCAL_GATES_PERSONA_DISPATCH_DRY_RUN: ${{ inputs.local_gates_persona_dispatch_dry_run }}
+        INPUT_LOCAL_GATES_PERSONA_STRICT_SANDBOX: ${{ inputs.local_gates_persona_strict_sandbox }}
       run: |
         set -euo pipefail
         action_dir="${{ github.action_path }}"
@@ -253,6 +258,7 @@ runs:
         persona_dispatch="${INPUT_LOCAL_GATES_PERSONA_DISPATCH:-false}"
         persona_cli_path="${INPUT_LOCAL_GATES_PERSONA_CLI_PATH:-}"
         persona_dispatch_dry_run="${INPUT_LOCAL_GATES_PERSONA_DISPATCH_DRY_RUN:-false}"
+        persona_strict_sandbox="${INPUT_LOCAL_GATES_PERSONA_STRICT_SANDBOX:-false}"
         findings_path="${GITHUB_WORKSPACE}/${output_dir}/FINDINGS.jsonl"
         summary_path="${GITHUB_WORKSPACE}/${output_dir}/SUMMARY.json"
         mkdir -p "${GITHUB_WORKSPACE}/${output_dir}"
@@ -270,6 +276,9 @@ runs:
           fi
           if [ "${persona_dispatch_dry_run}" = "true" ]; then
             persona_args+=(--persona-dispatch-dry-run)
+          fi
+          if [ "${persona_strict_sandbox}" = "true" ]; then
+            persona_args+=(--persona-dispatch-strict-sandbox)
           fi
         fi
 

@@ -119,6 +119,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "not spawn the CLI. Useful for CI smoke tests."
         ),
     )
+    parser.add_argument(
+        "--persona-dispatch-strict-sandbox",
+        dest="persona_dispatch_strict_sandbox",
+        action="store_true",
+        default=False,
+        help=(
+            "Run persona review subprocesses through the OS sandbox envelope "
+            "and fail visibly with blocking persona_dispatch findings if the "
+            "sandbox is unavailable or the persona subprocess fails."
+        ),
+    )
     return parser
 
 
@@ -208,6 +219,7 @@ def _maybe_dispatch_personas(
     enable: bool,
     cli_override: str,
     dry_run: bool,
+    strict_sandbox: bool = False,
 ) -> dict | None:
     if not enable:
         return None
@@ -238,6 +250,7 @@ def _maybe_dispatch_personas(
         repo_root=repo_root,
         scaffold_path=scaffold_path,
         dry_run=dry_run,
+        strict_sandbox=strict_sandbox,
     )
     result = dispatch_personas(baseline_findings, ownership_map, config)
     return {
@@ -327,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         enable=args.enable_persona_dispatch,
         cli_override=args.persona_cli_path,
         dry_run=args.persona_dispatch_dry_run,
+        strict_sandbox=args.persona_dispatch_strict_sandbox,
     )
     if dispatch_summary is not None and dispatch_summary.get("persona_findings"):
         all_findings.extend(dispatch_summary["persona_findings"])
