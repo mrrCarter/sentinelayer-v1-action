@@ -8,8 +8,10 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from omargate.gates.findings import Finding
+from omargate.gates.persona_dispatch import PersonaDispatchResult
 from omargate.local_gates import (
     _maybe_dispatch_personas,
     _parse_scaffold_ownership,
@@ -168,6 +170,40 @@ class MaybeDispatchPersonasTests(unittest.TestCase):
         self.assertEqual(summary["status"], "skipped")
         self.assertIn("not resolvable", summary["reason"])
 
+    def test_strict_sandbox_flag_is_forwarded_to_dispatch_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            scaffold = Path(tmp) / ".sentinelayer" / "scaffold.yaml"
+            scaffold.parent.mkdir(parents=True, exist_ok=True)
+            scaffold.write_text(
+                textwrap.dedent(
+                    """
+                    ownership_rules:
+                      - pattern: app/auth/login.ts
+                        persona: security
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+            captured: dict[str, bool] = {}
+
+            def _fake_dispatch(_findings, _ownership_map, config):  # noqa: ANN001
+                captured["strict_sandbox"] = config.strict_sandbox
+                return PersonaDispatchResult(personas_invoked=["security"])
+
+            with patch("omargate.local_gates.dispatch_personas", _fake_dispatch):
+                summary = _maybe_dispatch_personas(
+                    baseline_findings=[make_finding()],
+                    repo_root=Path(tmp),
+                    enable=True,
+                    cli_override="",
+                    dry_run=True,
+                    strict_sandbox=True,
+                )
+
+        assert summary is not None
+        self.assertTrue(captured["strict_sandbox"])
+        self.assertEqual(summary["personas_invoked"], ["security"])
+
 
 class LocalGatesCliPersonaFlagTests(unittest.TestCase):
     """Black-box smoke test via the module's CLI entry point."""
@@ -192,7 +228,11 @@ class LocalGatesCliPersonaFlagTests(unittest.TestCase):
             # We expect exit code 2 for "no gates enabled" — but the flag
             # parsing itself should not crash on the new options.
             result = subprocess.run(
-                cmd + ["--enable-persona-dispatch", "--persona-dispatch-dry-run"],
+                cmd + [
+                    "--enable-persona-dispatch",
+                    "--persona-dispatch-dry-run",
+                    "--persona-dispatch-strict-sandbox",
+                ],
                 capture_output=True,
                 text=True,
                 env={"PYTHONPATH": str(Path(__file__).resolve().parent.parent / "src")},

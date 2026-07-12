@@ -323,6 +323,7 @@ Use these in subsequent workflow steps:
 | `local_gates_persona_dispatch` | `false` | Opt into local persona dispatch for scaffold-mapped findings after the local gate runner finishes. |
 | `local_gates_persona_cli_path` | empty | Optional `create-sentinelayer` CLI path for persona dispatch. Empty uses PATH discovery. |
 | `local_gates_persona_dispatch_dry_run` | `false` | Include persona routing in the local-gates summary without spawning persona review commands. |
+| `local_gates_persona_strict_sandbox` | `false` | Run persona dispatch subprocesses through the OS sandbox envelope. When enabled, unavailable sandboxing or persona subprocess failure is surfaced as blocking `persona_dispatch` findings. |
 | `playwright_mode` | `off` | Optional browser gate profile: `off`, `baseline`, `audit`. |
 | `playwright_node_version` | `20` | Node version used when `playwright_mode != off`. |
 | `playwright_base_url` | empty | Optional `PLAYWRIGHT_TEST_BASE_URL` override for test execution. |

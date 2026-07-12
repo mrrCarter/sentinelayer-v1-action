@@ -207,6 +207,36 @@ class CliMainTests(unittest.TestCase):
             ])
             self.assertEqual(rc, 2)
 
+    def test_persona_strict_sandbox_flag_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            policy_dir = repo / ".sentinelayer"
+            policy_dir.mkdir()
+            (policy_dir / "policy.json").write_text(
+                json.dumps({
+                    "version": 1,
+                    "gates": [
+                        {"id": "static_analysis", "enabled": False},
+                        {"id": "security_scan", "enabled": False},
+                        {"id": "policy", "enabled": True, "config": {}},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            rc = main([
+                "--path",
+                str(repo),
+                "--output-dir",
+                str(repo / "out"),
+                "--enable-persona-dispatch",
+                "--persona-dispatch-dry-run",
+                "--persona-dispatch-strict-sandbox",
+                "--json-summary",
+            ])
+
+            self.assertEqual(rc, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

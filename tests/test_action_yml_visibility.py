@@ -133,6 +133,7 @@ def test_local_gates_exposes_persona_dispatch_inputs_safely() -> None:
         "local_gates_persona_dispatch",
         "local_gates_persona_cli_path",
         "local_gates_persona_dispatch_dry_run",
+        "local_gates_persona_strict_sandbox",
     ):
         assert re.search(rf"^\s{{2}}{input_name}:\s*$", text, flags=re.MULTILINE), (
             f"action.yml must expose {input_name} so workflows can opt into local "
@@ -147,6 +148,10 @@ def test_local_gates_exposes_persona_dispatch_inputs_safely() -> None:
         r"local_gates_persona_dispatch_dry_run:\n(?:    .+\n)*    default: 'false'",
         text,
     ), "persona dispatch dry-run must not silently change behavior unless requested"
+    assert re.search(
+        r"local_gates_persona_strict_sandbox:\n(?:    .+\n)*    default: 'false'",
+        text,
+    ), "persona dispatch strict sandbox must be opt-in"
     assert "INPUT_LOCAL_GATES_PERSONA_DISPATCH" in text, (
         "the composite action must pass persona dispatch enablement into the "
         "local gate step"
@@ -158,12 +163,16 @@ def test_local_gates_exposes_persona_dispatch_inputs_safely() -> None:
     assert "INPUT_LOCAL_GATES_PERSONA_DISPATCH_DRY_RUN" in text, (
         "the composite action must pass dry-run mode into the local gate step"
     )
+    assert "INPUT_LOCAL_GATES_PERSONA_STRICT_SANDBOX" in text, (
+        "the composite action must pass strict sandbox mode into the local gate step"
+    )
     assert "persona_args=()" in text, (
         "persona dispatch flags must be built as a bash array, not string-concatenated"
     )
     assert "persona_args+=(--enable-persona-dispatch)" in text
     assert 'persona_args+=(--persona-cli-path "${persona_cli_path}")' in text
     assert "persona_args+=(--persona-dispatch-dry-run)" in text
+    assert "persona_args+=(--persona-dispatch-strict-sandbox)" in text
     assert '"${persona_args[@]}"' in text, (
         "local_gates must receive persona args via array expansion so custom CLI "
         "paths with spaces are safe"
