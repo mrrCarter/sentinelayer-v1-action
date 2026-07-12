@@ -284,6 +284,9 @@ Use these in subsequent workflow steps:
 | `run_id` | Unique run identifier |
 | `scan_mode` | Effective scan mode used by the bridge |
 | `severity_gate` | Effective severity threshold used by the bridge |
+| `quota_state` | Managed-LLM quota state: `normal`, `warning`, `throttled`, `exhausted`, or `using_overage` |
+| `quota_allow` / `quota_warn` | Machine-readable quota guidance for downstream throttle/defer steps |
+| `quota_reason` / `quota_resets_at` / `quota_using_overage` | Provider rate-limit context captured from Sentinelayer response headers |
 | `playwright_status` | Browser gate status: `skipped`, `passed`, or `failed` |
 | `playwright_mode` | Effective Playwright mode: `off`, `baseline`, or `audit` |
 | `sbom_status` | SBOM gate status: `skipped`, `passed`, or `failed` |

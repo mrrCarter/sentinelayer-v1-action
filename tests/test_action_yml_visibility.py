@@ -126,6 +126,23 @@ def test_existing_omar_step_id_is_omar() -> None:
     )
 
 
+def test_action_exposes_quota_outputs() -> None:
+    text = _action_yml_text()
+
+    for output_name in (
+        "quota_state",
+        "quota_allow",
+        "quota_warn",
+        "quota_reason",
+        "quota_resets_at",
+        "quota_using_overage",
+    ):
+        assert re.search(rf"^\s{{2}}{output_name}:\s*$", text, flags=re.MULTILINE), (
+            f"action.yml must expose {output_name} for downstream budget throttling"
+        )
+        assert f"value: ${{{{ steps.omar.outputs.{output_name} }}}}" in text
+
+
 def test_local_gates_exposes_persona_dispatch_inputs_safely() -> None:
     text = _action_yml_text()
 

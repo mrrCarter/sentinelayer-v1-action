@@ -24,7 +24,13 @@ comment, and writes downloadable evidence artifacts.
 - The action must write persistent evidence under `.sentinelayer/runs/**` and
   `.sentinelayer/artifacts/**` so the composite upload step has real files.
 - The action must keep `gate_status`, severity counts, run id, scan mode, model,
-  and optional Playwright/SBOM status outputs stable for callers.
+  quota state, and optional Playwright/SBOM status outputs stable for callers.
+- The action must ingest managed-LLM provider rate-limit headers returned by the
+  Sentinelayer API (`ratelimit-unified-*`, `anthropic-ratelimit-*`, and
+  compatible `x-ratelimit-*` forms) into the local token-budget state machine.
+  It must emit `quota_state`, `quota_allow`, `quota_warn`, `quota_reason`,
+  `quota_resets_at`, and `quota_using_overage` even when an API 429 makes the
+  run fail closed.
 - GitHub API writes must use the caller-provided `github_token`; Sentinelayer API
   requests must use `sentinelayer_token`.
 - The optional `/omar fix <finding_id>` handoff workflow must verify the

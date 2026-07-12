@@ -71,20 +71,28 @@ class RateLimitHeaders:
 # Anthropic / OpenAI header names we look for. The parser is tolerant
 # of either casing and of missing headers.
 _HEADER_NAMES = {
-    "status": ("anthropic-ratelimit-unified-status",),
+    "status": (
+        "ratelimit-unified-status",
+        "anthropic-ratelimit-unified-status",
+    ),
     "util_5h": (
+        "ratelimit-unified-5h-utilization",
         "anthropic-ratelimit-unified-5h-utilization",
         "x-ratelimit-unified-5h-utilization",
     ),
     "util_7d": (
+        "ratelimit-unified-7d-utilization",
         "anthropic-ratelimit-unified-7d-utilization",
         "x-ratelimit-unified-7d-utilization",
     ),
     "resets_at": (
+        "ratelimit-unified-reset",
         "anthropic-ratelimit-unified-reset",
         "x-ratelimit-reset",
     ),
     "overage_status": (
+        "overage-status",
+        "ratelimit-overage-status",
         "anthropic-ratelimit-overage-status",
     ),
     "retry_after_s": (

@@ -209,6 +209,24 @@ outputs:
   codex_model:
     description: 'Configured Codex model requested for this run'
     value: ${{ steps.omar.outputs.codex_model }}
+  quota_state:
+    description: 'Current managed-LLM quota state: normal, warning, throttled, exhausted, or using_overage'
+    value: ${{ steps.omar.outputs.quota_state }}
+  quota_allow:
+    description: 'Whether the quota state machine allows a zero-token follow-up call'
+    value: ${{ steps.omar.outputs.quota_allow }}
+  quota_warn:
+    description: 'Whether downstream steps should treat the current quota state as degraded'
+    value: ${{ steps.omar.outputs.quota_warn }}
+  quota_reason:
+    description: 'Human-readable reason for the current quota state'
+    value: ${{ steps.omar.outputs.quota_reason }}
+  quota_resets_at:
+    description: 'Provider quota reset time as Unix seconds when exposed by response headers'
+    value: ${{ steps.omar.outputs.quota_resets_at }}
+  quota_using_overage:
+    description: 'Whether provider overage credits are currently being used'
+    value: ${{ steps.omar.outputs.quota_using_overage }}
   playwright_status:
     description: 'Playwright execution status: skipped, passed, or failed'
     value: ${{ steps.omar.outputs.playwright_status }}

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
 
 from omargate.main import (
+    ApiRequestError,
     BridgeConfig,
     _API_REQUEST_TIMEOUT_SECONDS,
     _api_json_request,
@@ -441,6 +443,86 @@ def test_main_forwards_llm_policy_to_backend_trigger(
         outputs[key] = value
     assert outputs["model"] == "gpt-5.3-codex"
     assert outputs["codex_model"] == "gpt-5.3-codex"
+
+
+def test_main_exposes_quota_outputs_from_rate_limit_headers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _bridge_config(tmp_path, wait_for_completion=False)
+    output_path = tmp_path / "github_output.txt"
+    resets_at = int(time.time() + 2 * 3600)
+
+    def _fake_request(**kwargs: object) -> dict[str, object]:
+        response_headers = kwargs.get("response_headers")
+        if isinstance(response_headers, dict):
+            response_headers.update({
+                "ratelimit-unified-status": "allowed",
+                "ratelimit-unified-5h-utilization": "0.92",
+                "ratelimit-unified-reset": str(resets_at),
+            })
+        return {"status": "accepted", "investigation_run_id": "run-1"}
+
+    monkeypatch.setattr("omargate.main._load_config", lambda: config)
+    monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._execute_sbom_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._api_json_request", _fake_request)
+    monkeypatch.setattr(
+        "omargate.main._github_api_json_request",
+        lambda **kwargs: [] if str(kwargs.get("method") or "GET") == "GET" else {"html_url": ""},
+    )
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+
+    exit_code = main()
+
+    assert exit_code == 0
+    outputs = {}
+    for line in output_path.read_text(encoding="utf-8").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        outputs[key] = value
+    assert outputs["quota_state"] == "warning"
+    assert outputs["quota_warn"] == "true"
+    assert outputs["quota_allow"] == "true"
+    assert outputs["quota_resets_at"] == str(resets_at)
+    assert "early_warning[5h]" in outputs["quota_reason"]
+
+
+def test_main_exposes_throttled_quota_outputs_on_429(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _bridge_config(tmp_path, wait_for_completion=False)
+    output_path = tmp_path / "github_output.txt"
+
+    def _fake_request(**_kwargs: object) -> dict[str, object]:
+        raise ApiRequestError(
+            "rate limited",
+            status_code=429,
+            response_headers={"retry-after": "12"},
+        )
+
+    monkeypatch.setattr("omargate.main._load_config", lambda: config)
+    monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._execute_sbom_gate", lambda _config: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._api_json_request", _fake_request)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+
+    exit_code = main()
+
+    assert exit_code == 2
+    outputs = {}
+    for line in output_path.read_text(encoding="utf-8").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        outputs[key] = value
+    assert outputs["gate_status"] == "error"
+    assert outputs["quota_state"] == "throttled"
+    assert outputs["quota_warn"] == "true"
+    assert "retry_after=12s" in outputs["quota_reason"]
 
 
 def test_main_deterministic_only_publishes_backend_check_without_polling(
