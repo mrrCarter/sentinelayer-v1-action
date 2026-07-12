@@ -32,6 +32,20 @@ class ParseRateLimitHeadersTests(unittest.TestCase):
         self.assertEqual(parsed.status, "allowed")
         self.assertEqual(parsed.util_5h, 0.5)
 
+    def test_parses_plain_passthrough_headers(self) -> None:
+        parsed = parse_rate_limit_headers({
+            "ratelimit-unified-status": "allowed",
+            "ratelimit-unified-5h-utilization": "0.91",
+            "ratelimit-unified-7d-utilization": "0.27",
+            "ratelimit-unified-reset": "1735689600",
+            "overage-status": "allowed",
+        })
+        self.assertEqual(parsed.status, "allowed")
+        self.assertEqual(parsed.util_5h, 0.91)
+        self.assertEqual(parsed.util_7d, 0.27)
+        self.assertEqual(parsed.resets_at, 1735689600)
+        self.assertEqual(parsed.overage_status, "allowed")
+
     def test_parses_numeric_values(self) -> None:
         parsed = parse_rate_limit_headers({
             "anthropic-ratelimit-unified-5h-utilization": "0.92",

@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from omargate.gates.budget import QuotaState, TokenBudgetTracker
+
 ACTION_VERSION = "1.5.8"
 SENTINELAYER_WEB_BASE = "https://sentinelayer.com"
 _API_REQUEST_TIMEOUT_SECONDS = 120
@@ -85,6 +87,21 @@ class BridgeConfig:
     sbom_output_dir: str
     sbom_baseline_command: str
     sbom_audit_command: str
+
+
+class ApiRequestError(RuntimeError):
+    """API request failure with response metadata preserved for budget accounting."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        response_headers: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.response_headers = response_headers or {}
 
 
 def _write_output(name: str, value: str) -> None:
@@ -461,8 +478,69 @@ def _load_config() -> BridgeConfig:
     )
 
 
+def _headers_to_dict(headers: Any) -> dict[str, str]:
+    if headers is None or not hasattr(headers, "items"):
+        return {}
+    normalized: dict[str, str] = {}
+    for key, value in headers.items():
+        normalized[str(key)] = str(value)
+    return normalized
+
+
+def _capture_response_headers(
+    target: dict[str, str] | None,
+    headers: Any,
+) -> dict[str, str]:
+    captured = _headers_to_dict(headers)
+    if target is not None:
+        target.clear()
+        target.update(captured)
+    return captured
+
+
+def _has_quota_headers(headers: dict[str, str]) -> bool:
+    for name in headers:
+        normalized = str(name or "").strip().lower()
+        if not normalized:
+            continue
+        if "ratelimit" in normalized or normalized in {"retry-after", "overage-status"}:
+            return True
+    return False
+
+
+def _quota_output_fields(tracker: TokenBudgetTracker) -> dict[str, str]:
+    decision = tracker.should_allow_call(0)
+    warn = decision.warn or tracker.state in {
+        QuotaState.WARNING,
+        QuotaState.THROTTLED,
+        QuotaState.USING_OVERAGE,
+    }
+    reason = tracker.last_reason or decision.reason or tracker.state.value
+    return {
+        "quota_state": tracker.state.value,
+        "quota_allow": "true" if decision.allow else "false",
+        "quota_warn": "true" if warn else "false",
+        "quota_reason": reason,
+        "quota_resets_at": str(tracker.resets_at or ""),
+        "quota_using_overage": "true" if tracker.using_overage else "false",
+    }
+
+
+def _print_quota_notice(tracker: TokenBudgetTracker) -> None:
+    if tracker.state == QuotaState.NORMAL:
+        return
+    level = "warning" if tracker.state != QuotaState.EXHAUSTED else "error"
+    reason = tracker.last_reason or tracker.state.value
+    print(f"::{level}::Omar quota state {tracker.state.value}: {reason}")
+
+
 def _api_json_request(
-    *, method: str, url: str, token: str, payload: dict[str, Any] | None = None
+    *,
+    method: str,
+    url: str,
+    token: str,
+    payload: dict[str, Any] | None = None,
+    response_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     body: bytes | None = None
     headers = {
@@ -476,13 +554,19 @@ def _api_json_request(
     request = urllib.request.Request(url=url, method=method, data=body, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=_API_REQUEST_TIMEOUT_SECONDS) as response:
+            _capture_response_headers(response_headers, getattr(response, "headers", None))
             raw = response.read().decode("utf-8")
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:
+        captured_headers = _capture_response_headers(response_headers, exc.headers)
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"API request failed [{exc.code}] {url}: {detail}") from exc
+        raise ApiRequestError(
+            f"API request failed [{exc.code}] {url}: {detail}",
+            status_code=int(exc.code),
+            response_headers=captured_headers,
+        ) from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"API request failed [{url}]: {exc}") from exc
+        raise ApiRequestError(f"API request failed [{url}]: {exc}") from exc
 
 
 def _build_trigger_payload(
@@ -988,6 +1072,12 @@ def _emit_outputs(
     playwright_mode: str,
     sbom_status: str,
     sbom_mode: str,
+    quota_state: str = QuotaState.NORMAL.value,
+    quota_allow: str = "true",
+    quota_warn: str = "false",
+    quota_reason: str = "normal",
+    quota_resets_at: str = "",
+    quota_using_overage: str = "false",
 ) -> None:
     _write_output("gate_status", gate_status)
     _write_output("p0_count", str(int(counts.get("P0") or 0)))
@@ -1004,6 +1094,12 @@ def _emit_outputs(
     _write_output("playwright_mode", playwright_mode)
     _write_output("sbom_status", sbom_status)
     _write_output("sbom_mode", sbom_mode)
+    _write_output("quota_state", quota_state)
+    _write_output("quota_allow", quota_allow)
+    _write_output("quota_warn", quota_warn)
+    _write_output("quota_reason", quota_reason)
+    _write_output("quota_resets_at", quota_resets_at)
+    _write_output("quota_using_overage", quota_using_overage)
 
 
 def _workspace_root() -> Path:
@@ -1133,6 +1229,7 @@ def _fetch_backend_run_findings(
     config: BridgeConfig,
     run_id: str,
     run_read_token: str,
+    api_json_request: Any = _api_json_request,
 ) -> dict[str, Any] | None:
     normalized_run_id = str(run_id or "").strip()
     if not normalized_run_id:
@@ -1142,7 +1239,7 @@ def _fetch_backend_run_findings(
         f"{urllib.parse.quote(normalized_run_id, safe='')}/findings?limit=100"
     )
     try:
-        payload = _api_json_request(method="GET", url=url, token=run_read_token)
+        payload = api_json_request(method="GET", url=url, token=run_read_token)
     except Exception as exc:
         print(f"::warning::Omar Gate backend findings fetch skipped: {exc}")
         return None
@@ -1543,6 +1640,7 @@ def main() -> int:
         "Scan adjudication runs in Sentinelayer backend services."
     )
 
+    budget_tracker = TokenBudgetTracker()
     playwright_status = "skipped"
     playwright_mode = "off"
     playwright_detail = "Playwright gate disabled."
@@ -1551,6 +1649,32 @@ def main() -> int:
     sbom_detail = "SBOM gate disabled."
     try:
         config = _load_config()
+        def _tracked_api_json_request(
+            *,
+            method: str,
+            url: str,
+            token: str,
+            payload: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            response_headers: dict[str, str] = {}
+            try:
+                result = _api_json_request(
+                    method=method,
+                    url=url,
+                    token=token,
+                    payload=payload,
+                    response_headers=response_headers,
+                )
+            except ApiRequestError as exc:
+                if exc.status_code == 429:
+                    budget_tracker.on_rate_limit_error(exc.response_headers)
+                    _print_quota_notice(budget_tracker)
+                raise
+            if _has_quota_headers(response_headers):
+                budget_tracker.on_response_headers(response_headers)
+                _print_quota_notice(budget_tracker)
+            return result
+
         playwright_mode = config.playwright_mode
         sbom_mode = config.sbom_mode
         try:
@@ -1600,7 +1724,7 @@ def main() -> int:
             )
         else:
             trigger_url = f"{config.api_url}/api/v1/github-app/trigger"
-            trigger_response = _api_json_request(
+            trigger_response = _tracked_api_json_request(
                 method="POST",
                 url=trigger_url,
                 token=config.token,
@@ -1629,7 +1753,7 @@ def main() -> int:
                             f"{status_url}?delivery_id="
                             f"{urllib.parse.quote(trigger_delivery_id, safe='')}"
                         )
-                    status_payload = _api_json_request(
+                    status_payload = _tracked_api_json_request(
                         method="GET",
                         url=status_url,
                         token=run_read_token,
@@ -1666,7 +1790,7 @@ def main() -> int:
         if deterministic_only and exit_code == 0:
             trigger_url = f"{config.api_url}/api/v1/github-app/trigger"
             try:
-                trigger_response = _api_json_request(
+                trigger_response = _tracked_api_json_request(
                     method="POST",
                     url=trigger_url,
                     token=config.token,
@@ -1705,6 +1829,7 @@ def main() -> int:
             playwright_mode=playwright_mode,
             sbom_status=sbom_status,
             sbom_mode=sbom_mode,
+            **_quota_output_fields(budget_tracker),
         )
 
         run_url = f"{SENTINELAYER_WEB_BASE}/runs/{run_id}" if run_id and not deterministic_only else ""
@@ -1714,6 +1839,7 @@ def main() -> int:
                 config=config,
                 run_id=run_id,
                 run_read_token=run_read_token,
+                api_json_request=_tracked_api_json_request,
             )
         comment_body = _render_bridge_pr_comment(
             config=config,
@@ -1761,6 +1887,7 @@ def main() -> int:
                 ),
                 "error": backend_publish_error or None,
             },
+            "quota": _quota_output_fields(budget_tracker),
             "llm_policy": {
                 "sentinelayer_managed_llm": config.sentinelayer_managed_llm,
                 "model": config.model,
@@ -1843,6 +1970,7 @@ def main() -> int:
             playwright_mode=playwright_mode,
             sbom_status=sbom_status,
             sbom_mode=sbom_mode,
+            **_quota_output_fields(budget_tracker),
         )
         return 2
 
