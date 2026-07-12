@@ -3,17 +3,14 @@
 Per CODEX_OMARGATE_COMBINE_SPEC.md §5.3: the layer-7 LLM judge emits
 findings that must meet a stricter bar than deterministic gates. This
 module enforces:
-  - confidence >= per-severity floor (calibrated multi-tier)
+  - 0.8 <= confidence <= 1.0, with optional stricter per-severity floors
   - category ∈ fixed enum
   - HARD_EXCLUSIONS: classes of findings we refuse to surface
   - PRECEDENTS: contexts where a pattern is known-safe and should not
     produce a finding
 
-Per-severity confidence floors (PR 3 of the engine improvement plan,
-2026-04-25): replaces the single 0.8 floor with a calibrated tier so
-P3 noise drops sharply while P0 true-positives still surface at 0.6+.
-The contents are lifted from src/commands/security-review.ts:143-176
-(Claude Code CLI internals — clean-room reference per spec §3.3).
+Per-severity confidence floors may raise the floor above the §5.3 hard
+minimum, but no caller override may lower it below 0.8.
 
 The module is pure — takes a list of raw Finding-shaped dicts produced
 by an LLM and returns a filtered list of validated Finding objects plus
@@ -39,26 +36,18 @@ __all__ = [
     "filter_llm_findings",
 ]
 
-# Calibrated per-severity confidence floors. P0 has a low floor because
-# critical findings shouldn't be silenced by minor confidence dips; P3
-# has a near-1.0 floor because P3-tier noise is the largest false-positive
-# class and should only surface when the LLM is essentially certain.
-#
-# Tier values from the engine improvement plan:
-#   P0 = 0.60   critical: low floor, prefer over-reporting
-#   P1 = 0.75   high: moderate floor
-#   P2 = 0.85   medium: was the global floor in the prior contract
-#   P3 = 0.95   low: only surface near-certain low-severity findings
+# Calibrated per-severity confidence floors. The §5.3 contract sets a hard
+# lower bound of 0.8 for every layer-7 LLM finding; P2/P3 keep stricter floors
+# to suppress lower-severity noise.
 CONFIDENCE_FLOORS: dict[str, float] = {
-    "P0": 0.60,
-    "P1": 0.75,
+    "P0": 0.80,
+    "P1": 0.80,
     "P2": 0.85,
     "P3": 0.95,
 }
 
-# Back-compat: callers that referenced CONFIDENCE_FLOOR directly continue
-# to see the prior 0.8 default. New code should use CONFIDENCE_FLOORS or
-# pass severity to the helper functions.
+# Hard §5.3 minimum. New code should use CONFIDENCE_FLOORS for the effective
+# severity-aware floor, but every resolved floor is clamped to this value.
 CONFIDENCE_FLOOR = 0.8
 
 # Categories the LLM is allowed to emit. Anything outside this set is
@@ -182,12 +171,17 @@ def _resolve_floor(
       1. explicit per-severity dict entry (CONFIDENCE_FLOORS or override)
       2. legacy `confidence_floor: float` (single global) — for back-compat
       3. CONFIDENCE_FLOORS default for the severity
+
+    Every branch is clamped to the §5.3 hard floor so local configuration cannot
+    weaken the review contract.
     """
     if confidence_floors and severity in confidence_floors:
-        return confidence_floors[severity]
-    if confidence_floor is not None:
-        return confidence_floor
-    return CONFIDENCE_FLOORS.get(severity, CONFIDENCE_FLOOR)
+        floor = confidence_floors[severity]
+    elif confidence_floor is not None:
+        floor = confidence_floor
+    else:
+        floor = CONFIDENCE_FLOORS.get(severity, CONFIDENCE_FLOOR)
+    return max(CONFIDENCE_FLOOR, floor)
 
 
 def filter_llm_findings(
@@ -208,7 +202,7 @@ def filter_llm_findings(
           "title": str,
           "description": str (optional),
           "category": "sql_injection" | ... | "injection_other",
-          "confidence": float,
+          "confidence": float in [0.8, 1.0],
           "recommended_fix": str (optional),
           "evidence": str (optional),
         }
@@ -256,6 +250,16 @@ def filter_llm_findings(
             result.rejected.append(
                 RejectedFinding(
                     reason=f"non-numeric confidence: {raw.get('confidence')!r}",
+                    category="schema",
+                    raw=dict(raw),
+                )
+            )
+            continue
+
+        if confidence < 0.0 or confidence > 1.0:
+            result.rejected.append(
+                RejectedFinding(
+                    reason=f"confidence outside [0, 1]: {confidence:.2f}",
                     category="schema",
                     raw=dict(raw),
                 )
@@ -315,6 +319,9 @@ def filter_llm_findings(
         except (TypeError, ValueError):
             line = 0
 
+        raw_rule_id = raw.get("rule_id") or raw.get("ruleId") or raw.get("kind")
+        rule_id = str(raw_rule_id or "").strip()
+
         result.accepted.append(
             Finding(
                 gate_id=gate_id,
@@ -324,7 +331,9 @@ def filter_llm_findings(
                 line=line,
                 title=title,
                 description=description,
-                rule_id=f"llm:{category}" if category else "llm:unknown",
+                rule_id=rule_id[:120] if rule_id else (
+                    f"llm:{category}" if category else "llm:unknown"
+                ),
                 confidence=confidence,
                 recommended_fix=str(raw.get("recommended_fix", "") or "").strip() or None,
                 evidence=str(raw.get("evidence", "") or "").strip() or None,
