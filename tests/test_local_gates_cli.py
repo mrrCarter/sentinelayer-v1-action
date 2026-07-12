@@ -11,6 +11,17 @@ from omargate.local_gates import _count_by_severity, _severity_blocks, main
 from omargate.gates.findings import Finding
 
 
+_LLM_FINDING = {
+    "severity": "P1",
+    "file": "src/app.py",
+    "line": 7,
+    "title": "SQL injection in query builder",
+    "description": "User input is concatenated into raw SQL.",
+    "category": "sql_injection",
+    "confidence": 0.95,
+}
+
+
 class SeverityBlocksTests(unittest.TestCase):
     def test_never_threshold_never_blocks(self) -> None:
         for sev in ("P0", "P1", "P2", "P3"):
@@ -236,6 +247,104 @@ class CliMainTests(unittest.TestCase):
             ])
 
             self.assertEqual(rc, 0)
+
+    def test_policy_enabled_llm_judge_blocks_on_deny_behavior(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            policy_dir = repo / ".sentinelayer"
+            policy_dir.mkdir()
+            (repo / "src").mkdir()
+            (repo / "src" / "app.py").write_text("query = user_input\n", encoding="utf-8")
+            (policy_dir / "llm-findings.json").write_text(
+                json.dumps({"findings": [_LLM_FINDING]}),
+                encoding="utf-8",
+            )
+            (policy_dir / "policy.json").write_text(
+                json.dumps({
+                    "version": 1,
+                    "gates": [
+                        {"id": "static_analysis", "enabled": False},
+                        {"id": "security_scan", "enabled": False},
+                        {"id": "policy", "enabled": False},
+                        {
+                            "id": "llm_judge",
+                            "enabled": True,
+                            "behavior": "deny",
+                            "config": {
+                                "findings_file": ".sentinelayer/llm-findings.json"
+                            },
+                        },
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            output_dir = repo / "out"
+            rc = main([
+                "--path",
+                str(repo),
+                "--output-dir",
+                str(output_dir),
+                "--json-summary",
+            ])
+
+            self.assertEqual(rc, 1)
+            findings = [
+                json.loads(line)
+                for line in (output_dir / "FINDINGS.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0]["gateId"], "llm_judge")
+            self.assertEqual(findings[0]["decision"], "deny")
+
+    def test_policy_enabled_llm_judge_allow_behavior_does_not_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            policy_dir = repo / ".sentinelayer"
+            policy_dir.mkdir()
+            (policy_dir / "llm-findings.jsonl").write_text(
+                json.dumps(_LLM_FINDING) + "\n",
+                encoding="utf-8",
+            )
+            (policy_dir / "policy.json").write_text(
+                json.dumps({
+                    "version": 1,
+                    "gates": [
+                        {"id": "static_analysis", "enabled": False},
+                        {"id": "security_scan", "enabled": False},
+                        {"id": "policy", "enabled": False},
+                        {
+                            "id": "llm_judge",
+                            "enabled": True,
+                            "behavior": "allow",
+                            "config": {
+                                "findingsFile": ".sentinelayer/llm-findings.jsonl"
+                            },
+                        },
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            output_dir = repo / "out"
+            rc = main([
+                "--path",
+                str(repo),
+                "--output-dir",
+                str(output_dir),
+                "--fail-severity",
+                "P1",
+                "--json-summary",
+            ])
+
+            self.assertEqual(rc, 0)
+            findings = [
+                json.loads(line)
+                for line in (output_dir / "FINDINGS.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(findings[0]["decision"], "allow")
 
 
 if __name__ == "__main__":

@@ -366,6 +366,22 @@ gates:
 
 Set `behavior: ask` on a forbid pattern to annotate without blocking. Invalid explicit policy files fail closed as runner errors; absent policy files keep the default static+security local gates.
 
+To run the A6 LLM-judge security-review contract locally, opt into the `llm_judge` gate and point it at a checked-in JSON or JSONL findings file. The local runner validates those precomputed findings against the LLM finding contract; it does not call an LLM provider.
+
+```yaml
+version: 1
+gates:
+  - id: static_analysis
+    enabled: false
+  - id: security_scan
+    enabled: false
+  - id: llm_judge
+    enabled: true
+    behavior: deny
+    config:
+      findings_file: .sentinelayer/llm-findings.json
+```
+
 ---
 
 ## Advanced Examples
