@@ -43,6 +43,10 @@ comment, and writes downloadable evidence artifacts.
   `local_gates_policy_path` points at an explicit file. The policy file controls
   local static/security/policy gate toggles and `policy.forbid_patterns`;
   absent policy keeps the default static+security gates.
+- When the local policy enables `llm_judge`, the runner must validate a
+  checked-in JSON or JSONL findings file through the A6 security-review LLM
+  finding contract and emit those accepted findings into `FINDINGS.jsonl`
+  without making provider calls.
 
 ## Security Constraints
 
@@ -56,6 +60,9 @@ comment, and writes downloadable evidence artifacts.
   backend severity counts remain the bridge output contract.
 - Invalid explicit policy files must fail closed as local runner errors. Policy
   path arguments must resolve inside the repository root.
+- Invalid or missing configured `llm_judge` findings files must fail closed with
+  blocking local findings. The configured findings path must resolve inside the
+  repository root.
 - Policy forbid-pattern findings with `behavior: ask` must be annotated but must
   not contribute to local gate blocking.
 - The `/omar fix <finding_id>` handoff must be opt-in and deny-by-default for

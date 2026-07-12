@@ -24,6 +24,7 @@ from typing import Iterable
 
 from .gates import GateContext, run_gates
 from .gates.findings import Finding, serialize_findings
+from .gates.llm_judge import LlmJudgeGate, LlmJudgeGateConfig
 from .path_safety import validate_repo_path
 from .gates.persona_dispatch import (
     PersonaDispatchConfig,
@@ -212,6 +213,56 @@ def _tool_enabled(config: dict, *keys: str, default: bool) -> bool:
     return default
 
 
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _confidence_floors(raw: object) -> dict[str, float] | None:
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, float] = {}
+    for severity in ("P0", "P1", "P2", "P3"):
+        value = raw.get(severity) or raw.get(severity.lower())
+        parsed = _optional_float(value)
+        if parsed is not None:
+            out[severity] = parsed
+    return out or None
+
+
+def _llm_judge_gate_from_policy(policy_config: PolicyConfig) -> LlmJudgeGate | None:
+    gate = policy_config.gates.llm_judge
+    if not gate.enabled:
+        return None
+
+    config = gate.config
+    findings_file = (
+        config.get("findings_file")
+        or config.get("findingsFile")
+        or config.get("findings")
+        or ""
+    )
+    confidence_floor = _optional_float(
+        config.get("confidence_floor") or config.get("confidenceFloor")
+    )
+    confidence_floors = _confidence_floors(
+        config.get("confidence_floors") or config.get("confidenceFloors")
+    )
+    return LlmJudgeGate(
+        LlmJudgeGateConfig(
+            findings_file=str(findings_file),
+            tool=str(config.get("tool") or "llm"),
+            behavior=gate.behavior,
+            confidence_floor=confidence_floor,
+            confidence_floors=confidence_floors,
+        )
+    )
+
+
 def _maybe_dispatch_personas(
     *,
     baseline_findings: list[Finding],
@@ -324,6 +375,9 @@ def main(argv: list[str] | None = None) -> int:
         )
     if policy_config.gates.policy.enabled:
         gates.append(PolicyGate(policy_config, policy_path=policy_path))
+    llm_judge_gate = _llm_judge_gate_from_policy(policy_config)
+    if llm_judge_gate is not None:
+        gates.append(llm_judge_gate)
 
     if not gates:
         print("error: no gates enabled (pass --enable-static and/or --enable-security)", file=sys.stderr)
