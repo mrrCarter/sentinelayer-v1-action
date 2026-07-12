@@ -71,6 +71,14 @@ class ConfidenceFloorTests(unittest.TestCase):
         self.assertEqual(len(r.accepted), 0)
         self.assertEqual(len(r.schema_failure), 1)
 
+    def test_non_finite_confidence_rejected_as_schema(self) -> None:
+        for raw_confidence in ("nan", "inf", "-inf"):
+            r = filter_llm_findings([
+                {**_BASE_FINDING, "confidence": raw_confidence}
+            ])
+            self.assertEqual(len(r.accepted), 0)
+            self.assertEqual(len(r.schema_failure), 1)
+
 
 class CalibratedTieredFloorsTests(unittest.TestCase):
     """A6: per-severity floors must never weaken the §5.3 0.8 floor."""
