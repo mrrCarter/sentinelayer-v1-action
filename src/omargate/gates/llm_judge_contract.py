@@ -19,6 +19,7 @@ per-rejection diagnostics.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
@@ -256,7 +257,7 @@ def filter_llm_findings(
             )
             continue
 
-        if confidence < 0.0 or confidence > 1.0:
+        if not math.isfinite(confidence) or confidence < 0.0 or confidence > 1.0:
             result.rejected.append(
                 RejectedFinding(
                     reason=f"confidence outside [0, 1]: {confidence:.2f}",
