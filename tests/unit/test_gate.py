@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from omargate.gate import evaluate_gate
 from omargate.models import GateConfig, GateStatus
 from omargate.utils import sha256_hex
@@ -25,6 +27,29 @@ def _valid_summary(run_dir: Path, counts: dict) -> dict:
         "counts": counts,
         "findings_file": findings.name,
         "findings_file_sha256": sha256_hex(findings.read_bytes()),
+    }
+
+
+def _valid_llm_evidence() -> dict:
+    return {
+        "schema_version": "1.0",
+        "attempted": True,
+        "success": True,
+        "output_valid": True,
+        "no_findings_reported": True,
+        "reported_finding_count": 0,
+        "accepted_finding_count": 0,
+        "parse_error_count": 0,
+        "failure_class": None,
+        "usage_recorded": True,
+        "engine": "codex",
+        "provider": "openai",
+        "model": "gpt-5.3-codex",
+        "route": None,
+        "tokens_in": None,
+        "tokens_out": None,
+        "latency_ms": 25,
+        "fallback_used": False,
     }
 
 
@@ -107,3 +132,70 @@ def test_gate_sets_dedupe_key_from_summary(tmp_path: Path) -> None:
     _write_summary(tmp_path, payload)
     result = evaluate_gate(tmp_path, GateConfig(severity_gate="P1"))
     assert result.dedupe_key == "dedupe-xyz"
+
+
+def test_gate_severity_none_still_requires_valid_live_llm_evidence(tmp_path: Path) -> None:
+    payload = _valid_summary(tmp_path, {"P0": 0, "P1": 0, "P2": 0, "P3": 0})
+    payload["llm_evidence"] = _valid_llm_evidence()
+    _write_summary(tmp_path, payload)
+
+    result = evaluate_gate(
+        tmp_path,
+        GateConfig(severity_gate="none", require_llm_success=True),
+    )
+
+    assert result.block_merge is False
+    assert result.status == GateStatus.PASSED
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason_fragment"),
+    [
+        ("attempted", False, "not attempted"),
+        ("success", False, "did not succeed"),
+        ("output_valid", False, "output contract"),
+        ("usage_recorded", False, "usage evidence"),
+        ("parse_error_count", 1, "parse errors"),
+        ("no_findings_reported", False, "neither findings nor an explicit clean result"),
+        ("model", "", "field model"),
+        ("latency_ms", 0, "latency evidence"),
+    ],
+)
+def test_gate_invalid_live_llm_evidence_blocks_even_when_severity_gate_is_none(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    reason_fragment: str,
+) -> None:
+    payload = _valid_summary(tmp_path, {"P0": 0, "P1": 0, "P2": 0, "P3": 0})
+    evidence = _valid_llm_evidence()
+    evidence[field] = value
+    payload["llm_evidence"] = evidence
+    _write_summary(tmp_path, payload)
+
+    result = evaluate_gate(
+        tmp_path,
+        GateConfig(severity_gate="none", require_llm_success=True),
+    )
+
+    assert result.block_merge is True
+    assert result.status == GateStatus.ERROR
+    assert reason_fragment in result.reason
+
+
+def test_gate_findings_result_is_valid_live_llm_evidence(tmp_path: Path) -> None:
+    payload = _valid_summary(tmp_path, {"P0": 0, "P1": 0, "P2": 1, "P3": 0})
+    evidence = _valid_llm_evidence()
+    evidence["reported_finding_count"] = 1
+    evidence["accepted_finding_count"] = 1
+    evidence["no_findings_reported"] = False
+    payload["llm_evidence"] = evidence
+    _write_summary(tmp_path, payload)
+
+    result = evaluate_gate(
+        tmp_path,
+        GateConfig(severity_gate="none", require_llm_success=True),
+    )
+
+    assert result.block_merge is False
+    assert result.status == GateStatus.PASSED

@@ -62,6 +62,59 @@ def _validate_pack_summary(summary_path: Path) -> Tuple[bool, Optional[str], Opt
     return True, None, summary
 
 
+def _validate_llm_evidence(summary: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    evidence = summary.get("llm_evidence")
+    if not isinstance(evidence, dict):
+        return False, "FAIL-CLOSED: live LLM evidence is missing."
+    if evidence.get("schema_version") != "1.0":
+        return False, "FAIL-CLOSED: live LLM evidence schema is unsupported."
+    if evidence.get("attempted") is not True:
+        return False, "FAIL-CLOSED: the required live LLM review was not attempted."
+    if evidence.get("success") is not True:
+        return False, "FAIL-CLOSED: the required live LLM review did not succeed."
+    if evidence.get("output_valid") is not True:
+        return False, "FAIL-CLOSED: the live LLM output contract was not satisfied."
+    if evidence.get("usage_recorded") is not True:
+        return False, "FAIL-CLOSED: live LLM usage evidence is missing."
+
+    parse_error_count = evidence.get("parse_error_count")
+    reported_count = evidence.get("reported_finding_count")
+    if (
+        not isinstance(parse_error_count, int)
+        or isinstance(parse_error_count, bool)
+        or parse_error_count != 0
+    ):
+        return False, "FAIL-CLOSED: live LLM output contains parse errors."
+    if (
+        not isinstance(reported_count, int)
+        or isinstance(reported_count, bool)
+        or reported_count < 0
+    ):
+        return False, "FAIL-CLOSED: live LLM finding evidence is invalid."
+
+    no_findings = evidence.get("no_findings_reported")
+    valid_result_shape = (
+        reported_count > 0 and no_findings is False
+    ) or (
+        reported_count == 0 and no_findings is True
+    )
+    if not valid_result_shape:
+        return False, "FAIL-CLOSED: live LLM result is neither findings nor an explicit clean result."
+
+    for field in ("engine", "provider", "model"):
+        value = evidence.get(field)
+        if not isinstance(value, str) or not value.strip():
+            return False, f"FAIL-CLOSED: live LLM evidence field {field} is missing."
+    latency_ms = evidence.get("latency_ms")
+    if (
+        not isinstance(latency_ms, (int, float))
+        or isinstance(latency_ms, bool)
+        or latency_ms <= 0
+    ):
+        return False, "FAIL-CLOSED: live LLM latency evidence is invalid."
+    return True, None
+
+
 def evaluate_gate(run_dir: Path, config: GateConfig) -> GateResult:
     """Evaluate gate decision from local artifacts only (NO network calls)."""
 
@@ -82,6 +135,17 @@ def evaluate_gate(run_dir: Path, config: GateConfig) -> GateResult:
         p3=int(summary.get("counts", {}).get("P3", 0)),
     )
     dedupe_key = summary.get("dedupe_key")
+
+    if config.require_llm_success:
+        llm_valid, llm_error = _validate_llm_evidence(summary)
+        if not llm_valid:
+            return GateResult(
+                status=GateStatus.ERROR,
+                reason=llm_error or "FAIL-CLOSED: live LLM evidence is invalid.",
+                block_merge=True,
+                counts=counts,
+                dedupe_key=dedupe_key,
+            )
 
     gate = str(config.severity_gate or "P1").strip().upper()
     if gate == "NONE":

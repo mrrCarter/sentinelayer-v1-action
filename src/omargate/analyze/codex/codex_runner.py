@@ -26,6 +26,7 @@ class CodexResult:
     duration_ms: int
     error: Optional[str] = None
     parse_errors: Optional[list[str]] = None
+    no_findings_reported: bool = False
 
 
 def _strip_code_fence(text: str) -> str:
@@ -300,6 +301,7 @@ class CodexRunner:
                 duration_ms=duration_ms,
                 error=None,
                 parse_errors=parse_errors or [],
+                no_findings_reported=no_findings,
             )
 
         return CodexResult(
@@ -309,4 +311,5 @@ class CodexRunner:
             duration_ms=duration_ms,
             error="Codex output was not parseable as findings JSONL",
             parse_errors=parse_errors or [],
+            no_findings_reported=no_findings,
         )

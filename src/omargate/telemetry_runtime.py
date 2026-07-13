@@ -285,6 +285,13 @@ def _write_github_outputs(
     model: Optional[str] = None,
     model_fallback: Optional[str] = None,
     model_fallback_used: Optional[bool] = None,
+    llm_attempted: Optional[bool] = None,
+    llm_success: Optional[bool] = None,
+    llm_output_valid: Optional[bool] = None,
+    llm_no_findings_reported: Optional[bool] = None,
+    llm_findings_count: Optional[int] = None,
+    llm_parse_error_count: Optional[int] = None,
+    llm_failure_class: Optional[str] = None,
     policy_pack: Optional[str] = None,
     policy_pack_version: Optional[str] = None,
 ) -> None:
@@ -347,6 +354,23 @@ def _write_github_outputs(
             output_file.write(f"model_fallback={model_fallback}\n")
         if model_fallback_used is not None:
             output_file.write(f"model_fallback_used={'true' if model_fallback_used else 'false'}\n")
+        if llm_attempted is not None:
+            output_file.write(f"llm_attempted={'true' if llm_attempted else 'false'}\n")
+        if llm_success is not None:
+            output_file.write(f"llm_success={'true' if llm_success else 'false'}\n")
+        if llm_output_valid is not None:
+            output_file.write(f"llm_output_valid={'true' if llm_output_valid else 'false'}\n")
+        if llm_no_findings_reported is not None:
+            output_file.write(
+                "llm_no_findings_reported="
+                f"{'true' if llm_no_findings_reported else 'false'}\n"
+            )
+        if llm_findings_count is not None:
+            output_file.write(f"llm_findings_count={int(llm_findings_count)}\n")
+        if llm_parse_error_count is not None:
+            output_file.write(f"llm_parse_error_count={int(llm_parse_error_count)}\n")
+        if llm_failure_class is not None:
+            output_file.write(f"llm_failure_class={llm_failure_class}\n")
         if policy_pack is not None:
             output_file.write(f"policy_pack={policy_pack}\n")
         if policy_pack_version is not None:

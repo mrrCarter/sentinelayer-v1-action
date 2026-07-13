@@ -26,6 +26,7 @@ class Counts:
 @dataclass
 class GateConfig:
     severity_gate: SeverityGate = "P1"
+    require_llm_success: bool = False
 
 class GateStatus(str, Enum):
     PASSED = "passed"

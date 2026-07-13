@@ -23,7 +23,15 @@ from ..fix_plan import ensure_fix_plan
 from ..redaction import sanitize_public_error
 from .codex import CodexPromptBuilder, CodexRunner
 from .deterministic import ConfigScanner, EngQualityScanner, PatternScanner, scan_for_secrets
-from .llm import ContextBuilder, LLMClient, PromptLoader, ResponseParser, handle_llm_failure
+from .llm import (
+    ContextBuilder,
+    LLMClient,
+    LLMResponse,
+    LLMUsage,
+    PromptLoader,
+    ResponseParser,
+    handle_llm_failure,
+)
 from .llm.providers import detect_provider_from_model
 from .llm.response_parser import ParsedFinding
 
@@ -75,6 +83,12 @@ class AnalysisResult:
     scan_mode: str
     total_files_scanned: int
     hotspots_found: List[str]
+    llm_attempted: bool = False
+    llm_output_valid: bool = False
+    llm_no_findings_reported: bool = False
+    llm_reported_finding_count: int = 0
+    llm_parse_error_count: int = 0
+    llm_failure_class: Optional[str] = None
 
 
 @dataclass
@@ -83,6 +97,12 @@ class LLMAnalysisResult:
     success: bool
     usage: Optional[dict]
     warning: Optional[str]
+    attempted: bool = False
+    output_valid: bool = False
+    no_findings_reported: bool = False
+    reported_finding_count: int = 0
+    parse_error_count: int = 0
+    failure_class: Optional[str] = None
 
 
 class AnalysisOrchestrator:
@@ -243,9 +263,35 @@ class AnalysisOrchestrator:
         llm_findings: List[dict] = []
         llm_success = False
         llm_usage: Optional[dict] = None
+        llm_attempted = False
+        llm_output_valid = False
+        llm_no_findings_reported = False
+        llm_reported_finding_count = 0
+        llm_parse_error_count = 0
+        llm_failure_class: Optional[str] = "not_attempted"
+
+        def record_llm_result(result: LLMAnalysisResult) -> None:
+            nonlocal llm_attempted
+            nonlocal llm_failure_class
+            nonlocal llm_findings
+            nonlocal llm_no_findings_reported
+            nonlocal llm_output_valid
+            nonlocal llm_parse_error_count
+            nonlocal llm_reported_finding_count
+            nonlocal llm_success
+            nonlocal llm_usage
+
+            llm_attempted = llm_attempted or result.attempted
+            llm_success = result.success
+            llm_output_valid = result.output_valid
+            llm_no_findings_reported = result.no_findings_reported
+            llm_reported_finding_count = result.reported_finding_count
+            llm_parse_error_count = result.parse_error_count
+            llm_failure_class = result.failure_class
+            llm_findings = result.findings
+            llm_usage = result.usage
 
         async def run_llm_stage(stage_name: str, completion_event: str) -> None:
-            nonlocal llm_findings, llm_success, llm_usage
             with self.logger.stage(stage_name):
                 try:
                     result = await self._run_llm_analysis(
@@ -265,9 +311,7 @@ class AnalysisOrchestrator:
                         success=result.success,
                         findings_count=len(result.findings),
                     )
-                    llm_success = result.success
-                    llm_findings = result.findings
-                    llm_usage = result.usage
+                    record_llm_result(result)
                     if result.warning:
                         warnings.append(result.warning)
                 except Exception as exc:
@@ -279,6 +323,14 @@ class AnalysisOrchestrator:
                     warnings.append(
                         f"{self.config.model} LLM analysis failed: "
                         f"{sanitize_public_error(exc)}"
+                    )
+                    record_llm_result(
+                        self._llm_failure_result(
+                            deterministic_findings=det_findings,
+                            attempted=True,
+                            failure_class="execution_error",
+                            public_error="LLM analysis raised an execution error",
+                        )
                     )
 
         if self.allow_llm and self.config.use_codex:
@@ -301,10 +353,7 @@ class AnalysisOrchestrator:
                         success=result.success,
                         findings_count=len(result.findings),
                     )
-                    if result.success:
-                        llm_success = True
-                        llm_findings = result.findings
-                    llm_usage = result.usage
+                    record_llm_result(result)
                     if result.warning:
                         warnings.append(result.warning)
                 except Exception as exc:
@@ -316,6 +365,14 @@ class AnalysisOrchestrator:
                     warnings.append(
                         f"{codex_model} Codex scan failed: {sanitize_public_error(exc)}"
                     )
+                    record_llm_result(
+                        self._llm_failure_result(
+                            deterministic_findings=det_findings,
+                            attempted=True,
+                            failure_class="codex_execution_error",
+                            public_error="Codex analysis raised an execution error",
+                        )
+                    )
             if not llm_success and not self.config.codex_only and self._should_run_llm():
                 await run_llm_stage("llm_fallback", "LLM fallback complete")
             elif not llm_success and not self.config.codex_only:
@@ -326,6 +383,18 @@ class AnalysisOrchestrator:
             warnings.append("LLM analysis skipped (no API key or limited mode)")
         else:
             warnings.append("LLM analysis skipped (no API key or limited mode)")
+
+        if not llm_success and not llm_findings:
+            record_llm_result(
+                self._llm_failure_result(
+                    deterministic_findings=det_findings,
+                    attempted=llm_attempted,
+                    failure_class=llm_failure_class or "not_attempted",
+                    public_error="No valid LLM review result was available",
+                    usage=llm_usage,
+                    parse_error_count=llm_parse_error_count,
+                )
+            )
 
         # Step 6: Merge findings
         base_findings = harness_findings + det_findings
@@ -379,6 +448,12 @@ class AnalysisOrchestrator:
             scan_mode=scan_mode,
             total_files_scanned=int(stats.get("in_scope_files", 0) or 0),
             hotspots_found=hotspots_with_findings,
+            llm_attempted=llm_attempted,
+            llm_output_valid=llm_output_valid,
+            llm_no_findings_reported=llm_no_findings_reported,
+            llm_reported_finding_count=llm_reported_finding_count,
+            llm_parse_error_count=llm_parse_error_count,
+            llm_failure_class=llm_failure_class,
         )
 
     def _should_run_llm(self) -> bool:
@@ -561,22 +636,12 @@ class AnalysisOrchestrator:
         )
 
         if not response.success:
-            fallback_result = handle_llm_failure(
-                llm_response=response,
+            return self._llm_failure_result(
                 deterministic_findings=deterministic_findings,
-                policy=self.config.llm_failure_policy,
-            )
-            warning = fallback_result.warning_message or (
-                f"LLM analysis failed ({sanitize_public_error(response.error)})."
-            )
-            non_det_findings = [
-                f for f in fallback_result.findings if f.source != "deterministic"
-            ]
-            return LLMAnalysisResult(
-                findings=[self._parsed_finding_to_dict(f) for f in non_det_findings],
-                success=False,
+                attempted=True,
+                failure_class="provider_failure",
+                public_error=response.error or "LLM provider request failed",
                 usage=self._llm_usage_to_dict(response.usage),
-                warning=warning,
             )
 
         parse_result = self.response_parser.parse(response.content)
@@ -586,11 +651,39 @@ class AnalysisOrchestrator:
                 count=len(parse_result.parse_errors),
             )
 
+        reported_finding_count = len(parse_result.findings)
+        no_findings_reported = parse_result.no_findings_reported
+        parse_error_count = len(parse_result.parse_errors)
+        output_valid = (
+            parse_error_count == 0
+            and (
+                (reported_finding_count > 0 and not no_findings_reported)
+                or (reported_finding_count == 0 and no_findings_reported)
+            )
+        )
+        if not output_valid:
+            return self._llm_failure_result(
+                deterministic_findings=deterministic_findings,
+                attempted=True,
+                failure_class="invalid_output",
+                public_error="LLM output failed the structured response contract",
+                usage=self._llm_usage_to_dict(response.usage),
+                no_findings_reported=no_findings_reported,
+                reported_finding_count=reported_finding_count,
+                parse_error_count=parse_error_count,
+            )
+
         return LLMAnalysisResult(
             findings=[self._parsed_finding_to_dict(f) for f in parse_result.findings],
             success=True,
             usage=self._llm_usage_to_dict(response.usage),
             warning=None,
+            attempted=True,
+            output_valid=True,
+            no_findings_reported=no_findings_reported,
+            reported_finding_count=reported_finding_count,
+            parse_error_count=0,
+            failure_class=None,
         )
 
     async def _run_codex_audit(
@@ -610,20 +703,15 @@ class AnalysisOrchestrator:
         """
         api_key = self.config.openai_api_key.get_secret_value()
         if not api_key:
-            if self.config.use_managed_llm_proxy():
-                # Expected when using Sentinelayer-managed LLM proxy without BYO OpenAI key.
-                return LLMAnalysisResult(
-                    findings=[],
-                    success=False,
-                    usage=None,
-                    warning=None,
-                )
-            return LLMAnalysisResult(
-                findings=[],
-                success=False,
-                usage=None,
-                warning="Codex skipped (missing openai_api_key)",
+            result = self._llm_failure_result(
+                deterministic_findings=deterministic_findings,
+                attempted=False,
+                failure_class="missing_credentials",
+                public_error="Codex analysis did not have provider credentials",
             )
+            if self.config.use_managed_llm_proxy():
+                result.warning = None
+            return result
 
         tech_stack = quick_learn.tech_stack if quick_learn else []
         hotspots = self._flatten_hotspots(ingest.get("hotspots", {}) or {})
@@ -648,7 +736,17 @@ class AnalysisOrchestrator:
             sandbox="read-only",
             timeout=int(self.config.codex_timeout),
         )
-        if not result.success:
+        parse_error_count = len(result.parse_errors or [])
+        reported_finding_count = len(result.findings)
+        no_findings_reported = result.no_findings_reported
+        output_valid = (
+            parse_error_count == 0
+            and (
+                (reported_finding_count > 0 and not no_findings_reported)
+                or (reported_finding_count == 0 and no_findings_reported)
+            )
+        )
+        if not result.success or not output_valid:
             warn = sanitize_public_error(result.error or "Codex audit failed")
             # Observability-only diagnostic (no control-flow change): surface WHY the
             # codex-cli primary failed (returncode vs unparseable output) so the LLM-
@@ -661,12 +759,26 @@ class AnalysisOrchestrator:
                 duration_ms=result.duration_ms,
                 raw_output_snippet=_scrub_log_value((result.raw_output or "")[:500]),
             )
-            return LLMAnalysisResult(
-                findings=[],
-                success=False,
-                usage=None,
-                warning=f"Codex audit failed ({warn}). Falling back to LLM analysis.",
+            failure_class = (
+                "invalid_output"
+                if parse_error_count > 0 or (result.success and not output_valid)
+                else "codex_failure"
             )
+            failed = self._llm_failure_result(
+                deterministic_findings=deterministic_findings,
+                attempted=True,
+                failure_class=failure_class,
+                public_error=(
+                    "Codex output failed the structured response contract"
+                    if failure_class == "invalid_output"
+                    else "Codex analysis failed"
+                ),
+                no_findings_reported=no_findings_reported,
+                reported_finding_count=reported_finding_count,
+                parse_error_count=parse_error_count,
+            )
+            failed.warning = f"Codex audit failed ({warn}). Falling back to LLM analysis."
+            return failed
 
         # Codex CLI currently doesn't provide token/cost accounting. Keep cost unknown.
         return LLMAnalysisResult(
@@ -682,6 +794,69 @@ class AnalysisOrchestrator:
                 "latency_ms": int(result.duration_ms),
             },
             warning=None,
+            attempted=True,
+            output_valid=True,
+            no_findings_reported=no_findings_reported,
+            reported_finding_count=reported_finding_count,
+            parse_error_count=0,
+            failure_class=None,
+        )
+
+    def _llm_failure_result(
+        self,
+        *,
+        deterministic_findings: List[dict],
+        attempted: bool,
+        failure_class: str,
+        public_error: str,
+        usage: Optional[dict] = None,
+        no_findings_reported: bool = False,
+        reported_finding_count: int = 0,
+        parse_error_count: int = 0,
+    ) -> LLMAnalysisResult:
+        usage_payload = usage or {}
+        failure_response = LLMResponse(
+            content="",
+            usage=LLMUsage(
+                model=str(usage_payload.get("model") or self.config.model),
+                tokens_in=int(usage_payload.get("tokens_in") or 0),
+                tokens_out=int(usage_payload.get("tokens_out") or 0),
+                cost_usd=float(usage_payload.get("cost_usd") or 0.0),
+                latency_ms=int(usage_payload.get("latency_ms") or 0),
+                provider=str(
+                    usage_payload.get("provider") or self.config.llm_provider
+                ),
+            ),
+            success=False,
+            error=public_error,
+        )
+        policy_result = handle_llm_failure(
+            llm_response=failure_response,
+            deterministic_findings=deterministic_findings,
+            policy=self.config.llm_failure_policy,
+        )
+        non_deterministic = [
+            finding
+            for finding in policy_result.findings
+            if finding.source != "deterministic"
+        ]
+        warning = policy_result.warning_message
+        if warning is None and self.config.llm_failure_policy != "block":
+            warning = "LLM analysis did not produce a valid review result."
+        return LLMAnalysisResult(
+            findings=[
+                self._parsed_finding_to_dict(finding)
+                for finding in non_deterministic
+            ],
+            success=False,
+            usage=usage,
+            warning=warning,
+            attempted=attempted,
+            output_valid=False,
+            no_findings_reported=bool(no_findings_reported),
+            reported_finding_count=max(0, int(reported_finding_count)),
+            parse_error_count=max(0, int(parse_error_count)),
+            failure_class=failure_class,
         )
 
     def _flatten_hotspots(self, hotspots: dict) -> List[str]:
