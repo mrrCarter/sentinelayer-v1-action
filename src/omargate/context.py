@@ -24,6 +24,22 @@ def _coerce_int(value: Any) -> Optional[int]:
         return None
 
 
+def _workflow_dispatch_pr_number(event_name: str) -> Optional[int]:
+    if event_name != "workflow_dispatch":
+        return None
+
+    raw_value = os.environ.get("INPUT_PR_NUMBER", "").strip()
+    if not raw_value:
+        return None
+    if not raw_value.isascii() or not raw_value.isdecimal():
+        raise RuntimeError("Invalid INPUT_PR_NUMBER; expected a positive decimal integer")
+
+    pr_number = int(raw_value)
+    if pr_number < 1:
+        raise RuntimeError("Invalid INPUT_PR_NUMBER; expected a positive decimal integer")
+    return pr_number
+
+
 def _detect_fork(event: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     """Detect if PR is from a fork and return fork owner."""
     pr = event.get("pull_request", {})
@@ -98,7 +114,7 @@ class GitHubContext:
             base_ref = (pr.get("base") or {}).get("ref")
             is_fork, fork_owner = _detect_fork(event)
         else:
-            pr_number = None
+            pr_number = _workflow_dispatch_pr_number(event_name)
             pr_title = None
             head_sha = event.get("after") or os.environ.get("GITHUB_SHA", "")
             base_sha = None
@@ -127,7 +143,7 @@ class GitHubContext:
         )
 
     @property
-    def dedupe_components(self) -> Dict[str, Optional[str]]:
+    def dedupe_components(self) -> Dict[str, str | int | None]:
         """Components used for dedupe key computation."""
         return {
             "repo": self.repo_full_name,

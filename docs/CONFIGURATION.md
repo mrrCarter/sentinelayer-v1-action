@@ -42,6 +42,7 @@ SentinelLayer (Omar Gate) is configured entirely via GitHub Action inputs (see [
 | Input | Type | Default | Purpose |
 |---|---|---|---|
 | `scan_mode` | string | `pr-diff` | `pr-diff` (fast, scans changed files), `deep` (full repo), `nightly` (scheduled). |
+| `pr_number` | int | `""` | Target PR for `workflow_dispatch` scans. Ignored when a pull request event supplies the PR number. |
 | `policy_pack` | string | `omar` | Policy pack identifier (used for fingerprinting and deduplication). |
 | `policy_pack_version` | string | `v1` | Policy pack version (included in finding fingerprints). |
 | `run_harness` | bool | `true` | Run the portable security test harness (dep audit, secret-in-git checks). |

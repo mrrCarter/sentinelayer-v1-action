@@ -267,6 +267,7 @@ Use these in subsequent workflow steps:
 |-------|---------|-------------|
 | `severity_gate` | `P1` | Block threshold: `P0`, `P1`, `P2`, or `none` (report only) |
 | `scan_mode` | `pr-diff` | `pr-diff` (changed files), `deep` (full repo), `nightly` (alias of `deep`) |
+| `pr_number` | `""` | Target PR for `workflow_dispatch` scans; PR event payloads take precedence |
 | `llm_failure_policy` | `block` | If LLM fails: `block`, `deterministic_only`, `allow_with_warning` |
 | `run_harness` | `true` | Run dep audit (pip-audit, npm-audit) and security harness |
 

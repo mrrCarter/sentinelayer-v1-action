@@ -37,6 +37,10 @@ inputs:
     description: 'GitHub token for posting check runs and comments (use github.token)'
     required: false
     default: ''
+  pr_number:
+    description: 'Target pull request number for workflow_dispatch scans. Pull request event payloads remain authoritative.'
+    required: false
+    default: ''
   comment_tag:
     description: 'Optional provider tag for distinct PR comments/check runs (e.g., gemini)'
     required: false
@@ -351,6 +355,7 @@ runs:
         INPUT_GOOGLE_API_KEY: ${{ inputs.google_api_key }}
         INPUT_XAI_API_KEY: ${{ inputs.xai_api_key }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github_token || github.token }}
+        INPUT_PR_NUMBER: ${{ inputs.pr_number }}
         INPUT_COMMENT_TAG: ${{ inputs.comment_tag }}
         INPUT_PUBLISH_GITHUB: ${{ inputs.publish_github }}
         INPUT_SENTINELAYER_TOKEN: ${{ inputs.sentinelayer_token }}
