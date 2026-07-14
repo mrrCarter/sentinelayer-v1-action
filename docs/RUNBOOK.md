@@ -209,7 +209,7 @@ The `v1` floating tag always points to the latest `v1.x.x` release.
 
 ### Pre-Release Checklist
 
-1. **All tests pass:** `python -m pytest tests/unit tests/integration -q` (currently 204 tests).
+1. **All tests pass:** `python -m pytest tests/unit tests/integration -q` (currently 298 tests).
 2. **Lint clean:** `ruff check src tests`
 3. **Type check clean:** `mypy --follow-imports=skip --ignore-missing-imports src/omargate/analyze/llm/context_builder.py src/omargate/telemetry/uploader.py`
 4. **Lockfile current:** `pip-compile --allow-unsafe --generate-hashes --output-file=requirements.lock.txt --strip-extras requirements.txt`

@@ -2,9 +2,9 @@
 
 **AI-powered security gate that blocks P0/P1 vulnerabilities before merge.**
 
-[![Action Version](https://img.shields.io/badge/action-v1.3.4-blue)](https://github.com/mrrCarter/sentinelayer-v1-action)
+[![Action Version](https://img.shields.io/badge/action-v1.3.9-blue)](https://github.com/mrrCarter/sentinelayer-v1-action)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests: 219 passing](https://img.shields.io/badge/tests-219%20passing-brightgreen)](https://github.com/mrrCarter/sentinelayer-v1-action/actions/workflows/quality-gates.yml)
+[![Tests: 298 passing](https://img.shields.io/badge/tests-298%20passing-brightgreen)](https://github.com/mrrCarter/sentinelayer-v1-action/actions/workflows/quality-gates.yml)
 
 Omar Gate runs a 7-layer security analysis on every pull request — combining deterministic pattern scanning, codebase-aware ingestion, and deep AI-powered code review — then blocks the merge if critical vulnerabilities are found.
 
