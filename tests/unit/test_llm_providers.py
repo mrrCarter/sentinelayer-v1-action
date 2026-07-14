@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import builtins
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock
 import types
 
 import pytest
@@ -165,25 +165,27 @@ def test_missing_google_sdk_raises_clear_error(monkeypatch: pytest.MonkeyPatch) 
         _ = provider.client
 
 
-def test_xai_provider_uses_fixed_base_url() -> None:
-    with patch("openai.AsyncOpenAI") as async_openai:
-        fake_create = AsyncMock(
-            return_value=SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content="xai-ok"))],
-                usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2),
-            )
+def test_xai_provider_uses_fixed_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    async_openai = Mock()
+    fake_openai = SimpleNamespace(AsyncOpenAI=async_openai)
+    monkeypatch.setitem(__import__("sys").modules, "openai", fake_openai)
+    fake_create = AsyncMock(
+        return_value=SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="xai-ok"))],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2),
         )
-        fake_client = SimpleNamespace(
-            chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))
-        )
-        async_openai.return_value = fake_client
+    )
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))
+    )
+    async_openai.return_value = fake_client
 
-        provider = XAIProvider(api_key="xai-key")
+    provider = XAIProvider(api_key="xai-key")
 
-        # Force client initialization
-        _ = provider.client
-        async_openai.assert_called_once()
-        assert async_openai.call_args.kwargs["base_url"] == "https://api.x.ai/v1"
+    # Force client initialization.
+    _ = provider.client
+    async_openai.assert_called_once()
+    assert async_openai.call_args.kwargs["base_url"] == "https://api.x.ai/v1"
 
 
 def test_provider_auto_detection_from_model_name() -> None:
