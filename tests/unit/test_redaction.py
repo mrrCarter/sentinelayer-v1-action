@@ -39,3 +39,12 @@ def test_sanitize_public_error_keeps_capacity_context() -> None:
     assert "RESOURCE_EXHAUSTED" in sanitized
     assert "provider capacity" in sanitized
     assert "987654321" not in sanitized
+
+
+def test_sanitize_public_error_redacts_cli_masked_openai_key() -> None:
+    raw = "Incorrect API key provided: sk-test-***************lder"
+
+    sanitized = sanitize_public_error(raw)
+
+    assert "sk-test" not in sanitized
+    assert "[redacted-secret]" in sanitized

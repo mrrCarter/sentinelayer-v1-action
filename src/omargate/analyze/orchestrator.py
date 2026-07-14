@@ -22,7 +22,12 @@ from ..package.fingerprint import add_fingerprints_to_findings
 from ..fix_plan import ensure_fix_plan
 from ..redaction import sanitize_public_error
 from .codex import CodexPromptBuilder, CodexRunner
-from .deterministic import ConfigScanner, EngQualityScanner, PatternScanner, scan_for_secrets
+from .deterministic import (
+    ConfigScanner,
+    EngQualityScanner,
+    PatternScanner,
+    scan_for_secrets,
+)
 from .llm import (
     ContextBuilder,
     LLMClient,
@@ -41,10 +46,13 @@ _LOG_SECRET_SCRUB_RES = (
     (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED]"),
     (re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"), "[REDACTED]"),
     (re.compile(r"sk_(?:live|test)_[0-9a-zA-Z]{16,}"), "[REDACTED]"),
+    (re.compile(r"sk-(?:proj-)?[A-Za-z0-9_*.-]{8,}"), "[REDACTED]"),
     (re.compile(r"AIza[0-9A-Za-z_-]{35}"), "[REDACTED]"),
     (re.compile(r"(?i)bearer\s+[A-Za-z0-9._-]{8,}"), "Bearer [REDACTED]"),
     (
-        re.compile(r"(?i)((?:api[_-]?key|secret|token|password|authorization)\s*[=:]\s*)\S+"),
+        re.compile(
+            r"(?i)((?:api[_-]?key|secret|token|password|authorization)\s*[=:]\s*)\S+"
+        ),
         r"\1[REDACTED]",
     ),
 )
@@ -159,7 +167,9 @@ class AnalysisOrchestrator:
         # Step 0: Quick Learn
         quick_learn: Optional[QuickLearnSummary] = None
         with self.logger.stage("quick_learn"):
-            quick_learn = await asyncio.to_thread(extract_quick_learn_summary, self.repo_root)
+            quick_learn = await asyncio.to_thread(
+                extract_quick_learn_summary, self.repo_root
+            )
             self.logger.info(
                 "Quick learn complete",
                 source_doc=quick_learn.source_doc,
@@ -192,12 +202,23 @@ class AnalysisOrchestrator:
             or self.config.anthropic_api_key.get_secret_value()
             or self.config.google_api_key.get_secret_value()
         )
-        if quick_learn and self.allow_llm and _has_llm_key and is_boilerplate_description(quick_learn.description):
+        if (
+            quick_learn
+            and self.allow_llm
+            and _has_llm_key
+            and is_boilerplate_description(quick_learn.description)
+        ):
             with self.logger.stage("synopsis_synthesis"):
                 try:
-                    ingest_files = ingest.get("files", []) if isinstance(ingest, dict) else []
+                    ingest_files = (
+                        ingest.get("files", []) if isinstance(ingest, dict) else []
+                    )
                     largest_files = sorted(
-                        [f for f in ingest_files if isinstance(f, dict) and f.get("path")],
+                        [
+                            f
+                            for f in ingest_files
+                            if isinstance(f, dict) and f.get("path")
+                        ],
                         key=lambda f: -int(f.get("lines") or 0),
                     )[:10]
                     largest_paths = [str(f["path"]) for f in largest_files]
@@ -218,14 +239,20 @@ class AnalysisOrchestrator:
                     )
                     synopsis_response = await synopsis_client.analyze(
                         system_prompt="You are a technical writer. Reply with exactly one sentence.",
-                        user_content=build_llm_synopsis_prompt(quick_learn, largest_paths),
+                        user_content=build_llm_synopsis_prompt(
+                            quick_learn, largest_paths
+                        ),
                         max_tokens=80,
                     )
                     if synopsis_response.success and synopsis_response.content.strip():
-                        synthesized = synopsis_response.content.strip().strip('"').strip()
+                        synthesized = (
+                            synopsis_response.content.strip().strip('"').strip()
+                        )
                         quick_learn.description = synthesized[:120]
                         self._quick_learn = quick_learn
-                        self.logger.info("Synopsis synthesized", synopsis=quick_learn.description)
+                        self.logger.info(
+                            "Synopsis synthesized", synopsis=quick_learn.description
+                        )
                 except Exception as exc:
                     self.logger.warning("Synopsis synthesis skipped", error=str(exc))
 
@@ -240,7 +267,9 @@ class AnalysisOrchestrator:
                         pip_audit_ignore_ids=self.config.pip_audit_ignore_ids,
                     )
                     harness_results = await runner.run()
-                    harness_findings = [self._finding_to_dict(f) for f in harness_results]
+                    harness_findings = [
+                        self._finding_to_dict(f) for f in harness_results
+                    ]
                     self.logger.info(
                         "Harness complete",
                         findings_count=len(harness_findings),
@@ -373,7 +402,11 @@ class AnalysisOrchestrator:
                             public_error="Codex analysis raised an execution error",
                         )
                     )
-            if not llm_success and not self.config.codex_only and self._should_run_llm():
+            if (
+                not llm_success
+                and not self.config.codex_only
+                and self._should_run_llm()
+            ):
                 await run_llm_stage("llm_fallback", "LLM fallback complete")
             elif not llm_success and not self.config.codex_only:
                 warnings.append("LLM analysis skipped (no API key or limited mode)")
@@ -463,7 +496,10 @@ class AnalysisOrchestrator:
         primary_provider = detect_provider_from_model(
             self.config.model, default_provider=self.config.llm_provider
         )
-        if primary_provider == "openai" and self._should_use_managed_proxy_for_llm_analysis():
+        if (
+            primary_provider == "openai"
+            and self._should_use_managed_proxy_for_llm_analysis()
+        ):
             return True
         api_key = self._get_provider_api_key(primary_provider)
         return bool(api_key)
@@ -626,7 +662,9 @@ class AnalysisOrchestrator:
             managed_llm=self._should_use_managed_proxy_for_llm_analysis(),
             managed_capacity_fallback=self._should_allow_managed_capacity_fallback(),
             sentinelayer_token=self.config.sentinelayer_token.get_secret_value(),
-            managed_api_url=os.environ.get("SENTINELAYER_API_URL", "https://api.sentinelayer.com"),
+            managed_api_url=os.environ.get(
+                "SENTINELAYER_API_URL", "https://api.sentinelayer.com"
+            ),
         )
 
         response = await client.analyze(
@@ -654,12 +692,9 @@ class AnalysisOrchestrator:
         reported_finding_count = len(parse_result.findings)
         no_findings_reported = parse_result.no_findings_reported
         parse_error_count = len(parse_result.parse_errors)
-        output_valid = (
-            parse_error_count == 0
-            and (
-                (reported_finding_count > 0 and not no_findings_reported)
-                or (reported_finding_count == 0 and no_findings_reported)
-            )
+        output_valid = parse_error_count == 0 and (
+            (reported_finding_count > 0 and not no_findings_reported)
+            or (reported_finding_count == 0 and no_findings_reported)
         )
         if not output_valid:
             return self._llm_failure_result(
@@ -739,25 +774,21 @@ class AnalysisOrchestrator:
         parse_error_count = len(result.parse_errors or [])
         reported_finding_count = len(result.findings)
         no_findings_reported = result.no_findings_reported
-        output_valid = (
-            parse_error_count == 0
-            and (
-                (reported_finding_count > 0 and not no_findings_reported)
-                or (reported_finding_count == 0 and no_findings_reported)
-            )
+        output_valid = parse_error_count == 0 and (
+            (reported_finding_count > 0 and not no_findings_reported)
+            or (reported_finding_count == 0 and no_findings_reported)
         )
         if not result.success or not output_valid:
             warn = sanitize_public_error(result.error or "Codex audit failed")
-            # Observability-only diagnostic (no control-flow change): surface WHY the
-            # codex-cli primary failed (returncode vs unparseable output) so the LLM-
-            # fallback masking can be root-caused. Bounded snippet, failing-path only.
+            # `--json` supplies the terminal CLI error without logging the echoed prompt.
             self.logger.warning(
                 "Codex primary failed (diagnostic)",
                 model=active_model,
                 error=_scrub_log_value(result.error),
-                parse_errors=[_scrub_log_value(p) for p in (result.parse_errors or [])[:5]],
+                parse_errors=[
+                    _scrub_log_value(p) for p in (result.parse_errors or [])[:5]
+                ],
                 duration_ms=result.duration_ms,
-                raw_output_snippet=_scrub_log_value((result.raw_output or "")[:500]),
             )
             failure_class = (
                 "invalid_output"
@@ -777,7 +808,9 @@ class AnalysisOrchestrator:
                 reported_finding_count=reported_finding_count,
                 parse_error_count=parse_error_count,
             )
-            failed.warning = f"Codex audit failed ({warn}). Falling back to LLM analysis."
+            failed.warning = (
+                f"Codex audit failed ({warn}). Falling back to LLM analysis."
+            )
             return failed
 
         # Codex CLI currently doesn't provide token/cost accounting. Keep cost unknown.
@@ -823,9 +856,7 @@ class AnalysisOrchestrator:
                 tokens_out=int(usage_payload.get("tokens_out") or 0),
                 cost_usd=float(usage_payload.get("cost_usd") or 0.0),
                 latency_ms=int(usage_payload.get("latency_ms") or 0),
-                provider=str(
-                    usage_payload.get("provider") or self.config.llm_provider
-                ),
+                provider=str(usage_payload.get("provider") or self.config.llm_provider),
             ),
             success=False,
             error=public_error,
@@ -845,8 +876,7 @@ class AnalysisOrchestrator:
             warning = "LLM analysis did not produce a valid review result."
         return LLMAnalysisResult(
             findings=[
-                self._parsed_finding_to_dict(finding)
-                for finding in non_deterministic
+                self._parsed_finding_to_dict(finding) for finding in non_deterministic
             ],
             success=False,
             usage=usage,
@@ -961,7 +991,9 @@ class AnalysisOrchestrator:
                 except (TypeError, ValueError):
                     fixed["line_start"] = 0
                 try:
-                    fixed["line_end"] = int(finding.get("line_end") or fixed["line_start"])
+                    fixed["line_end"] = int(
+                        finding.get("line_end") or fixed["line_start"]
+                    )
                 except (TypeError, ValueError):
                     fixed["line_end"] = fixed["line_start"]
                 fixed["severity"] = str(finding.get("severity") or "P0")
@@ -1000,11 +1032,15 @@ class AnalysisOrchestrator:
             confidence = min(max(confidence, 0.0), 1.0)
 
             if source in {"llm", "codex"} and severity in {"P0", "P1"}:
-                if not self._is_corroborated(path, line_start, category, non_llm_findings):
+                if not self._is_corroborated(
+                    path, line_start, category, non_llm_findings
+                ):
                     severity = "P2"
                     confidence = min(confidence, 0.75)
                     if message:
-                        message = f"{message} (LLM-only, needs deterministic corroboration)"
+                        message = (
+                            f"{message} (LLM-only, needs deterministic corroboration)"
+                        )
 
             fixed = dict(finding)
             fixed["file_path"] = path
@@ -1055,7 +1091,9 @@ class AnalysisOrchestrator:
                 counts[sev] += 1
         return counts
 
-    def _identify_hotspots_with_findings(self, findings: List[dict], hotspots: dict) -> List[str]:
+    def _identify_hotspots_with_findings(
+        self, findings: List[dict], hotspots: dict
+    ) -> List[str]:
         """Return hotspot files that have findings."""
         if not hotspots:
             return []
@@ -1066,9 +1104,7 @@ class AnalysisOrchestrator:
         if not hotspot_files:
             return []
         finding_files = {
-            finding.get("file_path")
-            for finding in findings
-            if finding.get("file_path")
+            finding.get("file_path") for finding in findings if finding.get("file_path")
         }
         return sorted(hotspot_files.intersection(finding_files))
 

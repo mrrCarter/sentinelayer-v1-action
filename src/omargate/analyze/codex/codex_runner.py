@@ -122,7 +122,9 @@ def parse_codex_findings(text: str) -> tuple[list[dict], list[str], bool]:
             if _validate_obj(item):
                 findings.append(_normalize_obj(item))
             else:
-                errors.append(f"Item {idx + 1}: Missing required fields or invalid values")
+                errors.append(
+                    f"Item {idx + 1}: Missing required fields or invalid values"
+                )
         return findings, errors, no_findings
 
     for i, line in enumerate(raw.splitlines()):
@@ -146,6 +148,33 @@ def parse_codex_findings(text: str) -> tuple[list[dict], list[str], bool]:
         no_findings = True
 
     return findings, errors, no_findings
+
+
+def extract_codex_cli_failure(stdout: str) -> Optional[str]:
+    """Return the terminal error from Codex JSONL without exposing the prompt."""
+    last_error: Optional[str] = None
+    terminal_error: Optional[str] = None
+
+    for line in (stdout or "").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+
+        event_type = event.get("type")
+        if event_type == "error" and isinstance(event.get("message"), str):
+            last_error = event["message"].strip() or last_error
+        elif event_type == "turn.failed":
+            error = event.get("error")
+            if isinstance(error, dict) and isinstance(error.get("message"), str):
+                terminal_error = error["message"].strip() or terminal_error
+            elif isinstance(error, str):
+                terminal_error = error.strip() or terminal_error
+
+    detail = terminal_error or last_error
+    return detail[:1000] if detail else None
 
 
 class CodexRunner:
@@ -202,6 +231,7 @@ class CodexRunner:
         cmd = [
             codex_bin,
             "exec",
+            "--json",
             "--sandbox",
             sandbox,
             "--model",
@@ -264,21 +294,23 @@ class CodexRunner:
             # Best-effort cleanup; keep file around if read fails for debugging.
             pass
 
-        raw_output = (
-            (stdout_b or b"").decode("utf-8", errors="ignore")
-            + "\n"
-            + (stderr_b or b"").decode("utf-8", errors="ignore")
-        ).strip()
+        stdout_text = (stdout_b or b"").decode("utf-8", errors="ignore")
+        stderr_text = (stderr_b or b"").decode("utf-8", errors="ignore")
+        raw_output = (stdout_text + "\n" + stderr_text).strip()
 
         duration_ms = int((time.monotonic() - start) * 1000)
 
         if int(proc.returncode or 0) != 0:
+            error = f"Codex exited with code {proc.returncode}"
+            cli_failure = extract_codex_cli_failure(stdout_text)
+            if cli_failure:
+                error = f"{error}: {cli_failure}"
             return CodexResult(
                 findings=[],
                 raw_output=raw_output,
                 success=False,
                 duration_ms=duration_ms,
-                error=f"Codex exited with code {proc.returncode}",
+                error=error,
                 parse_errors=None,
             )
 

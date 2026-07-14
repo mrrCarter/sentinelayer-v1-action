@@ -16,7 +16,7 @@ _JSON_SECRET_RE = re.compile(
     """
 )
 _KEYLIKE_RE = re.compile(
-    r"(?i)\b(?:sk-[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|"
+    r"(?i)\b(?:sk-[A-Za-z0-9_*.-]{8,}|sk-ant-[A-Za-z0-9_*.-]{8,}|"
     r"AIza[0-9A-Za-z_-]{20,}|xai-[A-Za-z0-9_-]{16,}|slrt_v1\.[A-Za-z0-9_.-]+|"
     r"sl_[A-Za-z0-9_-]{16,})\b"
 )
