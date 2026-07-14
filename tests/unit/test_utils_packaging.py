@@ -53,6 +53,20 @@ def test_packaging_writes_summary(tmp_path: Path) -> None:
 
     findings_path = run_dir / "FINDINGS.jsonl"
     write_findings_jsonl(findings_path, findings)
+    llm_evidence = {
+        "schema_version": "1.0",
+        "attempted": True,
+        "success": True,
+        "output_valid": True,
+        "no_findings_reported": True,
+        "reported_finding_count": 0,
+        "parse_error_count": 0,
+        "usage_recorded": True,
+        "engine": "codex",
+        "provider": "openai",
+        "model": "gpt-5.3-codex",
+        "latency_ms": 25,
+    }
     summary_path = write_pack_summary(
         run_dir=run_dir,
         run_id=run_dir.name,
@@ -65,6 +79,7 @@ def test_packaging_writes_summary(tmp_path: Path) -> None:
         dedupe_key="dedupe-key",
         policy_pack="omar",
         policy_pack_version="v1",
+        llm_evidence=llm_evidence,
         error=None,
     )
 
@@ -73,6 +88,7 @@ def test_packaging_writes_summary(tmp_path: Path) -> None:
     assert data["findings_file_sha256"] == sha256_hex(findings_path.read_bytes())
     assert data["fingerprint_count"] == 1
     assert data["dedupe_key"] == "dedupe-key"
+    assert data["llm_evidence"] == llm_evidence
 
 
 def test_get_run_dir_prefers_workspace(tmp_path: Path, monkeypatch) -> None:

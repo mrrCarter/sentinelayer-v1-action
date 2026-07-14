@@ -62,8 +62,10 @@ from .telemetry.schemas import (
 from .telemetry.uploader import upload_telemetry
 from .utils import ensure_writable_dir, json_dumps
 
-ACTION_VERSION = "1.3.8"
-ACTION_MAJOR_VERSION = "1"
+ACTION_VERSION = "1.3.9"
+# Rotate this whenever a security-control contract changes so dedupe cannot
+# mirror a successful check produced under weaker semantics on the same head.
+ACTION_IDEMPOTENCY_VERSION = "1:llm-evidence-v1"
 CHECK_NAME_BASE = "Omar Gate"
 __all__ = [
     "main",
@@ -92,6 +94,33 @@ def _llm_fallback_used(llm_usage: dict, model_fallback: str) -> bool:
         (model_used and model_used == model_fallback)
         or route_used.startswith("managed_after_byo_capacity")
     )
+
+
+def _build_llm_evidence(analysis, config: OmarGateConfig) -> dict:
+    usage = analysis.llm_usage if isinstance(analysis.llm_usage, dict) else {}
+    provider = str(usage.get("provider") or config.llm_provider).strip()
+    engine = str(usage.get("engine") or provider).strip()
+    model = str(usage.get("model") or "").strip()
+    return {
+        "schema_version": "1.0",
+        "attempted": bool(analysis.llm_attempted),
+        "success": bool(analysis.llm_success),
+        "output_valid": bool(analysis.llm_output_valid),
+        "no_findings_reported": bool(analysis.llm_no_findings_reported),
+        "reported_finding_count": int(analysis.llm_reported_finding_count or 0),
+        "accepted_finding_count": int(analysis.llm_count or 0),
+        "parse_error_count": int(analysis.llm_parse_error_count or 0),
+        "failure_class": analysis.llm_failure_class,
+        "usage_recorded": bool(usage),
+        "engine": engine,
+        "provider": provider,
+        "model": model,
+        "route": str(usage.get("route") or "").strip() or None,
+        "tokens_in": usage.get("tokens_in"),
+        "tokens_out": usage.get("tokens_out"),
+        "latency_ms": usage.get("latency_ms"),
+        "fallback_used": _llm_fallback_used(usage, config.model_fallback),
+    }
 
 
 def _short_circuit_with_gate_result(
@@ -332,7 +361,7 @@ async def async_main() -> int:
             scan_mode=config.scan_mode,
             policy_pack=config.policy_pack,
             policy_pack_version=config.policy_pack_version,
-            action_major_version=ACTION_MAJOR_VERSION,
+            action_major_version=ACTION_IDEMPOTENCY_VERSION,
             comment_tag=config.comment_tag,
         )
 
@@ -699,16 +728,19 @@ async def async_main() -> int:
                         "action": ACTION_VERSION,
                         "policy_pack": config.policy_pack_version,
                     },
-                    stages_completed=[
-                        "preflight",
-                        "ingest",
-                        "deterministic",
-                        "llm",
-                        "packaging",
-                    ],
+                    stages_completed=(
+                        ["preflight", "ingest", "deterministic"]
+                        + (
+                            ["llm"]
+                            if analysis.llm_success and analysis.llm_output_valid
+                            else (["llm_attempted"] if analysis.llm_attempted else [])
+                        )
+                        + ["packaging"]
+                    ),
                     review_brief_path=analysis.review_brief_path,
                     severity_gate=config.severity_gate,
                     llm_usage=analysis.llm_usage,
+                    llm_evidence=_build_llm_evidence(analysis, config),
                     fingerprint_count=fingerprint_count,
                     dedupe_key=idem_key,
                     policy_pack=config.policy_pack,
@@ -780,7 +812,10 @@ async def async_main() -> int:
             with logger.stage("gate_eval"):
                 gate_result = evaluate_gate(
                     run_dir,
-                    GateConfig(severity_gate=config.severity_gate),
+                    GateConfig(
+                        severity_gate=config.severity_gate,
+                        require_llm_success=config.llm_failure_policy == "block",
+                    ),
                 )
         except Exception as exc:
             gate_success = False
@@ -1011,6 +1046,13 @@ async def async_main() -> int:
                 model=(collector.model_used or config.model),
                 model_fallback=config.model_fallback,
                 model_fallback_used=collector.model_fallback_used,
+                llm_attempted=analysis.llm_attempted,
+                llm_success=analysis.llm_success,
+                llm_output_valid=analysis.llm_output_valid,
+                llm_no_findings_reported=analysis.llm_no_findings_reported,
+                llm_findings_count=analysis.llm_reported_finding_count,
+                llm_parse_error_count=analysis.llm_parse_error_count,
+                llm_failure_class=analysis.llm_failure_class,
                 policy_pack=config.policy_pack,
                 policy_pack_version=config.policy_pack_version,
             )

@@ -37,6 +37,10 @@ inputs:
     description: 'GitHub token for posting check runs and comments (use github.token)'
     required: false
     default: ''
+  pr_number:
+    description: 'Target pull request number for workflow_dispatch scans. Pull request event payloads remain authoritative.'
+    required: false
+    default: ''
   comment_tag:
     description: 'Optional provider tag for distinct PR comments/check runs (e.g., gemini)'
     required: false
@@ -279,6 +283,27 @@ outputs:
   model_fallback_used:
     description: 'Whether fallback model was used during this run'
     value: ${{ steps.omar.outputs.model_fallback_used }}
+  llm_attempted:
+    description: 'Whether a live LLM review was attempted'
+    value: ${{ steps.omar.outputs.llm_attempted }}
+  llm_success:
+    description: 'Whether the live LLM review completed successfully'
+    value: ${{ steps.omar.outputs.llm_success }}
+  llm_output_valid:
+    description: 'Whether the live LLM output satisfied the structured result contract'
+    value: ${{ steps.omar.outputs.llm_output_valid }}
+  llm_no_findings_reported:
+    description: 'Whether the live LLM explicitly reported no findings'
+    value: ${{ steps.omar.outputs.llm_no_findings_reported }}
+  llm_findings_count:
+    description: 'Number of structured findings reported by the live LLM'
+    value: ${{ steps.omar.outputs.llm_findings_count }}
+  llm_parse_error_count:
+    description: 'Number of structured-output parse errors from the live LLM'
+    value: ${{ steps.omar.outputs.llm_parse_error_count }}
+  llm_failure_class:
+    description: 'Sanitized live LLM failure classification when the review did not succeed'
+    value: ${{ steps.omar.outputs.llm_failure_class }}
   policy_pack:
     description: 'Configured policy pack id for this run'
     value: ${{ steps.omar.outputs.policy_pack }}
@@ -330,6 +355,7 @@ runs:
         INPUT_GOOGLE_API_KEY: ${{ inputs.google_api_key }}
         INPUT_XAI_API_KEY: ${{ inputs.xai_api_key }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github_token || github.token }}
+        INPUT_PR_NUMBER: ${{ inputs.pr_number }}
         INPUT_COMMENT_TAG: ${{ inputs.comment_tag }}
         INPUT_PUBLISH_GITHUB: ${{ inputs.publish_github }}
         INPUT_SENTINELAYER_TOKEN: ${{ inputs.sentinelayer_token }}

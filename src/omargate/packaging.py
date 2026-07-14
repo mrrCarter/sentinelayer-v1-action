@@ -36,6 +36,7 @@ def write_pack_summary(
     review_brief_path: Path | None = None,
     severity_gate: str | None = None,
     llm_usage: Dict[str, Any] | None = None,
+    llm_evidence: Dict[str, Any] | None = None,
     error: str | None = None,
     errors: List[str] | None = None,
     fingerprint_count: int | None = None,
@@ -75,6 +76,8 @@ def write_pack_summary(
         summary["severity_gate"] = str(severity_gate)
     if llm_usage is not None:
         summary["llm_usage"] = llm_usage
+    if llm_evidence is not None:
+        summary["llm_evidence"] = llm_evidence
     if fingerprint_count is not None:
         summary["fingerprint_count"] = int(fingerprint_count)
     if dedupe_key is not None:
