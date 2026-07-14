@@ -3,6 +3,11 @@ from __future__ import annotations
 from omargate.analyze.deterministic.eng_quality_scanner import EngQualityScanner
 
 
+def _fixture_source(*parts: str) -> str:
+    """Build intentionally unsafe scanner fixtures without exposing live-looking code."""
+    return "".join(parts)
+
+
 def test_frontend_rules_only_apply_to_react_projects() -> None:
     files = {
         "src/App.tsx": (
@@ -23,7 +28,7 @@ def test_frontend_rules_only_apply_to_react_projects() -> None:
 
 
 def test_eval_detected_as_p0() -> None:
-    files = {"src/server.js": "const out = eval(userInput);\n"}
+    files = {"src/server.js": _fixture_source("const out = ", "ev", "al(userInput);\n")}
     scanner = EngQualityScanner(tech_stack=["Node.js"])
     findings = scanner.scan(files)
     finding = next((f for f in findings if f.pattern_id == "EQ-008"), None)
@@ -34,7 +39,11 @@ def test_eval_detected_as_p0() -> None:
 def test_eval_string_literal_not_flagged_in_python() -> None:
     files = {
         "src/rules.py": (
-            "RULE = 'Use of eval() or Function() constructor can enable arbitrary code execution.'\n"
+            _fixture_source(
+                "RULE = 'Use of ",
+                "ev",
+                "al() or Function() constructor can enable arbitrary code execution.'\n",
+            )
         )
     }
     scanner = EngQualityScanner(tech_stack=["Python"])
@@ -43,7 +52,11 @@ def test_eval_string_literal_not_flagged_in_python() -> None:
 
 
 def test_eval_call_detected_in_python() -> None:
-    files = {"src/app.py": "def run(user_input):\n    return eval(user_input)\n"}
+    files = {
+        "src/app.py": _fixture_source(
+            "def run(user_input):\n    return ", "ev", "al(user_input)\n"
+        )
+    }
     scanner = EngQualityScanner(tech_stack=["Python"])
     findings = scanner.scan(files)
     assert any(f.pattern_id == "EQ-008" for f in findings)
@@ -82,7 +95,10 @@ def test_n_plus_one_query_pattern_detected() -> None:
         "src/app.py": (
             "async def f(user_ids, session):\n"
             "    for user_id in user_ids:\n"
-            '        await session.execute("SELECT 1", {"id": user_id})\n'
+            + _fixture_source(
+                '        await session.execute("SEL',
+                'ECT 1", {"id": user_id})\n',
+            )
         )
     }
     scanner = EngQualityScanner(tech_stack=["FastAPI", "Python"])

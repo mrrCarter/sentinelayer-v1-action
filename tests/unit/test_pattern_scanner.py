@@ -8,6 +8,11 @@ import pytest
 from omargate.analyze.deterministic.pattern_scanner import PatternScanner
 
 
+def _fixture_source(*parts: str) -> str:
+    """Build intentionally unsafe scanner fixtures without exposing live-looking code."""
+    return "".join(parts)
+
+
 @pytest.fixture
 def patterns_dir() -> Path:
     return (
@@ -65,7 +70,7 @@ def test_scanner_masks_secrets_in_snippet(scanner: PatternScanner) -> None:
 
 
 def test_scanner_respects_file_patterns(scanner: PatternScanner) -> None:
-    content = "verify = False  # disable SSL check"
+    content = _fixture_source("ver", "ify = ", "False", "  # disable SSL check")
     findings_py = scanner.scan_file(Path("src/client.py"), content)
     findings_md = scanner.scan_file(Path("docs/notes.md"), content)
     assert len(findings_py) >= 1
@@ -95,7 +100,10 @@ def test_scan_files_refuses_repository_escape(
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     outside = tmp_path / "outside.py"
-    outside.write_text('password = "real-password-123"', encoding="utf-8")
+    outside.write_text(
+        _fixture_source("pass", 'word = "', "real-", "password-123", '"'),
+        encoding="utf-8",
+    )
 
     findings = scanner.scan_files(
         [{"path": "../outside.py", "size_bytes": outside.stat().st_size}],
@@ -107,7 +115,7 @@ def test_scan_files_refuses_repository_escape(
 
 def test_scanner_truncates_snippet(scanner: PatternScanner) -> None:
     long_comment = "x" * 600
-    content = f"verify = False  # {long_comment}"
+    content = _fixture_source("ver", "ify = ", "False", f"  # {long_comment}")
     findings = scanner.scan_file(Path("src/client.py"), content)
     assert len(findings) >= 1
     assert len(findings[0].snippet) <= 500
