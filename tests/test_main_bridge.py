@@ -946,3 +946,166 @@ def test_api_json_request_uses_long_enough_timeout(
     assert payload == {"ok": True}
     assert captured_timeouts == [_API_REQUEST_TIMEOUT_SECONDS]
     assert _API_REQUEST_TIMEOUT_SECONDS >= 120
+
+
+# ---------------------------------------------------------------------------
+# Anti-phantom fail-closed: gate on model_used (the model the backend ACTUALLY
+# ran), not on findings_source (which is `none` for both a clean-real 0-finding
+# scan and a phantom). See _backend_model_used + the gate-decision branch.
+# ---------------------------------------------------------------------------
+
+
+def _phantom_fake_request(findings_payload: dict[str, object]):
+    def _fake(**kwargs: object) -> dict[str, object]:
+        url = str(kwargs.get("url") or "")
+        if "/trigger" in url:
+            return {
+                "status": "accepted",
+                "investigation_run_id": "run-1",
+                "run_result_token": "rt",
+            }
+        if "/status" in url:
+            return {
+                "status": "completed",
+                "progress_label": "pack:completed",
+                "severity_counts": {"P0": 0, "P1": 0, "P2": 0, "P3": 0},
+            }
+        if "/findings" in url:
+            return dict(findings_payload)
+        return {}
+
+    return _fake
+
+
+def _run_main_with_findings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    findings_payload: dict[str, object],
+    *,
+    config: BridgeConfig | None = None,
+) -> tuple[int, dict[str, str]]:
+    config = config or _bridge_config(tmp_path, wait_for_completion=True)
+    output_path = tmp_path / "github_output.txt"
+    monkeypatch.setattr("omargate.main._load_config", lambda: config)
+    monkeypatch.setattr("omargate.main._execute_playwright_gate", lambda _c: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._execute_sbom_gate", lambda _c: ("skipped", "ok"))
+    monkeypatch.setattr("omargate.main._api_json_request", _phantom_fake_request(findings_payload))
+    monkeypatch.setattr(
+        "omargate.main._github_api_json_request",
+        lambda **k: [] if str(k.get("method") or "GET") == "GET" else {"html_url": ""},
+    )
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    exit_code = main()
+    outputs: dict[str, str] = {}
+    for line in output_path.read_text(encoding="utf-8").splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            outputs[key] = value
+    return exit_code, outputs
+
+
+def test_backend_model_used_discriminates_phantom_from_real() -> None:
+    from omargate.main import _backend_model_used
+
+    assert _backend_model_used(None) is None
+    assert _backend_model_used({}) is None  # key absent -> older backend -> unknown
+    assert _backend_model_used({"model_used": None}) == ""  # present-empty -> no scan
+    assert _backend_model_used({"model_used": ""}) == ""
+    assert _backend_model_used({"model_used": "  "}) == ""
+    assert _backend_model_used({"model_used": "gpt-5.3-codex"}) == "gpt-5.3-codex"
+
+
+def test_main_fail_closed_when_backend_reports_no_model_used(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Phantom (token-401/quota/mirror-no-exec): completed + empty model_used -> exit 2."""
+    exit_code, outputs = _run_main_with_findings(
+        monkeypatch,
+        tmp_path,
+        {
+            "findings": [],
+            "severity_counts": {"P0": 0, "P1": 0, "P2": 0, "P3": 0},
+            "findings_source": "none",
+            "model_used": None,
+        },
+    )
+    assert exit_code == 2
+    assert outputs["gate_status"] == "error"
+    assert outputs["model_used"] == ""
+
+
+def test_main_passes_clean_real_scan_with_zero_findings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Clean-real (the clean-0 case): 0 findings but codex actually ran -> PASS."""
+    exit_code, outputs = _run_main_with_findings(
+        monkeypatch,
+        tmp_path,
+        {
+            "findings": [],
+            "severity_counts": {"P0": 0, "P1": 0, "P2": 0, "P3": 0},
+            "findings_source": "none",
+            "model_used": "gpt-5.3-codex",
+        },
+    )
+    assert exit_code == 0
+    assert outputs["gate_status"] == "passed"
+    assert outputs["model_used"] == "gpt-5.3-codex"
+
+
+def test_main_passes_real_scan_on_configured_fallback_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A configured fallback model (gpt-4.1-mini) is a REAL scan, not a phantom -> PASS."""
+    exit_code, outputs = _run_main_with_findings(
+        monkeypatch,
+        tmp_path,
+        {
+            "findings": [],
+            "severity_counts": {"P0": 0, "P1": 0, "P2": 0, "P3": 0},
+            "findings_source": "pack_findings",
+            "model_used": "gpt-4.1-mini",
+        },
+    )
+    assert exit_code == 0
+    assert outputs["gate_status"] == "passed"
+
+
+def test_main_skips_phantom_check_for_older_backend_without_model_used(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Backward-compat: a backend that omits model_used entirely must NOT fail-closed."""
+    exit_code, outputs = _run_main_with_findings(
+        monkeypatch,
+        tmp_path,
+        {
+            "findings": [],
+            "severity_counts": {"P0": 0, "P1": 0, "P2": 0, "P3": 0},
+            "findings_source": "none",
+        },
+    )
+    assert exit_code == 0
+    assert outputs["gate_status"] == "passed"
+
+
+def test_main_skips_phantom_check_in_deterministic_only_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """deterministic_only has no backend pack by design -> excluded from the phantom check."""
+    config = _bridge_config(
+        tmp_path, wait_for_completion=True, llm_failure_policy="deterministic_only"
+    )
+    exit_code, outputs = _run_main_with_findings(
+        monkeypatch,
+        tmp_path,
+        {
+            "findings": [],
+            "severity_counts": {"P0": 0, "P1": 0, "P2": 0, "P3": 0},
+            "findings_source": "none",
+            "model_used": None,
+        },
+        config=config,
+    )
+    assert exit_code == 0
+    assert outputs["gate_status"] == "passed"

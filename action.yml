@@ -209,6 +209,12 @@ outputs:
   codex_model:
     description: 'Configured Codex model requested for this run'
     value: ${{ steps.omar.outputs.codex_model }}
+  findings_source:
+    description: 'Origin of the findings the gate evaluated: pack_findings (fresh scan), none (no findings row), or telemetry_fallback (mirrored from a prior run)'
+    value: ${{ steps.omar.outputs.findings_source }}
+  model_used:
+    description: 'LLM model the backend actually ran for this run (empty when no real scan executed — a phantom); distinct from the configured model input'
+    value: ${{ steps.omar.outputs.model_used }}
   quota_state:
     description: 'Current managed-LLM quota state: normal, warning, throttled, exhausted, or using_overage'
     value: ${{ steps.omar.outputs.quota_state }}

@@ -1079,6 +1079,8 @@ def _emit_outputs(
     quota_reason: str = "normal",
     quota_resets_at: str = "",
     quota_using_overage: str = "false",
+    findings_source: str = "",
+    model_used: str = "",
 ) -> None:
     _write_output("gate_status", gate_status)
     _write_output("p0_count", str(int(counts.get("P0") or 0)))
@@ -1101,6 +1103,8 @@ def _emit_outputs(
     _write_output("quota_reason", quota_reason)
     _write_output("quota_resets_at", quota_resets_at)
     _write_output("quota_using_overage", quota_using_overage)
+    _write_output("findings_source", findings_source)
+    _write_output("model_used", model_used)
 
 
 def _workspace_root() -> Path:
@@ -1260,6 +1264,24 @@ def _backend_counts(payload: dict[str, Any] | None, fallback: dict[str, int]) ->
     if not isinstance(payload, dict):
         return _normalize_counts(None, fallback)
     return _normalize_counts(payload.get("severity_counts"), fallback)
+
+
+def _backend_model_used(payload: dict[str, Any] | None) -> str | None:
+    """Return the LLM model the backend ACTUALLY ran for this run.
+
+    The managed backend records this from the real provider result
+    (TelemetryRecord.model_used), so it is populated for a genuine scan even at
+    zero findings, and empty when no scan executed (token-401 / quota /
+    dedup-mirror). Returns:
+      - ``None``  -> the backend response omits ``model_used`` entirely (an
+        older backend that predates the field); callers MUST treat this as
+        "unknown" and skip phantom-gating for backward compatibility.
+      - ``""``    -> the field is present but empty/null: no real scan ran.
+      - a model string -> a real scan executed with that model.
+    """
+    if not isinstance(payload, dict) or "model_used" not in payload:
+        return None
+    return str(payload.get("model_used") or "").strip()
 
 
 def _infer_stack(workspace: Path) -> list[str]:
@@ -1777,6 +1799,16 @@ def main() -> int:
                         f"Timed out waiting for run completion after {config.wait_timeout_seconds}s (run_id={run_id})"
                     )
 
+        # Fetch the backend findings pack BEFORE deciding the gate so the
+        # anti-phantom check below can see whether a real scan actually ran.
+        if run_id and not deterministic_only:
+            backend_findings_payload = _fetch_backend_run_findings(
+                config=config,
+                run_id=run_id,
+                run_read_token=run_read_token,
+                api_json_request=_tracked_api_json_request,
+            )
+
         blocking = _blocking_count(severity_gate=config.severity_gate, counts=counts)
         gate_status = "passed"
         exit_code = 0
@@ -1786,6 +1818,32 @@ def main() -> int:
         elif config.wait_for_completion and run_id and status in {"failed", "error", "cancelled"}:
             gate_status = "error"
             exit_code = 2
+
+        # Anti-phantom fail-closed: a genuine managed scan records the model it
+        # actually ran (backend TelemetryRecord.model_used, surfaced on the
+        # findings payload as `model_used`). A token-401 / quota-exhausted /
+        # dedup-mirror run comes back terminal-`completed` with 0 findings and
+        # NO model_used -> a phantom green that must not pass. Enforced only when
+        # the backend surfaces the field (_backend_model_used returns None when
+        # the field is absent -> older backend -> skipped for compatibility).
+        if (
+            exit_code == 0
+            and not deterministic_only
+            and config.wait_for_completion
+            and run_id
+            and _terminal_status(status)
+            and status not in {"failed", "error", "cancelled"}
+        ):
+            model_used = _backend_model_used(backend_findings_payload)
+            if model_used is not None and not model_used:
+                gate_status = "error"
+                exit_code = 2
+                print(
+                    "::error::Omar Gate fail-closed: backend reported "
+                    f"'{status}' for run {run_id} but recorded no LLM model_used "
+                    "(no real scan executed - check the Sentinelayer token / "
+                    "quota). Refusing to pass a phantom green."
+                )
 
         backend_publish_error = ""
         if deterministic_only and exit_code == 0:
@@ -1830,18 +1888,13 @@ def main() -> int:
             playwright_mode=playwright_mode,
             sbom_status=sbom_status,
             sbom_mode=sbom_mode,
+            findings_source=str((backend_findings_payload or {}).get("findings_source") or "").strip(),
+            model_used=_backend_model_used(backend_findings_payload) or "",
             **_quota_output_fields(budget_tracker),
         )
 
         run_url = f"{SENTINELAYER_WEB_BASE}/runs/{run_id}" if run_id and not deterministic_only else ""
         evidence_url = f"{run_url}/evidence" if run_url else ""
-        if run_id and not deterministic_only:
-            backend_findings_payload = _fetch_backend_run_findings(
-                config=config,
-                run_id=run_id,
-                run_read_token=run_read_token,
-                api_json_request=_tracked_api_json_request,
-            )
         comment_body = _render_bridge_pr_comment(
             config=config,
             pr_number=pr_number,

@@ -25,7 +25,11 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          python -m pip install ruff pytest
+          # Pin ruff: an unpinned install drifts to the latest release, whose new
+          # default rules flagged 70 pre-existing style violations repo-wide and
+          # red-blocked every PR. Bump deliberately alongside a `ruff check --fix`
+          # pass so the version change is intentional, not silent drift.
+          python -m pip install ruff==0.15.4 pytest
 
       - name: Validate action bridge sources compile
         run: |
