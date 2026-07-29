@@ -303,9 +303,9 @@ async def test_api_explicit_clean_result_is_valid_live_llm_evidence(
         (
             '[{"severity":"P2","category":"auth","file_path":"src/a.py",'
             '"line_start":3,"message":"missing guard"},{"no_findings":true}]',
-            0,
             1,
-            True,
+            1,
+            False,
         ),
     ],
 )
