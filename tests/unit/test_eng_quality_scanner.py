@@ -94,6 +94,143 @@ def test_n_plus_one_query_pattern_detected() -> None:
     assert any(f.pattern_id == "EQ-007" for f in findings)
 
 
+def test_multiline_httpx_client_with_explicit_timeout_is_not_flagged() -> None:
+    files = {
+        "src/routes/auth.py": (
+            "async def fetch_metadata():\n"
+            "    async with httpx.AsyncClient(\n"
+            "        follow_redirects=False,\n"
+            "        timeout=_CIMD_FETCH_TIMEOUT_S,\n"
+            "    ) as client:\n"
+            "        return await client.get('https://example.com')\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python", "FastAPI"])
+    findings = scanner.scan(files)
+    assert not any(f.pattern_id == "EQ-012" for f in findings)
+
+
+def test_multiline_httpx_client_without_timeout_is_flagged() -> None:
+    files = {
+        "src/routes/auth.py": (
+            "async def fetch_metadata():\n"
+            "    async with httpx.AsyncClient(\n"
+            "        follow_redirects=False,\n"
+            "    ) as client:\n"
+            "        return await client.get('https://example.com')\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python", "FastAPI"])
+    findings = scanner.scan(files)
+    finding = next((f for f in findings if f.pattern_id == "EQ-012"), None)
+    assert finding is not None
+    assert finding.line_start == 2
+    assert finding.line_end == 4
+
+
+def test_multiline_httpx_get_with_explicit_timeout_is_not_flagged() -> None:
+    files = {
+        "src/client.py": (
+            "async def fetch_metadata(url):\n"
+            "    return await httpx.get(\n"
+            "        url,\n"
+            "        timeout=5.0,\n"
+            "    )\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = scanner.scan(files)
+    assert not any(f.pattern_id == "EQ-012" for f in findings)
+
+
+def test_timeout_text_in_comment_or_string_does_not_suppress_finding() -> None:
+    files = {
+        "src/comment.py": "client = httpx.Client(  # timeout inherited elsewhere\n)\n",
+        "src/string.py": 'response = httpx.get("timeout")\n',
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = [finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-012"]
+    assert {finding.file_path for finding in findings} == {
+        "src/comment.py",
+        "src/string.py",
+    }
+
+
+def test_nested_timeout_argument_does_not_count_as_httpx_timeout() -> None:
+    files = {
+        "src/client.py": (
+            "response = httpx.get(\n"
+            "    build_url(timeout=5.0),\n"
+            ")\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = [finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-012"]
+    assert len(findings) == 1
+    assert findings[0].line_start == 1
+
+
+def test_syntax_error_uses_balanced_call_fallback() -> None:
+    files = {
+        "src/client.py": (
+            "bounded = httpx.get(\n"
+            "    'https://example.com/bounded',\n"
+            "    timeout=5.0,\n"
+            ")\n"
+            "unbounded = httpx.get(  # timeout is still missing\n"
+            "    'https://example.com/unbounded',\n"
+            ")\n"
+            "def broken(:\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = [finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-012"]
+    assert [finding.line_start for finding in findings] == [5]
+
+
+def test_one_line_httpx_call_without_timeout_is_flagged() -> None:
+    files = {"src/client.py": "response = httpx.post('https://example.com')\n"}
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = [finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-012"]
+    assert len(findings) == 1
+    assert findings[0].line_start == 1
+
+
+def test_same_line_httpx_calls_emit_one_unique_finding() -> None:
+    files = {
+        "src/nested.py": "result = httpx.get(httpx.post('https://inner'))\n",
+        "src/sequential.py": (
+            "first = httpx.get('https://first'); "
+            "second = httpx.post('https://second')\n"
+        ),
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = [finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-012"]
+    assert len(findings) == 2
+    assert len({finding.id for finding in findings}) == len(findings)
+    assert {finding.file_path for finding in findings} == set(files)
+
+
+def test_httpx_module_case_matching_preserves_existing_behavior() -> None:
+    files = {
+        "src/parseable.py": (
+            "import httpx as HTTPX\n"
+            "response = HTTPX.get('https://example.com')\n"
+        ),
+        "src/syntax_error.py": (
+            "import httpx as HTTPX\n"
+            "client = HTTPX.AsyncClient()\n"
+            "def broken(:\n"
+        ),
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = [finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-012"]
+    assert [(finding.file_path, finding.line_start) for finding in findings] == [
+        ("src/parseable.py", 2),
+        ("src/syntax_error.py", 2),
+    ]
+
+
 def test_workflow_secret_labels_not_flagged_as_hardcoded_secrets() -> None:
     files = {
         ".github/workflows/security-review.yml": (
