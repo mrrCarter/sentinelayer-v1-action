@@ -9,6 +9,7 @@ from .eng_quality_helpers import (
     is_test_file,
     line_snippet,
     python_eval_call_lines,
+    python_httpx_calls,
     strip_js_comments_and_strings,
 )
 from .pattern_scanner import Finding, _truncate_snippet
@@ -612,8 +613,6 @@ class EngQualityScanner:
 
         axios_re = re.compile(r"\baxios\.(get|post|put|patch|delete)\s*\(", re.IGNORECASE)
         fetch_re = re.compile(r"\bfetch\s*\(", re.IGNORECASE)
-        httpx_call_re = re.compile(r"\bhttpx\.(get|post|put|patch|delete)\s*\(", re.IGNORECASE)
-        httpx_client_re = re.compile(r"\bhttpx\.(AsyncClient|Client)\s*\(", re.IGNORECASE)
 
         for path, content in self._iter_files(files, exts=_BACKEND_EXTS):
             if self._is_test_file(path):
@@ -651,29 +650,22 @@ class EngQualityScanner:
                         )
 
             if path.endswith(_PY_EXTS):
-                for idx, line in enumerate(lines):
-                    if httpx_call_re.search(line) and "timeout" not in line.lower():
-                        line_no = idx + 1
-                        findings.append(
-                            self._make_finding(
-                                rule,
-                                file_path=path,
-                                line_start=line_no,
-                                snippet=_truncate_snippet(line.strip()),
-                                confidence=0.7,
-                            )
+                reported_lines: set[int] = set()
+                for call in python_httpx_calls(content):
+                    if call.has_timeout or call.line_start in reported_lines:
+                        continue
+                    is_client = call.function_name in {"httpx.AsyncClient", "httpx.Client"}
+                    findings.append(
+                        self._make_finding(
+                            rule,
+                            file_path=path,
+                            line_start=call.line_start,
+                            line_end=call.line_end,
+                            snippet=self._line_snippet(content, call.line_start, call.line_end),
+                            confidence=0.6 if is_client else 0.7,
                         )
-                    if httpx_client_re.search(line) and "timeout" not in line.lower():
-                        line_no = idx + 1
-                        findings.append(
-                            self._make_finding(
-                                rule,
-                                file_path=path,
-                                line_start=line_no,
-                                snippet=_truncate_snippet(line.strip()),
-                                confidence=0.6,
-                            )
-                        )
+                    )
+                    reported_lines.add(call.line_start)
 
         return findings
 
