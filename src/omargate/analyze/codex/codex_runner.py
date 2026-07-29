@@ -5,17 +5,13 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import tempfile
 import time
 from typing import Any, Optional
 
 from ...fix_plan import ensure_fix_plan
-
-
-_VALID_SEVERITIES = {"P0", "P1", "P2", "P3"}
-_REQUIRED_FIELDS = {"severity", "category", "file_path", "line_start", "message"}
+from ..finding_contract import parse_finding_payload
 
 
 @dataclass(frozen=True)
@@ -27,25 +23,6 @@ class CodexResult:
     error: Optional[str] = None
     parse_errors: Optional[list[str]] = None
     no_findings_reported: bool = False
-
-
-def _strip_code_fence(text: str) -> str:
-    if not text:
-        return ""
-    match = re.search(r"```(?:json|jsonl)?\s*\r?\n(.*?)```", text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    return text.strip()
-
-
-def _validate_obj(obj: dict[str, Any]) -> bool:
-    if not all(k in obj for k in _REQUIRED_FIELDS):
-        return False
-    if obj.get("severity") not in _VALID_SEVERITIES:
-        return False
-    if not isinstance(obj.get("line_start"), int):
-        return False
-    return True
 
 
 def _normalize_obj(obj: dict[str, Any]) -> dict[str, Any]:
@@ -89,65 +66,12 @@ def parse_codex_findings(text: str) -> tuple[list[dict], list[str], bool]:
 
     Returns: (findings, parse_errors, no_findings_reported)
     """
-    raw = _strip_code_fence(text or "")
-    if not raw:
-        return [], ["Empty response"], False
-
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        parsed = None
-
-    findings: list[dict] = []
-    errors: list[str] = []
-    no_findings = False
-
-    if isinstance(parsed, dict):
-        if parsed.get("no_findings") is True:
-            return [], [], True
-        if _validate_obj(parsed):
-            findings.append(_normalize_obj(parsed))
-        else:
-            errors.append("Object: Missing required fields or invalid values")
-        return findings, errors, no_findings
-
-    if isinstance(parsed, list):
-        for idx, item in enumerate(parsed):
-            if not isinstance(item, dict):
-                errors.append(f"Item {idx + 1}: Not an object")
-                continue
-            if item.get("no_findings") is True:
-                no_findings = True
-                continue
-            if _validate_obj(item):
-                findings.append(_normalize_obj(item))
-            else:
-                errors.append(
-                    f"Item {idx + 1}: Missing required fields or invalid values"
-                )
-        return findings, errors, no_findings
-
-    for i, line in enumerate(raw.splitlines()):
-        ln = line.strip()
-        if not ln:
-            continue
-        try:
-            obj = json.loads(ln)
-        except json.JSONDecodeError as exc:
-            errors.append(f"Line {i + 1}: Invalid JSON - {exc}")
-            continue
-        if isinstance(obj, dict) and obj.get("no_findings") is True:
-            no_findings = True
-            continue
-        if not isinstance(obj, dict) or not _validate_obj(obj):
-            errors.append(f"Line {i + 1}: Missing required fields or invalid values")
-            continue
-        findings.append(_normalize_obj(obj))
-
-    if re.search(r'"no_findings"\s*:\s*true', raw, re.IGNORECASE):
-        no_findings = True
-
-    return findings, errors, no_findings
+    payload = parse_finding_payload(text or "")
+    return (
+        [_normalize_obj(item) for item in payload.findings],
+        payload.parse_errors,
+        payload.no_findings_reported,
+    )
 
 
 def extract_codex_cli_failure(stdout: str) -> Optional[str]:
