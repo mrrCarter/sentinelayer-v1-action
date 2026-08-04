@@ -17,6 +17,15 @@ class PythonHttpxCall:
     has_timeout: bool
 
 
+@dataclass(frozen=True)
+class _RecoveredPythonStatement:
+    line_number: int
+    scope_key: tuple[int, ...]
+    function_name: str | None
+    tree: ast.Module
+    parents: dict[ast.AST, ast.AST]
+
+
 _HTTPX_FUNCTION_NAMES = frozenset(
     {
         "httpx.get",
@@ -32,85 +41,121 @@ _HTTPX_FUNCTION_NAMES_BY_CASEFOLD = {
     function_name.casefold(): function_name for function_name in _HTTPX_FUNCTION_NAMES
 }
 _MAX_FALLBACK_CALL_TOKENS = 512
-_SQL_LEADING_COMMENTS = r"(?:(?:/\*[\s\S]{0,400}?\*/|--[^\r\n]*(?:\r?\n|$))\s*)*"
-_SQL_IDENTIFIER = (
-    r'(?:\{expr\}|[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)*|'
-    r'"[^"\r\n]+"|`[^`\r\n]+`|\[[^\]\r\n]+\])'
+_SQL_LEADING_COMMENTS_PATTERN = (
+    r"(?:(?:/\*[\s\S]{0,1000}?\*/|--[^\r\n]*(?:\r?\n|$))\s*)*"
 )
-_STRONG_SQL_STATEMENT_RE = re.compile(
-    rf"""
-    ^\s*{_SQL_LEADING_COMMENTS}
+
+
+def _sql_statement_pattern(
+    expression_pattern: str,
+    *,
+    include_contextual_select_expression: bool,
+    statement_end_pattern: str,
+) -> str:
+    contextual_select_expression = (
+        rf"| (?=[\s\S]{{0,4096}}{expression_pattern})"
+        rf"[\s\S]{{1,4096}}{statement_end_pattern}"
+        if include_contextual_select_expression
+        else ""
+    )
+    return rf"""
     (?:
         SELECT\s+(?:
-            [\s\S]{{0,400}}\bFROM\b
-            | (?:DISTINCT\s+|ALL\s+)?(?:\*|[-+]?\d|NULL\b|TRUE\b|FALSE\b)
-            | [A-Za-z_][A-Za-z0-9_$]*\s*\(
+            [\s\S]{{0,4096}}\bFROM\b
+            {contextual_select_expression}
+            | [A-Za-z_][A-Za-z0-9_$.]*\s*\([^)]*{expression_pattern}[^)]*\)\s*{statement_end_pattern}
         )
-        | INSERT\s+(?:(?:OR\s+(?:ABORT|FAIL|IGNORE|REPLACE|ROLLBACK)|IGNORE)\s+)?
-          INTO\s+{_SQL_IDENTIFIER}(?:\s*\([^)]*\))?\s+
-          (?:VALUES\b|SELECT\b|DEFAULT\s+VALUES\b|SET\b)
-        | DELETE\s+(?:(?:LOW_PRIORITY|QUICK|IGNORE)\s+)*
-          FROM\s+{_SQL_IDENTIFIER}
-          (?:\s+(?:AS\s+)?{_SQL_IDENTIFIER})?
-          (?:\s*(?:$|;)|\s+(?:WHERE|USING|RETURNING|ORDER\s+BY|LIMIT)\b)
-        | UPDATE\s+(?:(?:LOW_PRIORITY|IGNORE|ONLY)\s+)*
-          {_SQL_IDENTIFIER}(?:\s+(?:AS\s+)?{_SQL_IDENTIFIER})?\s+SET\b
-        | WITH\b[\s\S]{{0,400}}\bAS\s*\(
+        | INSERT\s+(?:(?:OR\s+(?:ABORT|FAIL|IGNORE|REPLACE|ROLLBACK)|IGNORE)\s+)?INTO\b
+        | DELETE\s+FROM\b
+        | UPDATE\s+(?:{expression_pattern}|[^\s;]+)\s+SET\b
+        | WITH\b[\s\S]{{0,4096}}\bAS\s*\(
     )
-    """,
+"""
+
+
+_SQL_TEMPLATE_EXPRESSION_PATTERN = r"\{expr\}"
+_SQL_SOURCE_EXPRESSION_PATTERN = r"\{[^{}\r\n]+\}"
+_SQL_STATEMENT_PATTERN = _sql_statement_pattern(
+    _SQL_TEMPLATE_EXPRESSION_PATTERN,
+    include_contextual_select_expression=True,
+    statement_end_pattern=r"(?:;|$)",
+)
+_SQL_SOURCE_STATEMENT_PATTERN = _sql_statement_pattern(
+    _SQL_SOURCE_EXPRESSION_PATTERN,
+    include_contextual_select_expression=False,
+    statement_end_pattern=r"(?=\s*(?:'''|\"\"\"|'|\"))",
+)
+_SQL_STATEMENT_PREFIX_RE = re.compile(
+    rf"^\s*{_SQL_LEADING_COMMENTS_PATTERN}{_SQL_STATEMENT_PATTERN}",
     re.IGNORECASE | re.VERBOSE,
 )
-_AMBIGUOUS_SQL_PREFIX_RE = re.compile(
-    rf"^\s*{_SQL_LEADING_COMMENTS}SELECT\s+\{{expr\}}(?:\s*(?:,|$)|\s+FROM\b)",
+_SQL_CONTEXTUAL_DYNAMIC_SELECT_RE = re.compile(
+    rf"^\s*{_SQL_LEADING_COMMENTS_PATTERN}SELECT\s+"
+    rf"(?=[\s\S]{{0,4096}}{_SQL_TEMPLATE_EXPRESSION_PATTERN})"
+    rf"[\s\S]{{1,4096}}\s*;?\s*$",
+    re.IGNORECASE | re.VERBOSE,
+)
+_SQL_STRONG_DYNAMIC_SELECT_RE = re.compile(
+    rf"^\s*{_SQL_LEADING_COMMENTS_PATTERN}SELECT\s+(?:"
+    rf"[\s\S]{{0,4096}}\bFROM\b"
+    rf"|[A-Za-z_][A-Za-z0-9_$.]*\s*\([^)]*"
+    rf"{_SQL_TEMPLATE_EXPRESSION_PATTERN}[^)]*\)\s*(?:;|$)"
+    rf")",
+    re.IGNORECASE | re.VERBOSE,
+)
+_SQL_CONTEXT_NAME_RE = re.compile(
+    r"(?:^|_)(?:sql|query|statement|stmt)(?:_|$)",
     re.IGNORECASE,
 )
-_SQL_LEADING_KEYWORD_RE = re.compile(
-    rf"^\s*{_SQL_LEADING_COMMENTS}(SELECT|INSERT|DELETE|UPDATE|WITH)\b",
-    re.IGNORECASE,
+_SQL_EXECUTION_CALL_NAMES = frozenset(
+    {"execute", "executemany", "executescript", "fetch", "query", "raw"}
 )
-_QUERY_CONTEXT_NAME_RE = re.compile(
-    r"^(?:q|query|sql|stmt|statement|sql_query|query_text|query_string)$",
-    re.IGNORECASE,
+_PYTHON_SCOPE_DECLARATION_RE = re.compile(
+    r"^(?P<indent>[ \t]*)(?P<kind>async\s+def|def|class)\s+"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b"
 )
-_SQL_SINK_NAMES = frozenset(
-    {
-        "execute",
-        "executemany",
-        "executescript",
-        "fetch",
-        "fetchrow",
-        "fetchval",
-        "query",
-        "raw",
-    }
+_PYTHON_FSTRING_SQL_FALLBACK_RE = re.compile(
+    rf"""
+    (?:^|[=(,:])\s*
+    (?:[rub]*f[rub]*)
+    (?:'''|\"\"\"|'|\")
+    (?=[^\n]{{0,1000}}\{{[^{{}}\n]+\}})
+    \s*{_SQL_LEADING_COMMENTS_PATTERN}{_SQL_SOURCE_STATEMENT_PATTERN}
+    """,
+    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
 )
-_PYTHON_PERCENT_FIELD_RE = re.compile(
-    r"(?<!%)%(?:\([^)]+\))?[#0+\- ]*\d*(?:\.\d+)?[diouxXeEfFgGcrsa]"
+_PYTHON_CONCAT_SQL_FALLBACK_RE = re.compile(
+    rf"""
+    (?:^|[=(,:])\s*
+    (?P<quote>'''|\"\"\"|'|\")
+    \s*{_SQL_LEADING_COMMENTS_PATTERN}{_SQL_SOURCE_STATEMENT_PATTERN}
+    [^\n]{{0,1000}}(?P=quote)\s*\+
+    """,
+    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
 )
-_PYTHON_FORMAT_FIELD_RE = re.compile(r"(?<!\{)\{[^{}]*\}(?!\})")
-_JS_QUOTED_STRING_RE = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"")
-_JS_TEMPLATE_LITERAL_RE = re.compile(r"`(?:\\.|[^`\\])*`", re.DOTALL)
-_JS_TEMPLATE_FIELD_RE = re.compile(r"\$\{[^{}]*\}")
-_JS_TAG_BEFORE_TEMPLATE_RE = re.compile(
-    r"([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)\s*$"
+_PYTHON_FSTRING_CONTEXTUAL_SELECT_FALLBACK_RE = re.compile(
+    rf"""
+    ^[ \t]*
+    (?P<target>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)
+    (?:\s*:\s*[^=\r\n]+)?\s*=\s*
+    (?:[rub]*f[rub]*)
+    (?P<quote>'''|\"\"\"|'|\")
+    \s*{_SQL_LEADING_COMMENTS_PATTERN}SELECT\s+
+    (?=[^\n]{{0,1000}}{_SQL_SOURCE_EXPRESSION_PATTERN})
+    [^\n]{{1,1000}}?(?P=quote)
+    """,
+    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
 )
-_PRISMA_ESM_IMPORT_RE = re.compile(
-    r"^\s*import\s*\{(?P<specifiers>[^{}]{1,1000})\}\s*"
-    r"from\s*['\"]@prisma/client['\"]\s*$",
-    re.DOTALL,
-)
-_PRISMA_CJS_IMPORT_RE = re.compile(
-    r"^\s*(?:const|let|var)\s*\{(?P<specifiers>[^{}]{1,1000})\}\s*=\s*"
-    r"require\(\s*['\"]@prisma/client['\"]\s*\)\s*$",
-    re.DOTALL,
-)
-_PRISMA_CJS_PROPERTY_RE = re.compile(
-    r"^\s*(?:const|let|var)\s+(?P<binding>[A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*"
-    r"require\(\s*['\"]@prisma/client['\"]\s*\)\.Prisma\s*$",
-    re.DOTALL,
-)
-_JS_VALUE_DECLARATION_RE = re.compile(
-    r"\b(?:const|let|var|class|function)\s+(?P<binding>[A-Za-z_$][A-Za-z0-9_$]*)\b"
+_PYTHON_CONCAT_CONTEXTUAL_SELECT_FALLBACK_RE = re.compile(
+    rf"""
+    ^[ \t]*
+    (?P<target>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)
+    (?:\s*:\s*[^=\r\n]+)?\s*=\s*
+    (?P<quote>'''|\"\"\"|'|\")
+    \s*{_SQL_LEADING_COMMENTS_PATTERN}SELECT\b
+    [^\n]{{0,1000}}?(?P=quote)\s*\+
+    """,
+    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
 )
 _NON_CODE_TOKEN_TYPES = frozenset(
     {
@@ -159,270 +204,6 @@ def strip_js_comments_and_strings(content: str, comments_and_strings_re: re.Patt
     return comments_and_strings_re.sub(_replace, content)
 
 
-def javascript_interpolated_sql_lines(content: str) -> set[int]:
-    """Return JS/TS lines that dynamically construct SQL outside comments.
-
-    A small lexer masks comments and regular-expression literals without
-    disturbing offsets. Templates and concatenation chains are then reduced to
-    the same ``{expr}`` representation used by the Python AST path.
-    """
-
-    scrubbed = _mask_js_comments_and_regex_literals(content)
-    lines: set[int] = set()
-
-    for match in _JS_TEMPLATE_LITERAL_RE.finditer(scrubbed):
-        literal = match.group(0)
-        if "${" not in literal:
-            continue
-        if _is_proven_parameterized_js_template(scrubbed, match.start()):
-            continue
-        template = _JS_TEMPLATE_FIELD_RE.sub("{expr}", literal[1:-1])
-        context = _js_has_query_context(scrubbed, match.start())
-        if _looks_like_sql_statement(template, allow_ambiguous=context):
-            lines.add(index_to_line(content, match.start()))
-
-    for statement_start, statement in _iter_js_statements(scrubbed):
-        for relative_start, template in _js_concat_templates(statement):
-            context = _js_has_query_context(statement, relative_start)
-            if _looks_like_sql_statement(template, allow_ambiguous=context):
-                lines.add(index_to_line(content, statement_start + relative_start))
-
-    return lines
-
-
-def _mask_js_comments_and_regex_literals(content: str) -> str:
-    chars = list(content)
-    index = 0
-    previous_significant: str | None = None
-    while index < len(content):
-        char = content[index]
-        following = content[index + 1] if index + 1 < len(content) else ""
-        if char in {"'", '"', "`"}:
-            index = _skip_js_quoted(content, index, char)
-            previous_significant = char
-            continue
-        if char == "/" and following == "/":
-            end = content.find("\n", index + 2)
-            end = len(content) if end < 0 else end
-            _blank_js_span(chars, index, end)
-            index = end
-            continue
-        if char == "/" and following == "*":
-            closing = content.find("*/", index + 2)
-            end = len(content) if closing < 0 else closing + 2
-            _blank_js_span(chars, index, end)
-            index = end
-            continue
-        if char == "/" and _js_can_start_regex(previous_significant):
-            end = _skip_js_regex_literal(content, index)
-            if end > index + 1:
-                _blank_js_span(chars, index, end)
-                index = end
-                previous_significant = "/"
-                continue
-        if not char.isspace():
-            previous_significant = char
-        index += 1
-    return "".join(chars)
-
-
-def _skip_js_quoted(content: str, start: int, quote: str) -> int:
-    index = start + 1
-    while index < len(content):
-        if content[index] == "\\":
-            index += 2
-            continue
-        if content[index] == quote:
-            return index + 1
-        index += 1
-    return len(content)
-
-
-def _js_can_start_regex(previous_significant: str | None) -> bool:
-    return previous_significant is None or previous_significant in "=([{,:;!?&|+-*%^~<>"
-
-
-def _skip_js_regex_literal(content: str, start: int) -> int:
-    index = start + 1
-    in_character_class = False
-    while index < len(content):
-        char = content[index]
-        if char in "\r\n":
-            return start + 1
-        if char == "\\":
-            index += 2
-            continue
-        if char == "[":
-            in_character_class = True
-        elif char == "]":
-            in_character_class = False
-        elif char == "/" and not in_character_class:
-            index += 1
-            while index < len(content) and content[index].isalpha():
-                index += 1
-            return index
-        index += 1
-    return start + 1
-
-
-def _blank_js_span(chars: list[str], start: int, end: int) -> None:
-    for index in range(start, min(end, len(chars))):
-        if chars[index] not in "\r\n":
-            chars[index] = " "
-
-
-def _iter_js_statements(content: str) -> list[tuple[int, str]]:
-    statements: list[tuple[int, str]] = []
-    start = 0
-    index = 0
-    depth = 0
-    while index < len(content):
-        char = content[index]
-        if char in {"'", '"', "`"}:
-            index = _skip_js_quoted(content, index, char)
-            continue
-        if char in "([{":
-            depth += 1
-        elif char in ")]}":
-            depth = max(depth - 1, 0)
-        if (char == ";" or char in "\r\n") and depth == 0:
-            statements.append((start, content[start:index]))
-            start = index + 1
-        index += 1
-    if start < len(content):
-        statements.append((start, content[start:]))
-    return statements
-
-
-def _js_concat_templates(statement: str) -> list[tuple[int, str]]:
-    templates: list[tuple[int, str]] = []
-    string_matches = list(_JS_QUOTED_STRING_RE.finditer(statement))
-    for string_index, first in enumerate(string_matches):
-        template = _decode_js_string(first.group(0))
-        cursor = first.end()
-        has_dynamic = False
-        next_string_index = string_index + 1
-        while True:
-            plus = re.match(r"\s*\+\s*", statement[cursor:])
-            if plus is None:
-                break
-            operand_start = cursor + plus.end()
-            if next_string_index < len(string_matches):
-                next_string = string_matches[next_string_index]
-            else:
-                next_string = None
-            if next_string is not None and next_string.start() == operand_start:
-                template += _decode_js_string(next_string.group(0))
-                cursor = next_string.end()
-                next_string_index += 1
-                continue
-            next_plus = _find_top_level_js_plus(statement, operand_start)
-            template += "{expr}"
-            has_dynamic = True
-            if next_plus is None:
-                cursor = len(statement)
-                break
-            cursor = next_plus
-        if has_dynamic:
-            templates.append((first.start(), template))
-    return templates
-
-
-def _find_top_level_js_plus(statement: str, start: int) -> int | None:
-    index = start
-    depth = 0
-    while index < len(statement):
-        char = statement[index]
-        if char in {"'", '"', "`"}:
-            index = _skip_js_quoted(statement, index, char)
-            continue
-        if char in "([{":
-            depth += 1
-        elif char in ")]}":
-            depth = max(depth - 1, 0)
-        elif char == "+" and depth == 0:
-            return index
-        index += 1
-    return None
-
-
-def _decode_js_string(literal: str) -> str:
-    return re.sub(r"\\(.)", r"\1", literal[1:-1])
-
-
-def _js_has_query_context(content: str, position: int) -> bool:
-    prefix = content[:position]
-    assignment = re.search(
-        r"(?:^|[;{}\r\n])\s*(?:const|let|var)?\s*"
-        r"([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*[^;{}\r\n]*$",
-        prefix,
-        re.IGNORECASE,
-    )
-    if assignment and _is_query_context_name(assignment.group(1)):
-        return True
-    sink = re.search(
-        r"(?:execute|executemany|executescript|fetch|fetchrow|fetchval|query|raw)\s*\([^)]*$",
-        prefix,
-        re.IGNORECASE,
-    )
-    return sink is not None
-
-
-def _is_proven_parameterized_js_template(
-    scrubbed: str,
-    template_start: int,
-) -> bool:
-    tag_match = _JS_TAG_BEFORE_TEMPLATE_RE.search(scrubbed[:template_start])
-    if tag_match is None:
-        return False
-    tag = tag_match.group(1)
-    if not tag.endswith(".sql"):
-        return False
-    binding = tag.removesuffix(".sql")
-    if "." in binding:
-        return False
-
-    imported_at = _prisma_imported_bindings(scrubbed[:template_start]).get(binding)
-    if imported_at is None:
-        return False
-    intervening_source = scrubbed[imported_at:template_start]
-    return not any(
-        match.group("binding") == binding
-        for match in _JS_VALUE_DECLARATION_RE.finditer(intervening_source)
-    )
-
-
-def _prisma_imported_bindings(source: str) -> dict[str, int]:
-    bindings: dict[str, int] = {}
-    for statement_start, statement in _iter_js_statements(source):
-        stripped = statement.strip()
-        esm_match = _PRISMA_ESM_IMPORT_RE.fullmatch(stripped)
-        cjs_match = _PRISMA_CJS_IMPORT_RE.fullmatch(stripped)
-        match = esm_match or cjs_match
-        if match is not None:
-            for specifier in match.group("specifiers").split(","):
-                specifier = specifier.strip()
-                if esm_match is not None:
-                    binding_match = re.fullmatch(
-                        r"Prisma(?:\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*))?",
-                        specifier,
-                    )
-                else:
-                    binding_match = re.fullmatch(
-                        r"Prisma(?:\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*))?",
-                        specifier,
-                    )
-                if binding_match is not None:
-                    bindings[binding_match.group(1) or "Prisma"] = (
-                        statement_start + len(statement)
-                    )
-            continue
-        property_match = _PRISMA_CJS_PROPERTY_RE.fullmatch(stripped)
-        if property_match is not None:
-            bindings[property_match.group("binding")] = statement_start + len(statement)
-    return bindings
-
-
 def python_eval_call_lines(content: str) -> set[int]:
     try:
         tree = ast.parse(content)
@@ -457,82 +238,45 @@ def python_interpolated_sql_lines(content: str) -> set[int]:
     except SyntaxError:
         return _python_interpolated_sql_lines_from_source(content)
 
-    return _python_interpolated_sql_lines_from_tree(tree)
-
-
-def _python_interpolated_sql_lines_from_tree(
-    tree: ast.AST,
-    *,
-    line_offset: int = 0,
-) -> set[int]:
     parents = {
         child: parent
         for parent in ast.walk(tree)
         for child in ast.iter_child_nodes(parent)
     }
-
+    sql_usage_names = _sql_usage_names_by_scope(tree, parents)
     lines: set[int] = set()
     for node in ast.walk(tree):
-        template = _interpolated_string_template(node)
-        if template is None:
-            continue
-        has_query_context = _python_has_query_context(node, parents)
-        if _looks_like_sql_statement(template, allow_ambiguous=has_query_context):
-            lines.add(int(getattr(node, "lineno", 1) or 1) + line_offset)
+        template = _dynamic_string_template(node, parents)
+        if (
+            template is not None
+            and _looks_like_sql_statement(template)
+            and (
+                not _select_requires_sql_context(template)
+                or _has_sql_context(
+                    node,
+                    parents,
+                    used_names=sql_usage_names.get(
+                        _enclosing_scope(node, parents),
+                        frozenset(),
+                    ),
+                )
+            )
+        ):
+            lines.add(int(getattr(node, "lineno", 1) or 1))
     return lines
 
 
-def _python_has_query_context(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> bool:
-    current = node
-    while current in parents:
-        parent = parents[current]
-        if isinstance(parent, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
-            value = getattr(parent, "value", None)
-            if value is current:
-                targets: list[ast.AST] = []
-                if isinstance(parent, ast.Assign):
-                    targets.extend(parent.targets)
-                else:
-                    targets.append(parent.target)
-                if any(_target_has_query_name(target) for target in targets):
-                    return True
-        if isinstance(parent, ast.Call) and (
-            current in parent.args
-            or any(current is keyword or current is keyword.value for keyword in parent.keywords)
-        ):
-            function_name = _qualified_name(parent.func)
-            if function_name and function_name.rsplit(".", 1)[-1].casefold() in _SQL_SINK_NAMES:
-                return True
-        if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if _is_query_context_name(parent.name):
-                return True
-        current = parent
-    return False
-
-
-def _target_has_query_name(target: ast.AST) -> bool:
-    if isinstance(target, ast.Name):
-        return _is_query_context_name(target.id)
-    if isinstance(target, ast.Attribute):
-        return _is_query_context_name(target.attr)
-    if isinstance(target, (ast.Tuple, ast.List)):
-        return any(_target_has_query_name(element) for element in target.elts)
-    return False
-
-
-def _is_query_context_name(name: str) -> bool:
-    return bool(_QUERY_CONTEXT_NAME_RE.fullmatch(name))
-
-
-def _interpolated_string_template(node: ast.AST) -> str | None:
+def _dynamic_string_template(
+    node: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+) -> str | None:
     if isinstance(node, ast.JoinedStr):
         return _joined_string_template(node)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        parent = parents.get(node)
+        if isinstance(parent, ast.BinOp) and isinstance(parent.op, ast.Add):
+            return None
         return _concatenated_string_template(node)
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
-        return _percent_formatted_string_template(node)
-    if isinstance(node, ast.Call):
-        return _format_call_template(node)
     return None
 
 
@@ -550,15 +294,15 @@ def _joined_string_template(node: ast.JoinedStr) -> str | None:
 
 def _concatenated_string_template(node: ast.BinOp) -> str | None:
     operands: list[ast.expr] = []
-
-    def _flatten(current: ast.expr) -> None:
+    pending: list[ast.expr] = [node]
+    while pending:
+        current = pending.pop()
         if isinstance(current, ast.BinOp) and isinstance(current.op, ast.Add):
-            _flatten(current.left)
-            _flatten(current.right)
+            pending.append(current.right)
+            pending.append(current.left)
         else:
             operands.append(current)
 
-    _flatten(node)
     has_string = False
     has_dynamic = False
     parts: list[str] = []
@@ -573,6 +317,8 @@ def _concatenated_string_template(node: ast.BinOp) -> str | None:
             has_string = True
             has_dynamic = True
             parts.append(nested)
+        elif isinstance(operand, ast.Constant):
+            return None
         else:
             has_dynamic = True
             parts.append("{expr}")
@@ -581,87 +327,254 @@ def _concatenated_string_template(node: ast.BinOp) -> str | None:
     return "".join(parts)
 
 
-def _percent_formatted_string_template(node: ast.BinOp) -> str | None:
-    if not isinstance(node.left, ast.Constant) or not isinstance(node.left.value, str):
-        return None
-    if not _PYTHON_PERCENT_FIELD_RE.search(node.left.value):
-        return None
-    return f"{node.left.value}{{expr}}"
+def _looks_like_sql_statement(template: str) -> bool:
+    return bool(_SQL_STATEMENT_PREFIX_RE.search(template))
 
 
-def _format_call_template(node: ast.Call) -> str | None:
-    func = node.func
-    if not isinstance(func, ast.Attribute) or func.attr not in {"format", "format_map"}:
-        return None
-    if not isinstance(func.value, ast.Constant) or not isinstance(func.value.value, str):
-        return None
-    if not node.args and not node.keywords:
-        return None
-    if not _PYTHON_FORMAT_FIELD_RE.search(func.value.value):
-        return None
-    return f"{func.value.value}{{expr}}"
+def _select_requires_sql_context(template: str) -> bool:
+    return bool(
+        _SQL_CONTEXTUAL_DYNAMIC_SELECT_RE.fullmatch(template)
+        and not _SQL_STRONG_DYNAMIC_SELECT_RE.search(template)
+    )
 
 
-def _looks_like_sql_statement(template: str, *, allow_ambiguous: bool = False) -> bool:
-    candidate = template
-    if allow_ambiguous:
-        candidate = re.sub(r"^(?:\s*\{expr\}\s*)+", "", candidate)
-    if _STRONG_SQL_STATEMENT_RE.search(candidate):
-        if allow_ambiguous:
+def _has_sql_context(
+    node: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+    *,
+    used_names: frozenset[str] | set[str] = frozenset(),
+    return_context_name: str | None = None,
+) -> bool:
+    """Require a direct SQL sink/binding for ambiguous dynamic SELECT text."""
+
+    parent = parents.get(node)
+    targets: list[ast.AST] = []
+    if isinstance(parent, ast.Assign) and parent.value is node:
+        targets.extend(parent.targets)
+    elif (
+        isinstance(parent, (ast.AnnAssign, ast.NamedExpr))
+        and parent.value is node
+    ):
+        targets.append(parent.target)
+
+    if targets:
+        target_names = {
+            name
+            for target in targets
+            for name in _target_reference_names(target)
+        }
+        if any(_is_sql_context_name(name.rsplit(".", 1)[-1]) for name in target_names):
             return True
-        keyword = _SQL_LEADING_KEYWORD_RE.search(candidate)
-        return keyword is not None and keyword.group(1).isupper()
-    return allow_ambiguous and bool(_AMBIGUOUS_SQL_PREFIX_RE.search(candidate))
+        if target_names.intersection(used_names):
+            return True
+
+    call = parent if isinstance(parent, ast.Call) else None
+    if isinstance(parent, ast.keyword):
+        keyword_call = parents.get(parent)
+        if isinstance(keyword_call, ast.Call) and parent.value is node:
+            call = keyword_call
+    if call is not None and _is_sql_execution_call(call):
+        if node in call.args or any(
+            keyword.value is node for keyword in call.keywords
+        ):
+            return True
+
+    if isinstance(parent, ast.Return) and parent.value is node:
+        if return_context_name is not None:
+            return _is_sql_context_name(return_context_name)
+        function = _enclosing_function(parent, parents)
+        return function is not None and _is_sql_context_name(function.name)
+
+    return False
 
 
-def _python_interpolated_sql_lines_from_source(content: str) -> set[int]:
-    lines = _python_fstring_sql_lines_from_tokens(content)
-    for line_number, source_line in enumerate(content.splitlines(), start=1):
-        if not source_line.strip():
+def _target_reference_names(target: ast.AST) -> set[str]:
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, ast.Attribute):
+        qualified = _qualified_name(target)
+        return {qualified} if qualified is not None else {target.attr}
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return {
+            name for element in target.elts for name in _target_reference_names(element)
+        }
+    return set()
+
+
+def _is_sql_execution_call(call: ast.Call) -> bool:
+    function_name = _qualified_name(call.func)
+    return bool(
+        function_name is not None
+        and function_name.rsplit(".", 1)[-1].casefold()
+        in _SQL_EXECUTION_CALL_NAMES
+    )
+
+
+def _sql_usage_names_by_scope(
+    tree: ast.Module,
+    parents: dict[ast.AST, ast.AST],
+) -> dict[ast.AST, frozenset[str]]:
+    names_by_scope: dict[ast.AST, set[str]] = {}
+    for candidate in ast.walk(tree):
+        if not isinstance(candidate, ast.Call) or not _is_sql_execution_call(candidate):
             continue
+        scope = _enclosing_scope(candidate, parents)
+        names = names_by_scope.setdefault(scope, set())
+        for argument in [
+            *candidate.args,
+            *(keyword.value for keyword in candidate.keywords),
+        ]:
+            reference = _qualified_name(argument)
+            if reference is not None:
+                names.add(reference)
+    return {scope: frozenset(names) for scope, names in names_by_scope.items()}
+
+
+def _enclosing_scope(
+    node: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+) -> ast.AST:
+    current: ast.AST | None = node
+    while current is not None:
+        if isinstance(
+            current,
+            (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda),
+        ):
+            return current
+        current = parents.get(current)
+    raise RuntimeError("Python AST node is detached from its module")
+
+
+def _enclosing_function(
+    node: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    current = parents.get(node)
+    while current is not None:
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return current
+        current = parents.get(current)
+    return None
+
+
+def _is_sql_context_name(name: str) -> bool:
+    return bool(_SQL_CONTEXT_NAME_RE.search(name))
+
+
+def _recoverable_python_statements(content: str) -> list[_RecoveredPythonStatement]:
+    """Parse valid one-line statements even when another line breaks the module."""
+
+    recovered: list[_RecoveredPythonStatement] = []
+    scope_stack: list[tuple[int, str, str, int]] = []
+    for line_number, line in enumerate(content.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        indentation = len(line[: len(line) - len(line.lstrip())].expandtabs(8))
+        while scope_stack and indentation <= scope_stack[-1][0]:
+            scope_stack.pop()
+
+        declaration = _PYTHON_SCOPE_DECLARATION_RE.match(line)
+        if declaration is not None:
+            kind = declaration.group("kind").casefold()
+            scope_stack.append(
+                (
+                    indentation,
+                    "function" if "def" in kind else "class",
+                    declaration.group("name"),
+                    line_number,
+                )
+            )
+            continue
+
         try:
-            line_tree = ast.parse(source_line.lstrip())
+            tree = ast.parse(f"async def __recovered__():\n    {stripped}\n")
         except SyntaxError:
             continue
-        lines.update(
-            _python_interpolated_sql_lines_from_tree(
-                line_tree,
-                line_offset=line_number - 1,
+        parents = {
+            child: parent
+            for parent in ast.walk(tree)
+            for child in ast.iter_child_nodes(parent)
+        }
+        function_name = next(
+            (
+                name
+                for _, kind, name, _ in reversed(scope_stack)
+                if kind == "function"
+            ),
+            None,
+        )
+        recovered.append(
+            _RecoveredPythonStatement(
+                line_number=line_number,
+                scope_key=tuple(entry[3] for entry in scope_stack),
+                function_name=function_name,
+                tree=tree,
+                parents=parents,
             )
         )
+    return recovered
+
+
+def _python_interpolated_sql_lines_from_recovered_statements(
+    content: str,
+) -> set[int]:
+    recovered = _recoverable_python_statements(content)
+    usage_by_scope: dict[tuple[int, ...], set[str]] = {}
+    for statement in recovered:
+        used_names = usage_by_scope.setdefault(statement.scope_key, set())
+        for candidate in ast.walk(statement.tree):
+            if not isinstance(candidate, ast.Call) or not _is_sql_execution_call(
+                candidate
+            ):
+                continue
+            for argument in [
+                *candidate.args,
+                *(keyword.value for keyword in candidate.keywords),
+            ]:
+                reference = _qualified_name(argument)
+                if reference is not None:
+                    used_names.add(reference)
+
+    lines: set[int] = set()
+    for statement in recovered:
+        used_names = usage_by_scope.get(statement.scope_key, set())
+        for node in ast.walk(statement.tree):
+            template = _dynamic_string_template(node, statement.parents)
+            if (
+                template is not None
+                and _looks_like_sql_statement(template)
+                and (
+                    not _select_requires_sql_context(template)
+                    or _has_sql_context(
+                        node,
+                        statement.parents,
+                        used_names=used_names,
+                        return_context_name=statement.function_name,
+                    )
+                )
+            ):
+                lines.add(statement.line_number)
     return lines
 
 
-def _python_fstring_sql_lines_from_tokens(content: str) -> set[int]:
-    lines: set[int] = set()
-    token_stream = tokenize.generate_tokens(io.StringIO(content).readline)
-    try:
-        for token in token_stream:
-            if token.type != tokenize.STRING:
-                continue
-            try:
-                expression = ast.parse(token.string, mode="eval").body
-            except (SyntaxError, ValueError):
-                continue
-            if not isinstance(expression, ast.JoinedStr):
-                continue
-            template = _joined_string_template(expression)
-            line_prefix = content.splitlines()[token.start[0] - 1][: token.start[1]]
-            allow_ambiguous = bool(
-                re.search(
-                    r"(?:^|\b)(?:q|query|sql|stmt|statement|sql_query)\s*=\s*$",
-                    line_prefix,
-                    re.IGNORECASE,
-                )
-            )
-            if template is not None and _looks_like_sql_statement(
-                template,
-                allow_ambiguous=allow_ambiguous,
-            ):
-                lines.add(token.start[0])
-    except (SyntaxError, tokenize.TokenError):
-        # Tokens emitted before an unrelated syntax error remain authoritative.
-        pass
+def _python_interpolated_sql_lines_from_source(content: str) -> set[int]:
+    matches = [
+        *_PYTHON_FSTRING_SQL_FALLBACK_RE.finditer(content),
+        *_PYTHON_CONCAT_SQL_FALLBACK_RE.finditer(content),
+    ]
+    lines = {index_to_line(content, match.start()) for match in matches}
+    lines.update(
+        index_to_line(content, match.start())
+        for pattern in (
+            _PYTHON_FSTRING_CONTEXTUAL_SELECT_FALLBACK_RE,
+            _PYTHON_CONCAT_CONTEXTUAL_SELECT_FALLBACK_RE,
+        )
+        for match in pattern.finditer(content)
+        if _is_sql_context_name(match.group("target").rsplit(".", 1)[-1])
+    )
+    lines.update(_python_interpolated_sql_lines_from_recovered_statements(content))
     return lines
 
 
