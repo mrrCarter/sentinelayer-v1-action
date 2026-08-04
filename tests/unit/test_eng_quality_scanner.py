@@ -115,6 +115,28 @@ def test_bare_dynamic_select_requires_query_context() -> None:
     assert not any(finding.pattern_id == "EQ-009" for finding in prose_findings)
 
 
+def test_dynamic_select_tracks_direct_sink_without_broad_ancestry() -> None:
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    files = {
+        "src/executed.py": (
+            'payload = f"SELECT {value} AS result"\n'
+            "cursor.execute(payload)\n"
+        ),
+        "src/container.py": (
+            'query = {"message": f"select {option}"}\n'
+            "def build_query():\n"
+            '    message = f"select {option}"\n'
+        ),
+    }
+
+    findings = scanner.scan(files)
+    sql_findings = [finding for finding in findings if finding.pattern_id == "EQ-009"]
+
+    assert [(finding.file_path, finding.line_start) for finding in sql_findings] == [
+        ("src/executed.py", 1)
+    ]
+
+
 def test_python_sql_concatenation_handles_large_expression_iteratively() -> None:
     source = (
         'query = "SELECT * FROM users WHERE id = " + '
@@ -170,6 +192,27 @@ def test_unparseable_python_fallback_handles_dynamic_select_variants() -> None:
     }
 
     assert sql_lines == {1, 2, 4}
+
+
+def test_unparseable_python_recovers_call_return_and_dataflow_context() -> None:
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    files = {
+        "src/broken.py": (
+            'cursor.execute(f"SELECT 1 + {value}")\n'
+            'payload = f"SELECT {other_value} AS result"\n'
+            "cursor.execute(payload)\n"
+            "def build_query():\n"
+            '    return f"SELECT {final_value}"\n'
+            "this is invalid python\n"
+        )
+    }
+
+    findings = scanner.scan(files)
+    sql_lines = {
+        finding.line_start for finding in findings if finding.pattern_id == "EQ-009"
+    }
+
+    assert sql_lines == {1, 2, 5}
 
 
 def test_dockerfile_without_user_detected_as_p2() -> None:

@@ -17,6 +17,15 @@ class PythonHttpxCall:
     has_timeout: bool
 
 
+@dataclass(frozen=True)
+class _RecoveredPythonStatement:
+    line_number: int
+    scope_key: tuple[int, ...]
+    function_name: str | None
+    tree: ast.Module
+    parents: dict[ast.AST, ast.AST]
+
+
 _HTTPX_FUNCTION_NAMES = frozenset(
     {
         "httpx.get",
@@ -100,6 +109,10 @@ _SQL_CONTEXT_NAME_RE = re.compile(
 )
 _SQL_EXECUTION_CALL_NAMES = frozenset(
     {"execute", "executemany", "executescript", "fetch", "query", "raw"}
+)
+_PYTHON_SCOPE_DECLARATION_RE = re.compile(
+    r"^(?P<indent>[ \t]*)(?P<kind>async\s+def|def|class)\s+"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b"
 )
 _PYTHON_FSTRING_SQL_FALLBACK_RE = re.compile(
     rf"""
@@ -230,26 +243,41 @@ def python_interpolated_sql_lines(content: str) -> set[int]:
         for parent in ast.walk(tree)
         for child in ast.iter_child_nodes(parent)
     }
+    sql_usage_names = _sql_usage_names_by_scope(tree, parents)
     lines: set[int] = set()
     for node in ast.walk(tree):
-        template: str | None = None
-        if isinstance(node, ast.JoinedStr):
-            template = _joined_string_template(node)
-        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            parent = parents.get(node)
-            if isinstance(parent, ast.BinOp) and isinstance(parent.op, ast.Add):
-                continue
-            template = _concatenated_string_template(node)
+        template = _dynamic_string_template(node, parents)
         if (
             template is not None
             and _looks_like_sql_statement(template)
             and (
                 not _select_requires_sql_context(template)
-                or _has_sql_context(node, parents)
+                or _has_sql_context(
+                    node,
+                    parents,
+                    used_names=sql_usage_names.get(
+                        _enclosing_scope(node, parents),
+                        frozenset(),
+                    ),
+                )
             )
         ):
             lines.add(int(getattr(node, "lineno", 1) or 1))
     return lines
+
+
+def _dynamic_string_template(
+    node: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+) -> str | None:
+    if isinstance(node, ast.JoinedStr):
+        return _joined_string_template(node)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        parent = parents.get(node)
+        if isinstance(parent, ast.BinOp) and isinstance(parent.op, ast.Add):
+            return None
+        return _concatenated_string_template(node)
+    return None
 
 
 def _joined_string_template(node: ast.JoinedStr) -> str | None:
@@ -310,43 +338,225 @@ def _select_requires_sql_context(template: str) -> bool:
     )
 
 
-def _has_sql_context(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> bool:
-    current = node
-    while parent := parents.get(current):
-        if isinstance(parent, ast.Assign) and any(
-            _target_has_sql_name(target) for target in parent.targets
+def _has_sql_context(
+    node: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+    *,
+    used_names: frozenset[str] | set[str] = frozenset(),
+    return_context_name: str | None = None,
+) -> bool:
+    """Require a direct SQL sink/binding for ambiguous dynamic SELECT text."""
+
+    parent = parents.get(node)
+    targets: list[ast.AST] = []
+    if isinstance(parent, ast.Assign) and parent.value is node:
+        targets.extend(parent.targets)
+    elif (
+        isinstance(parent, (ast.AnnAssign, ast.NamedExpr))
+        and parent.value is node
+    ):
+        targets.append(parent.target)
+
+    if targets:
+        target_names = {
+            name
+            for target in targets
+            for name in _target_reference_names(target)
+        }
+        if any(_is_sql_context_name(name.rsplit(".", 1)[-1]) for name in target_names):
+            return True
+        if target_names.intersection(used_names):
+            return True
+
+    call = parent if isinstance(parent, ast.Call) else None
+    if isinstance(parent, ast.keyword):
+        keyword_call = parents.get(parent)
+        if isinstance(keyword_call, ast.Call) and parent.value is node:
+            call = keyword_call
+    if call is not None and _is_sql_execution_call(call):
+        if node in call.args or any(
+            keyword.value is node for keyword in call.keywords
         ):
             return True
-        if isinstance(parent, (ast.AnnAssign, ast.NamedExpr)) and _target_has_sql_name(
-            parent.target
-        ):
-            return True
-        if isinstance(parent, ast.Call):
-            function_name = _qualified_name(parent.func)
-            if (
-                function_name is not None
-                and function_name.rsplit(".", 1)[-1].casefold()
-                in _SQL_EXECUTION_CALL_NAMES
-            ):
-                return True
-        if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            return _is_sql_context_name(parent.name)
-        current = parent
+
+    if isinstance(parent, ast.Return) and parent.value is node:
+        if return_context_name is not None:
+            return _is_sql_context_name(return_context_name)
+        function = _enclosing_function(parent, parents)
+        return function is not None and _is_sql_context_name(function.name)
+
     return False
 
 
-def _target_has_sql_name(target: ast.AST) -> bool:
+def _target_reference_names(target: ast.AST) -> set[str]:
     if isinstance(target, ast.Name):
-        return _is_sql_context_name(target.id)
+        return {target.id}
     if isinstance(target, ast.Attribute):
-        return _is_sql_context_name(target.attr)
+        qualified = _qualified_name(target)
+        return {qualified} if qualified is not None else {target.attr}
     if isinstance(target, (ast.Tuple, ast.List)):
-        return any(_target_has_sql_name(element) for element in target.elts)
-    return False
+        return {
+            name for element in target.elts for name in _target_reference_names(element)
+        }
+    return set()
+
+
+def _is_sql_execution_call(call: ast.Call) -> bool:
+    function_name = _qualified_name(call.func)
+    return bool(
+        function_name is not None
+        and function_name.rsplit(".", 1)[-1].casefold()
+        in _SQL_EXECUTION_CALL_NAMES
+    )
+
+
+def _sql_usage_names_by_scope(
+    tree: ast.Module,
+    parents: dict[ast.AST, ast.AST],
+) -> dict[ast.AST, frozenset[str]]:
+    names_by_scope: dict[ast.AST, set[str]] = {}
+    for candidate in ast.walk(tree):
+        if not isinstance(candidate, ast.Call) or not _is_sql_execution_call(candidate):
+            continue
+        scope = _enclosing_scope(candidate, parents)
+        names = names_by_scope.setdefault(scope, set())
+        for argument in [
+            *candidate.args,
+            *(keyword.value for keyword in candidate.keywords),
+        ]:
+            reference = _qualified_name(argument)
+            if reference is not None:
+                names.add(reference)
+    return {scope: frozenset(names) for scope, names in names_by_scope.items()}
+
+
+def _enclosing_scope(
+    node: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+) -> ast.AST:
+    current: ast.AST | None = node
+    while current is not None:
+        if isinstance(
+            current,
+            (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda),
+        ):
+            return current
+        current = parents.get(current)
+    raise RuntimeError("Python AST node is detached from its module")
+
+
+def _enclosing_function(
+    node: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    current = parents.get(node)
+    while current is not None:
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return current
+        current = parents.get(current)
+    return None
 
 
 def _is_sql_context_name(name: str) -> bool:
     return bool(_SQL_CONTEXT_NAME_RE.search(name))
+
+
+def _recoverable_python_statements(content: str) -> list[_RecoveredPythonStatement]:
+    """Parse valid one-line statements even when another line breaks the module."""
+
+    recovered: list[_RecoveredPythonStatement] = []
+    scope_stack: list[tuple[int, str, str, int]] = []
+    for line_number, line in enumerate(content.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        indentation = len(line[: len(line) - len(line.lstrip())].expandtabs(8))
+        while scope_stack and indentation <= scope_stack[-1][0]:
+            scope_stack.pop()
+
+        declaration = _PYTHON_SCOPE_DECLARATION_RE.match(line)
+        if declaration is not None:
+            kind = declaration.group("kind").casefold()
+            scope_stack.append(
+                (
+                    indentation,
+                    "function" if "def" in kind else "class",
+                    declaration.group("name"),
+                    line_number,
+                )
+            )
+            continue
+
+        try:
+            tree = ast.parse(f"async def __recovered__():\n    {stripped}\n")
+        except SyntaxError:
+            continue
+        parents = {
+            child: parent
+            for parent in ast.walk(tree)
+            for child in ast.iter_child_nodes(parent)
+        }
+        function_name = next(
+            (
+                name
+                for _, kind, name, _ in reversed(scope_stack)
+                if kind == "function"
+            ),
+            None,
+        )
+        recovered.append(
+            _RecoveredPythonStatement(
+                line_number=line_number,
+                scope_key=tuple(entry[3] for entry in scope_stack),
+                function_name=function_name,
+                tree=tree,
+                parents=parents,
+            )
+        )
+    return recovered
+
+
+def _python_interpolated_sql_lines_from_recovered_statements(
+    content: str,
+) -> set[int]:
+    recovered = _recoverable_python_statements(content)
+    usage_by_scope: dict[tuple[int, ...], set[str]] = {}
+    for statement in recovered:
+        used_names = usage_by_scope.setdefault(statement.scope_key, set())
+        for candidate in ast.walk(statement.tree):
+            if not isinstance(candidate, ast.Call) or not _is_sql_execution_call(
+                candidate
+            ):
+                continue
+            for argument in [
+                *candidate.args,
+                *(keyword.value for keyword in candidate.keywords),
+            ]:
+                reference = _qualified_name(argument)
+                if reference is not None:
+                    used_names.add(reference)
+
+    lines: set[int] = set()
+    for statement in recovered:
+        used_names = usage_by_scope.get(statement.scope_key, set())
+        for node in ast.walk(statement.tree):
+            template = _dynamic_string_template(node, statement.parents)
+            if (
+                template is not None
+                and _looks_like_sql_statement(template)
+                and (
+                    not _select_requires_sql_context(template)
+                    or _has_sql_context(
+                        node,
+                        statement.parents,
+                        used_names=used_names,
+                        return_context_name=statement.function_name,
+                    )
+                )
+            ):
+                lines.add(statement.line_number)
+    return lines
 
 
 def _python_interpolated_sql_lines_from_source(content: str) -> set[int]:
@@ -364,6 +574,7 @@ def _python_interpolated_sql_lines_from_source(content: str) -> set[int]:
         for match in pattern.finditer(content)
         if _is_sql_context_name(match.group("target").rsplit(".", 1)[-1])
     )
+    lines.update(_python_interpolated_sql_lines_from_recovered_statements(content))
     return lines
 
 
