@@ -13,17 +13,14 @@ from omargate.analyze.codex.codex_runner import (
 
 
 def test_jsonl_parsing_valid() -> None:
-    text = "\n".join(
-        [
-            '{"severity":"P1","category":"auth","file_path":"src/a.py","line_start":3,"message":"x",'
-            '"fix_plan":"Pseudo-code: enforce auth guard in this handler and add authorization tests."}',
-            '{"no_findings": true}',
-        ]
+    text = (
+        '{"severity":"P1","category":"auth","file_path":"src/a.py","line_start":3,"message":"x",'
+        '"fix_plan":"Pseudo-code: enforce auth guard in this handler and add authorization tests."}'
     )
     findings, errors, no_findings = parse_codex_findings(text)
     assert len(findings) == 1
     assert errors == []
-    assert no_findings is True
+    assert no_findings is False
     assert findings[0]["source"] == "codex"
     assert "auth guard" in findings[0]["fix_plan"]
 
@@ -55,12 +52,19 @@ def test_code_fenced_jsonl_is_stripped_cleanly() -> None:
         [
             "```jsonl",
             '{"severity":"P1","category":"auth","file_path":"src/a.py","line_start":3,"message":"x"}',
-            '{"no_findings": true}',
             "```",
         ]
     )
     findings, errors, no_findings = parse_codex_findings(text)
     assert len(findings) == 1
+    assert errors == []
+    assert no_findings is False
+
+
+def test_exact_clean_sentinel_is_accepted() -> None:
+    findings, errors, no_findings = parse_codex_findings('{"no_findings": true}')
+
+    assert findings == []
     assert errors == []
     assert no_findings is True
 

@@ -7,8 +7,11 @@ from typing import Iterable, Optional
 from .eng_quality_helpers import (
     index_to_line,
     is_test_file,
+    javascript_interpolated_sql_lines,
     line_snippet,
     python_eval_call_lines,
+    python_httpx_calls,
+    python_interpolated_sql_lines,
     strip_js_comments_and_strings,
 )
 from .pattern_scanner import Finding, _truncate_snippet
@@ -476,25 +479,11 @@ class EngQualityScanner:
         )
         findings: list[Finding] = []
 
-        js_concat = re.compile(
-            r"(['\"]).{0,120}\b(SELECT|INSERT|UPDATE|DELETE)\b.{0,200}\1\s*\+\s*[A-Za-z_][A-Za-z0-9_]*",
-            re.IGNORECASE,
-        )
-        py_concat = re.compile(
-            r"(['\"]).{0,120}\b(SELECT|INSERT|UPDATE|DELETE)\b.{0,200}\1\s*\+\s*[A-Za-z_][A-Za-z0-9_]*",
-            re.IGNORECASE,
-        )
-        py_fstring = re.compile(
-            r"f(['\"]).{0,200}\b(SELECT|INSERT|UPDATE|DELETE)\b.{0,400}\{[^}]+\}.*\1",
-            re.IGNORECASE,
-        )
-
         for path, content in self._iter_files(files, exts=_BACKEND_EXTS):
             if self._is_test_file(path):
                 continue
             if path.endswith(_JS_EXTS):
-                for m in js_concat.finditer(content):
-                    line = self._index_to_line(content, m.start())
+                for line in sorted(javascript_interpolated_sql_lines(content)):
                     snippet = self._line_snippet(content, line, line)
                     findings.append(
                         self._make_finding(
@@ -506,8 +495,7 @@ class EngQualityScanner:
                         )
                     )
             if path.endswith(_PY_EXTS):
-                for m in py_concat.finditer(content):
-                    line = self._index_to_line(content, m.start())
+                for line in sorted(python_interpolated_sql_lines(content)):
                     snippet = self._line_snippet(content, line, line)
                     findings.append(
                         self._make_finding(
@@ -515,19 +503,7 @@ class EngQualityScanner:
                             file_path=path,
                             line_start=line,
                             snippet=snippet,
-                            confidence=0.85,
-                        )
-                    )
-                for m in py_fstring.finditer(content):
-                    line = self._index_to_line(content, m.start())
-                    snippet = self._line_snippet(content, line, line)
-                    findings.append(
-                        self._make_finding(
-                            rule,
-                            file_path=path,
-                            line_start=line,
-                            snippet=snippet,
-                            confidence=0.8,
+                            confidence=0.9,
                         )
                     )
 
@@ -612,8 +588,6 @@ class EngQualityScanner:
 
         axios_re = re.compile(r"\baxios\.(get|post|put|patch|delete)\s*\(", re.IGNORECASE)
         fetch_re = re.compile(r"\bfetch\s*\(", re.IGNORECASE)
-        httpx_call_re = re.compile(r"\bhttpx\.(get|post|put|patch|delete)\s*\(", re.IGNORECASE)
-        httpx_client_re = re.compile(r"\bhttpx\.(AsyncClient|Client)\s*\(", re.IGNORECASE)
 
         for path, content in self._iter_files(files, exts=_BACKEND_EXTS):
             if self._is_test_file(path):
@@ -651,29 +625,22 @@ class EngQualityScanner:
                         )
 
             if path.endswith(_PY_EXTS):
-                for idx, line in enumerate(lines):
-                    if httpx_call_re.search(line) and "timeout" not in line.lower():
-                        line_no = idx + 1
-                        findings.append(
-                            self._make_finding(
-                                rule,
-                                file_path=path,
-                                line_start=line_no,
-                                snippet=_truncate_snippet(line.strip()),
-                                confidence=0.7,
-                            )
+                reported_lines: set[int] = set()
+                for call in python_httpx_calls(content):
+                    if call.has_timeout or call.line_start in reported_lines:
+                        continue
+                    is_client = call.function_name in {"httpx.AsyncClient", "httpx.Client"}
+                    findings.append(
+                        self._make_finding(
+                            rule,
+                            file_path=path,
+                            line_start=call.line_start,
+                            line_end=call.line_end,
+                            snippet=self._line_snippet(content, call.line_start, call.line_end),
+                            confidence=0.6 if is_client else 0.7,
                         )
-                    if httpx_client_re.search(line) and "timeout" not in line.lower():
-                        line_no = idx + 1
-                        findings.append(
-                            self._make_finding(
-                                rule,
-                                file_path=path,
-                                line_start=line_no,
-                                snippet=_truncate_snippet(line.strip()),
-                                confidence=0.6,
-                            )
-                        )
+                    )
+                    reported_lines.add(call.line_start)
 
         return findings
 

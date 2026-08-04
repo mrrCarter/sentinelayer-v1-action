@@ -2,7 +2,7 @@
 
 **AI-powered security gate that blocks P0/P1 vulnerabilities before merge.**
 
-[![Action Version](https://img.shields.io/badge/action-v1.3.9-blue)](https://github.com/mrrCarter/sentinelayer-v1-action)
+[![Action Version](https://img.shields.io/badge/action-v1.3.10-blue)](https://github.com/mrrCarter/sentinelayer-v1-action)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests: 298 passing](https://img.shields.io/badge/tests-298%20passing-brightgreen)](https://github.com/mrrCarter/sentinelayer-v1-action/actions/workflows/quality-gates.yml)
 

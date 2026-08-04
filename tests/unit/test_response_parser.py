@@ -19,14 +19,14 @@ def test_parser_valid_jsonl() -> None:
 
 
 def test_parser_handles_markdown_block() -> None:
-    """Extracts JSON from markdown code blocks."""
+    """Extracts JSON only when the markdown block is the whole response."""
     parser = ResponseParser()
-    response = """Here are the findings:
-```json
+    response = """```json
 {"severity": "P0", "category": "Auth", "file_path": "src/auth.ts", "line_start": 1, "message": "Bypass"}
 ```"""
     result = parser.parse(response)
     assert len(result.findings) == 1
+    assert result.parse_errors == []
     assert result.findings[0].fix_plan == ""
 
 

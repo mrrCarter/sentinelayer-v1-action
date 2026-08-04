@@ -49,6 +49,257 @@ def test_eval_call_detected_in_python() -> None:
     assert any(f.pattern_id == "EQ-008" for f in findings)
 
 
+def test_python_fstring_sql_interpolation_detected_as_p0() -> None:
+    files = {
+        "src/query.py": (
+            "def load(user_id):\n"
+            '    return f"SELECT email FROM users WHERE id = {user_id}"\n'
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = scanner.scan(files)
+    finding = next((f for f in findings if f.pattern_id == "EQ-009"), None)
+    assert finding is not None
+    assert finding.severity == "P0"
+    assert finding.line_start == 2
+
+
+def test_python_sql_string_concatenation_detected_as_p0() -> None:
+    files = {"src/query.py": 'query = "DELETE FROM users WHERE id = " + user_id\n'}
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = scanner.scan(files)
+    assert any(f.pattern_id == "EQ-009" and f.severity == "P0" for f in findings)
+
+
+def test_python_sql_interpolation_preserves_statement_variant_recall() -> None:
+    cases = {
+        "leading_comment": 'q = f"/* audit */ SELECT * FROM users WHERE id = {user_id}"\n',
+        "select_expression": 'q = f"SELECT {expression}"\n',
+        "lowercase_select_expression": 'query = f"select {expression}"\n',
+        "sqlite_insert": (
+            'q = f"INSERT OR IGNORE INTO users(id) VALUES ({user_id})"\n'
+        ),
+        "quoted_update_table": 'q = f\'UPDATE "user table" SET name = {name}\'\n',
+        "aliased_update": (
+            'q = f"UPDATE users AS u SET quota = {quota} WHERE u.id = {user_id}"\n'
+        ),
+        "dynamic_prefix": (
+            'q = prefix + "SELECT email FROM users WHERE id = " + user_id\n'
+        ),
+        "select_function": 'q = f"SELECT pg_sleep({delay})"\n',
+        "percent": 'q = "SELECT * FROM users WHERE id = %s" % user_id\n',
+        "format": 'q = "SELECT * FROM users WHERE id = {}".format(user_id)\n',
+        "format_map": (
+            'q = "SELECT * FROM users WHERE id = {user_id}".format_map(values)\n'
+        ),
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    for name, source in cases.items():
+        findings = scanner.scan({f"src/{name}.py": source})
+        assert any(
+            finding.pattern_id == "EQ-009" and finding.severity == "P0"
+            for finding in findings
+        ), name
+
+
+def test_python_interpolated_prose_is_not_misclassified_as_sql() -> None:
+    files = {
+        "src/select.py": 'msg = f"Select a server for {user}"\n',
+        "src/question.py": 'q = f"Select a server for {user}"\n',
+        "src/select-from.py": 'msg = f"Select a server from {region}"\n',
+        "src/insert.py": 'msg = f"Insert {item} into the queue"\n',
+        "src/delete.py": 'msg = f"Delete {item} from the cache"\n',
+        "src/update.py": (
+            'msg = f"Update {user} settings; set theme explicitly"\n'
+        ),
+        "src/parameterized.py": (
+            'cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))\n'
+        ),
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = scanner.scan(files)
+    assert not any(finding.pattern_id == "EQ-009" for finding in findings)
+
+
+def test_dns_update_error_fstring_is_not_misclassified_as_sql() -> None:
+    files = {
+        "scripts/cloudflare/check_dashboard_dns_origin.py": (
+            "raise DashboardDnsOriginError(\n"
+            '    f"Refusing to update ambiguous DNS records for {hostname}; "\n'
+            '    "clean them up explicitly."\n'
+            ")\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = scanner.scan(files)
+    assert not any(f.pattern_id == "EQ-009" for f in findings)
+
+
+def test_unparseable_python_uses_sql_anchored_fallback() -> None:
+    files = {
+        "src/broken.py": (
+            'query = f"UPDATE users SET name = {name} WHERE id = {user_id}"\n'
+            "this is invalid python\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = scanner.scan(files)
+    assert any(f.pattern_id == "EQ-009" and f.line_start == 1 for f in findings)
+
+
+def test_unparseable_python_multiline_fstring_uses_token_fallback() -> None:
+    files = {
+        "src/broken.py": (
+            'query = f"""/* audit */\n'
+            "SELECT * FROM users\n"
+            "WHERE id = {user_id}\n"
+            '"""\n'
+            "this is invalid python\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = scanner.scan(files)
+    assert any(f.pattern_id == "EQ-009" and f.line_start == 1 for f in findings)
+
+
+def test_unparseable_python_recovers_percent_format_and_return_fstring() -> None:
+    cases = {
+        "percent": 'q = "SELECT * FROM users WHERE id = %s" % user_id\n',
+        "format": 'q = "SELECT * FROM users WHERE id = {}".format(user_id)\n',
+        "return_fstring": (
+            'return f"SELECT * FROM users WHERE id = {user_id}"\n'
+        ),
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    for name, source in cases.items():
+        findings = scanner.scan({f"src/{name}.py": source + "this is invalid python\n"})
+        assert any(finding.pattern_id == "EQ-009" for finding in findings), name
+
+
+def test_javascript_sql_template_interpolation_detected_but_update_prose_is_not() -> None:
+    files = {
+        "src/query.js": "const query = `SELECT email FROM users WHERE id = ${userId}`;\n",
+        "src/message.js": 'const message = "Refusing to update DNS for " + hostname;\n',
+    }
+    scanner = EngQualityScanner(tech_stack=["Node.js"])
+    findings = [finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-009"]
+    assert [finding.file_path for finding in findings] == ["src/query.js"]
+
+
+def test_javascript_sql_interpolation_preserves_split_and_comment_prefix_recall() -> None:
+    cases = {
+        "split": 'const q = "SELECT " + columns + " FROM users";\n',
+        "leading_comment": (
+            'const q = "/* audit */ SELECT * FROM users WHERE id = " + userId;\n'
+        ),
+        "select_expression": 'const q = "SELECT " + expression;\n',
+        "lowercase_select_expression": 'const query = "select " + expression;\n',
+        "parenthesized": 'const q = "SELECT " + (columns || "*");\n',
+        "generic_tag": "const q = sql`SELECT * FROM users WHERE id = ${userId}`;\n",
+        "split_update": (
+            'const q = "UPDATE " + table + " SET active = true";\n'
+        ),
+        "dialect_insert": (
+            'const q = "INSERT OR REPLACE INTO users(id) VALUES (" + id + ")";\n'
+        ),
+        "template_column": (
+            "const q = `SELECT ${column} FROM users`;\n"
+        ),
+        "template_table": (
+            "const q = `UPDATE ${table} SET active = true`;\n"
+        ),
+        "regex_before_query": (
+            'const slash = /\\/\\//; const q = "SELECT * FROM users WHERE id = " + userId;\n'
+        ),
+        "nested_semicolons": (
+            'function build() { for (let i = 0; i < 1; i++) {'
+            ' const q = "select " + expression; return q; } }\n'
+        ),
+    }
+    scanner = EngQualityScanner(tech_stack=["Node.js"])
+    for name, source in cases.items():
+        findings = scanner.scan({f"src/{name}.js": source})
+        assert any(
+            finding.pattern_id == "EQ-009" and finding.severity == "P0"
+            for finding in findings
+        ), name
+
+
+def test_javascript_commented_and_known_parameterized_sql_are_not_flagged() -> None:
+    files = {
+        "src/line-comment.js": (
+            '// const q = "SELECT * FROM users WHERE id = " + userId;\n'
+        ),
+        "src/block-comment.js": (
+            '/* const q = `SELECT * FROM users WHERE id = ${userId}`; */\n'
+        ),
+        "src/prisma.js": (
+            'import { Prisma } from "@prisma/client";\n'
+            "const q = Prisma.sql`SELECT * FROM users WHERE id = ${userId}`;\n"
+        ),
+        "src/select-prose.js": 'const msg = `Select a server for ${user}`;\n',
+        "src/select-from-prose.js": (
+            'const msg = `Select a server from ${region}`;\n'
+        ),
+        "src/update-prose.js": (
+            'const msg = "Update " + user + " settings; set theme explicitly";\n'
+        ),
+    }
+    scanner = EngQualityScanner(tech_stack=["Node.js"])
+    findings = scanner.scan(files)
+    assert not any(finding.pattern_id == "EQ-009" for finding in findings)
+
+
+def test_javascript_prisma_tag_requires_real_import_provenance() -> None:
+    files = {
+        "src/spoofed-prisma.js": (
+            '// import { Prisma } from "@prisma/client";\n'
+            "const q = Prisma.sql`SELECT * FROM users WHERE id = ${userId}`;\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Node.js"])
+    findings = scanner.scan(files)
+    assert any(finding.pattern_id == "EQ-009" for finding in findings)
+
+
+def test_javascript_prisma_tag_requires_matching_unshadowed_binding() -> None:
+    unsafe_files = {
+        "src/unrelated-import.js": (
+            'import { PrismaClient } from "@prisma/client";\n'
+            "const q = Prisma.sql`SELECT * FROM users WHERE id = ${userId}`;\n"
+        ),
+        "src/shadowed-import.js": (
+            'import { Prisma } from "@prisma/client";\n'
+            "const Prisma = unsafeBuilder;\n"
+            "const q = Prisma.sql`SELECT * FROM users WHERE id = ${userId}`;\n"
+        ),
+    }
+    scanner = EngQualityScanner(tech_stack=["Node.js"])
+    for name, source in unsafe_files.items():
+        findings = scanner.scan({name: source})
+        assert any(finding.pattern_id == "EQ-009" for finding in findings), name
+
+
+def test_javascript_prisma_tag_accepts_bound_aliases() -> None:
+    files = {
+        "src/esm.js": (
+            'import { Prisma as SafeSql } from "@prisma/client";\n'
+            "const q = SafeSql.sql`SELECT * FROM users WHERE id = ${userId}`;\n"
+        ),
+        "src/cjs.js": (
+            'const { Prisma: SafeSql } = require("@prisma/client");\n'
+            "const q = SafeSql.sql`SELECT * FROM users WHERE id = ${userId}`;\n"
+        ),
+        "src/cjs-property.js": (
+            'const SafeSql = require("@prisma/client").Prisma;\n'
+            "const q = SafeSql.sql`SELECT * FROM users WHERE id = ${userId}`;\n"
+        ),
+    }
+    scanner = EngQualityScanner(tech_stack=["Node.js"])
+    findings = scanner.scan(files)
+    assert not any(finding.pattern_id == "EQ-009" for finding in findings)
+
+
 def test_dockerfile_without_user_detected_as_p2() -> None:
     files = {"Dockerfile": "FROM python:3.11\nRUN echo hi\n"}
     scanner = EngQualityScanner(tech_stack=[])
@@ -92,6 +343,143 @@ def test_n_plus_one_query_pattern_detected() -> None:
     scanner = EngQualityScanner(tech_stack=["FastAPI", "Python"])
     findings = scanner.scan(files)
     assert any(f.pattern_id == "EQ-007" for f in findings)
+
+
+def test_multiline_httpx_client_with_explicit_timeout_is_not_flagged() -> None:
+    files = {
+        "src/routes/auth.py": (
+            "async def fetch_metadata():\n"
+            "    async with httpx.AsyncClient(\n"
+            "        follow_redirects=False,\n"
+            "        timeout=_CIMD_FETCH_TIMEOUT_S,\n"
+            "    ) as client:\n"
+            "        return await client.get('https://example.com')\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python", "FastAPI"])
+    findings = scanner.scan(files)
+    assert not any(f.pattern_id == "EQ-012" for f in findings)
+
+
+def test_multiline_httpx_client_without_timeout_is_flagged() -> None:
+    files = {
+        "src/routes/auth.py": (
+            "async def fetch_metadata():\n"
+            "    async with httpx.AsyncClient(\n"
+            "        follow_redirects=False,\n"
+            "    ) as client:\n"
+            "        return await client.get('https://example.com')\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python", "FastAPI"])
+    findings = scanner.scan(files)
+    finding = next((f for f in findings if f.pattern_id == "EQ-012"), None)
+    assert finding is not None
+    assert finding.line_start == 2
+    assert finding.line_end == 4
+
+
+def test_multiline_httpx_get_with_explicit_timeout_is_not_flagged() -> None:
+    files = {
+        "src/client.py": (
+            "async def fetch_metadata(url):\n"
+            "    return await httpx.get(\n"
+            "        url,\n"
+            "        timeout=5.0,\n"
+            "    )\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = scanner.scan(files)
+    assert not any(f.pattern_id == "EQ-012" for f in findings)
+
+
+def test_timeout_text_in_comment_or_string_does_not_suppress_finding() -> None:
+    files = {
+        "src/comment.py": "client = httpx.Client(  # timeout inherited elsewhere\n)\n",
+        "src/string.py": 'response = httpx.get("timeout")\n',
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = [finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-012"]
+    assert {finding.file_path for finding in findings} == {
+        "src/comment.py",
+        "src/string.py",
+    }
+
+
+def test_nested_timeout_argument_does_not_count_as_httpx_timeout() -> None:
+    files = {
+        "src/client.py": (
+            "response = httpx.get(\n"
+            "    build_url(timeout=5.0),\n"
+            ")\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = [finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-012"]
+    assert len(findings) == 1
+    assert findings[0].line_start == 1
+
+
+def test_syntax_error_uses_balanced_call_fallback() -> None:
+    files = {
+        "src/client.py": (
+            "bounded = httpx.get(\n"
+            "    'https://example.com/bounded',\n"
+            "    timeout=5.0,\n"
+            ")\n"
+            "unbounded = httpx.get(  # timeout is still missing\n"
+            "    'https://example.com/unbounded',\n"
+            ")\n"
+            "def broken(:\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = [finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-012"]
+    assert [finding.line_start for finding in findings] == [5]
+
+
+def test_one_line_httpx_call_without_timeout_is_flagged() -> None:
+    files = {"src/client.py": "response = httpx.post('https://example.com')\n"}
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = [finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-012"]
+    assert len(findings) == 1
+    assert findings[0].line_start == 1
+
+
+def test_same_line_httpx_calls_emit_one_unique_finding() -> None:
+    files = {
+        "src/nested.py": "result = httpx.get(httpx.post('https://inner'))\n",
+        "src/sequential.py": (
+            "first = httpx.get('https://first'); "
+            "second = httpx.post('https://second')\n"
+        ),
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = [finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-012"]
+    assert len(findings) == 2
+    assert len({finding.id for finding in findings}) == len(findings)
+    assert {finding.file_path for finding in findings} == set(files)
+
+
+def test_httpx_module_case_matching_preserves_existing_behavior() -> None:
+    files = {
+        "src/parseable.py": (
+            "import httpx as HTTPX\n"
+            "response = HTTPX.get('https://example.com')\n"
+        ),
+        "src/syntax_error.py": (
+            "import httpx as HTTPX\n"
+            "client = HTTPX.AsyncClient()\n"
+            "def broken(:\n"
+        ),
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = [finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-012"]
+    assert [(finding.file_path, finding.line_start) for finding in findings] == [
+        ("src/parseable.py", 2),
+        ("src/syntax_error.py", 2),
+    ]
 
 
 def test_workflow_secret_labels_not_flagged_as_hardcoded_secrets() -> None:

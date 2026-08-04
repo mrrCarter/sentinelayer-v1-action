@@ -62,7 +62,7 @@ from .telemetry.schemas import (
 from .telemetry.uploader import upload_telemetry
 from .utils import ensure_writable_dir, json_dumps
 
-ACTION_VERSION = "1.3.9"
+ACTION_VERSION = "1.3.10"
 # Rotate this whenever a security-control contract changes so dedupe cannot
 # mirror a successful check produced under weaker semantics on the same head.
 ACTION_IDEMPOTENCY_VERSION = "1:llm-evidence-v1"
