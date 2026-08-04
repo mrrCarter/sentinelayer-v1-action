@@ -79,6 +79,38 @@ def test_python_sql_string_concatenation_detected_as_p0() -> None:
     assert any(f.pattern_id == "EQ-009" and f.severity == "P0" for f in findings)
 
 
+def test_javascript_sql_interpolation_detected_without_prose_false_positives() -> None:
+    files = {
+        "src/template.js": (
+            "const query = `SELECT email FROM users WHERE id = ${userId}`;\n"
+        ),
+        "src/lowercase.ts": (
+            "const query = `select email from users where id = ${userId}`;\n"
+        ),
+        "src/concat.js": (
+            'const query = "DELETE FROM users WHERE id = " + userId;\n'
+        ),
+        "src/update-prose.js": (
+            'const message = "Refusing to update DNS for " + hostname;\n'
+        ),
+        "src/select-prose.js": (
+            'const message = "Please select a server for " + region;\n'
+        ),
+    }
+    scanner = EngQualityScanner(tech_stack=["Node.js"])
+
+    findings = [
+        finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-009"
+    ]
+
+    assert [finding.file_path for finding in findings] == [
+        "src/concat.js",
+        "src/lowercase.ts",
+        "src/template.js",
+    ]
+    assert all(finding.severity == "P0" for finding in findings)
+
+
 def test_python_sql_interpolation_preserves_supported_statement_variants() -> None:
     cases = {
         "select_expression": 'query = f"SELECT {user_expression}"\n',

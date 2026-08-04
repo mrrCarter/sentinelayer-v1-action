@@ -478,8 +478,17 @@ class EngQualityScanner:
         )
         findings: list[Finding] = []
 
+        sql_prefix = (
+            r"(?:SELECT\b[\s\S]{0,400}\bFROM\b|INSERT\s+INTO\b|DELETE\s+FROM\b|"
+            r"UPDATE\s+[^\s;]+\s+SET\b|WITH\b[\s\S]{0,400}\bAS\s*\()"
+        )
         js_concat = re.compile(
-            r"(['\"]).{0,120}\b(SELECT|INSERT|UPDATE|DELETE)\b.{0,200}\1\s*\+\s*[A-Za-z_][A-Za-z0-9_]*",
+            rf"(['\"])\s*{sql_prefix}[\s\S]{{0,400}}?\1\s*\+\s*"
+            r"[A-Za-z_$][A-Za-z0-9_$.]*",
+            re.IGNORECASE,
+        )
+        js_template = re.compile(
+            rf"`\s*{sql_prefix}[^`]{{0,800}}\$\{{[^}}]+\}}[^`]*`",
             re.IGNORECASE,
         )
 
@@ -487,7 +496,8 @@ class EngQualityScanner:
             if self._is_test_file(path):
                 continue
             if path.endswith(_JS_EXTS):
-                for m in js_concat.finditer(content):
+                matches = [*js_concat.finditer(content), *js_template.finditer(content)]
+                for m in sorted(matches, key=lambda match: match.start()):
                     line = self._index_to_line(content, m.start())
                     snippet = self._line_snippet(content, line, line)
                     findings.append(
