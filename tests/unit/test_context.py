@@ -14,6 +14,13 @@ def test_action_declares_and_forwards_pr_number() -> None:
     assert "INPUT_PR_NUMBER: ${{ inputs.pr_number }}" in action
 
 
+def test_action_exports_configured_codex_model() -> None:
+    action = (Path(__file__).parents[2] / "action.yml").read_text(encoding="utf-8")
+
+    assert "\n  codex_model:\n" in action
+    assert "value: ${{ inputs.codex_model }}" in action
+
+
 def test_context_parses_pr_event(
     monkeypatch: pytest.MonkeyPatch,
     event_pr_path: Path,

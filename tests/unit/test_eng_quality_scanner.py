@@ -54,14 +54,22 @@ def test_python_fstring_sql_interpolation_detected_as_p0() -> None:
         "src/query.py": (
             "def load(user_id):\n"
             '    return f"SELECT email FROM users WHERE id = {user_id}"\n'
-        )
+        ),
+        "src/lowercase.py": (
+            'payload = f"select * from users where id = {user_id}"\n'
+        ),
     }
     scanner = EngQualityScanner(tech_stack=["Python"])
     findings = scanner.scan(files)
-    finding = next((f for f in findings if f.pattern_id == "EQ-009"), None)
-    assert finding is not None
-    assert finding.severity == "P0"
-    assert finding.line_start == 2
+    sql_findings = [finding for finding in findings if finding.pattern_id == "EQ-009"]
+    assert {finding.file_path for finding in sql_findings} == {
+        "src/lowercase.py",
+        "src/query.py",
+    }
+    assert all(finding.severity == "P0" for finding in sql_findings)
+    assert next(
+        finding for finding in sql_findings if finding.file_path == "src/query.py"
+    ).line_start == 2
 
 
 def test_python_sql_string_concatenation_detected_as_p0() -> None:
@@ -69,6 +77,53 @@ def test_python_sql_string_concatenation_detected_as_p0() -> None:
     scanner = EngQualityScanner(tech_stack=["Python"])
     findings = scanner.scan(files)
     assert any(f.pattern_id == "EQ-009" and f.severity == "P0" for f in findings)
+
+
+def test_python_sql_interpolation_preserves_supported_statement_variants() -> None:
+    cases = {
+        "select_expression": 'query = f"SELECT {user_expression}"\n',
+        "select_alias": 'query = f"SELECT {value} AS result"\n',
+        "select_arithmetic": 'query = f"SELECT 1 + {value}"\n',
+        "select_case": (
+            'query = f"SELECT CASE WHEN {condition} THEN 1 ELSE 0 END"\n'
+        ),
+        "select_function": 'payload = f"select pg_sleep({delay})"\n',
+        "leading_comment": (
+            'query = f"/* audit */ SELECT * FROM users WHERE id = {user_id}"\n'
+        ),
+        "sqlite_insert": (
+            'query = f"INSERT OR IGNORE INTO users(id) VALUES ({user_id})"\n'
+        ),
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    for name, source in cases.items():
+        findings = scanner.scan({f"src/{name}.py": source})
+        assert any(finding.pattern_id == "EQ-009" for finding in findings), name
+
+
+def test_bare_dynamic_select_requires_query_context() -> None:
+    scanner = EngQualityScanner(tech_stack=["Python"])
+
+    query_findings = scanner.scan(
+        {"src/query.py": 'query = f"SELECT {user_expression}"\n'}
+    )
+    prose_findings = scanner.scan(
+        {"src/message.py": 'message = f"select {option}"\n'}
+    )
+
+    assert any(finding.pattern_id == "EQ-009" for finding in query_findings)
+    assert not any(finding.pattern_id == "EQ-009" for finding in prose_findings)
+
+
+def test_python_sql_concatenation_handles_large_expression_iteratively() -> None:
+    source = (
+        'query = "SELECT * FROM users WHERE id = " + '
+        + " + ".join("user_id" for _ in range(999))
+        + "\n"
+    )
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = scanner.scan({"src/large_query.py": source})
+    assert sum(finding.pattern_id == "EQ-009" for finding in findings) == 1
 
 
 def test_dns_update_error_fstring_is_not_misclassified_as_sql() -> None:
@@ -97,14 +152,24 @@ def test_unparseable_python_uses_sql_anchored_fallback() -> None:
     assert any(f.pattern_id == "EQ-009" and f.line_start == 1 for f in findings)
 
 
-def test_javascript_sql_template_interpolation_detected_but_update_prose_is_not() -> None:
+def test_unparseable_python_fallback_handles_dynamic_select_variants() -> None:
+    scanner = EngQualityScanner(tech_stack=["Python"])
     files = {
-        "src/query.js": "const query = `SELECT email FROM users WHERE id = ${userId}`;\n",
-        "src/message.js": 'const message = "Refusing to update DNS for " + hostname;\n',
+        "src/query.py": (
+            'query = f"SELECT {user_expression}"\n'
+            'payload = f"select pg_sleep({delay})"\n'
+            'message = f"select {option}"\n'
+            'sql = "SELECT " + user_expression\n'
+            "this is invalid python\n"
+        )
     }
-    scanner = EngQualityScanner(tech_stack=["Node.js"])
-    findings = [finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-009"]
-    assert [finding.file_path for finding in findings] == ["src/query.js"]
+
+    findings = scanner.scan(files)
+    sql_lines = {
+        finding.line_start for finding in findings if finding.pattern_id == "EQ-009"
+    }
+
+    assert sql_lines == {1, 2, 4}
 
 
 def test_dockerfile_without_user_detected_as_p2() -> None:

@@ -277,6 +277,9 @@ outputs:
   model:
     description: 'Configured primary LLM model for this run'
     value: ${{ steps.omar.outputs.model }}
+  codex_model:
+    description: 'Configured Codex CLI model for this run'
+    value: ${{ inputs.codex_model }}
   model_fallback:
     description: 'Configured fallback LLM model for this run'
     value: ${{ steps.omar.outputs.model_fallback }}

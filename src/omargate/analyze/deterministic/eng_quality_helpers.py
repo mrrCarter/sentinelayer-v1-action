@@ -32,47 +32,115 @@ _HTTPX_FUNCTION_NAMES_BY_CASEFOLD = {
     function_name.casefold(): function_name for function_name in _HTTPX_FUNCTION_NAMES
 }
 _MAX_FALLBACK_CALL_TOKENS = 512
-_SQL_STATEMENT_PREFIX_RE = re.compile(
-    r"""
-    ^\s*
-    (?:
-        SELECT\b[\s\S]{0,400}\bFROM\b
-        | INSERT\s+INTO\b
-        | DELETE\s+FROM\b
-        | UPDATE\s+(?:\{expr\}|[^\s;]+)\s+SET\b
-        | WITH\b[\s\S]{0,400}\bAS\s*\(
+_SQL_LEADING_COMMENTS_PATTERN = (
+    r"(?:(?:/\*[\s\S]{0,1000}?\*/|--[^\r\n]*(?:\r?\n|$))\s*)*"
+)
+
+
+def _sql_statement_pattern(
+    expression_pattern: str,
+    *,
+    include_contextual_select_expression: bool,
+    statement_end_pattern: str,
+) -> str:
+    contextual_select_expression = (
+        rf"| (?=[\s\S]{{0,4096}}{expression_pattern})"
+        rf"[\s\S]{{1,4096}}{statement_end_pattern}"
+        if include_contextual_select_expression
+        else ""
     )
-    """,
+    return rf"""
+    (?:
+        SELECT\s+(?:
+            [\s\S]{{0,4096}}\bFROM\b
+            {contextual_select_expression}
+            | [A-Za-z_][A-Za-z0-9_$.]*\s*\([^)]*{expression_pattern}[^)]*\)\s*{statement_end_pattern}
+        )
+        | INSERT\s+(?:(?:OR\s+(?:ABORT|FAIL|IGNORE|REPLACE|ROLLBACK)|IGNORE)\s+)?INTO\b
+        | DELETE\s+FROM\b
+        | UPDATE\s+(?:{expression_pattern}|[^\s;]+)\s+SET\b
+        | WITH\b[\s\S]{{0,4096}}\bAS\s*\(
+    )
+"""
+
+
+_SQL_TEMPLATE_EXPRESSION_PATTERN = r"\{expr\}"
+_SQL_SOURCE_EXPRESSION_PATTERN = r"\{[^{}\r\n]+\}"
+_SQL_STATEMENT_PATTERN = _sql_statement_pattern(
+    _SQL_TEMPLATE_EXPRESSION_PATTERN,
+    include_contextual_select_expression=True,
+    statement_end_pattern=r"(?:;|$)",
+)
+_SQL_SOURCE_STATEMENT_PATTERN = _sql_statement_pattern(
+    _SQL_SOURCE_EXPRESSION_PATTERN,
+    include_contextual_select_expression=False,
+    statement_end_pattern=r"(?=\s*(?:'''|\"\"\"|'|\"))",
+)
+_SQL_STATEMENT_PREFIX_RE = re.compile(
+    rf"^\s*{_SQL_LEADING_COMMENTS_PATTERN}{_SQL_STATEMENT_PATTERN}",
     re.IGNORECASE | re.VERBOSE,
 )
+_SQL_CONTEXTUAL_DYNAMIC_SELECT_RE = re.compile(
+    rf"^\s*{_SQL_LEADING_COMMENTS_PATTERN}SELECT\s+"
+    rf"(?=[\s\S]{{0,4096}}{_SQL_TEMPLATE_EXPRESSION_PATTERN})"
+    rf"[\s\S]{{1,4096}}\s*;?\s*$",
+    re.IGNORECASE | re.VERBOSE,
+)
+_SQL_STRONG_DYNAMIC_SELECT_RE = re.compile(
+    rf"^\s*{_SQL_LEADING_COMMENTS_PATTERN}SELECT\s+(?:"
+    rf"[\s\S]{{0,4096}}\bFROM\b"
+    rf"|[A-Za-z_][A-Za-z0-9_$.]*\s*\([^)]*"
+    rf"{_SQL_TEMPLATE_EXPRESSION_PATTERN}[^)]*\)\s*(?:;|$)"
+    rf")",
+    re.IGNORECASE | re.VERBOSE,
+)
+_SQL_CONTEXT_NAME_RE = re.compile(
+    r"(?:^|_)(?:sql|query|statement|stmt)(?:_|$)",
+    re.IGNORECASE,
+)
+_SQL_EXECUTION_CALL_NAMES = frozenset(
+    {"execute", "executemany", "executescript", "fetch", "query", "raw"}
+)
 _PYTHON_FSTRING_SQL_FALLBACK_RE = re.compile(
-    r"""
+    rf"""
     (?:^|[=(,:])\s*
     (?:[rub]*f[rub]*)
     (?:'''|\"\"\"|'|\")
-    \s*(?:
-        SELECT\b[^\n]{0,400}\bFROM\b
-        | INSERT\s+INTO\b
-        | DELETE\s+FROM\b
-        | UPDATE\s+[^\s;]+\s+SET\b
-        | WITH\b[^\n]{0,400}\bAS\s*\(
-    )
-    [^\n]{0,1000}\{[^{}\n]+\}
+    (?=[^\n]{{0,1000}}\{{[^{{}}\n]+\}})
+    \s*{_SQL_LEADING_COMMENTS_PATTERN}{_SQL_SOURCE_STATEMENT_PATTERN}
     """,
     re.IGNORECASE | re.MULTILINE | re.VERBOSE,
 )
 _PYTHON_CONCAT_SQL_FALLBACK_RE = re.compile(
-    r"""
+    rf"""
     (?:^|[=(,:])\s*
     (?P<quote>'''|\"\"\"|'|\")
-    \s*(?:
-        SELECT\b[^\n]{0,400}\bFROM\b
-        | INSERT\s+INTO\b
-        | DELETE\s+FROM\b
-        | UPDATE\s+[^\s;]+\s+SET\b
-        | WITH\b[^\n]{0,400}\bAS\s*\(
-    )
-    [^\n]{0,1000}(?P=quote)\s*\+
+    \s*{_SQL_LEADING_COMMENTS_PATTERN}{_SQL_SOURCE_STATEMENT_PATTERN}
+    [^\n]{{0,1000}}(?P=quote)\s*\+
+    """,
+    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
+)
+_PYTHON_FSTRING_CONTEXTUAL_SELECT_FALLBACK_RE = re.compile(
+    rf"""
+    ^[ \t]*
+    (?P<target>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)
+    (?:\s*:\s*[^=\r\n]+)?\s*=\s*
+    (?:[rub]*f[rub]*)
+    (?P<quote>'''|\"\"\"|'|\")
+    \s*{_SQL_LEADING_COMMENTS_PATTERN}SELECT\s+
+    (?=[^\n]{{0,1000}}{_SQL_SOURCE_EXPRESSION_PATTERN})
+    [^\n]{{1,1000}}?(?P=quote)
+    """,
+    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
+)
+_PYTHON_CONCAT_CONTEXTUAL_SELECT_FALLBACK_RE = re.compile(
+    rf"""
+    ^[ \t]*
+    (?P<target>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)
+    (?:\s*:\s*[^=\r\n]+)?\s*=\s*
+    (?P<quote>'''|\"\"\"|'|\")
+    \s*{_SQL_LEADING_COMMENTS_PATTERN}SELECT\b
+    [^\n]{{0,1000}}?(?P=quote)\s*\+
     """,
     re.IGNORECASE | re.MULTILINE | re.VERBOSE,
 )
@@ -157,14 +225,29 @@ def python_interpolated_sql_lines(content: str) -> set[int]:
     except SyntaxError:
         return _python_interpolated_sql_lines_from_source(content)
 
+    parents = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
     lines: set[int] = set()
     for node in ast.walk(tree):
         template: str | None = None
         if isinstance(node, ast.JoinedStr):
             template = _joined_string_template(node)
         elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            parent = parents.get(node)
+            if isinstance(parent, ast.BinOp) and isinstance(parent.op, ast.Add):
+                continue
             template = _concatenated_string_template(node)
-        if template is not None and _looks_like_sql_statement(template):
+        if (
+            template is not None
+            and _looks_like_sql_statement(template)
+            and (
+                not _select_requires_sql_context(template)
+                or _has_sql_context(node, parents)
+            )
+        ):
             lines.add(int(getattr(node, "lineno", 1) or 1))
     return lines
 
@@ -183,15 +266,15 @@ def _joined_string_template(node: ast.JoinedStr) -> str | None:
 
 def _concatenated_string_template(node: ast.BinOp) -> str | None:
     operands: list[ast.expr] = []
-
-    def _flatten(current: ast.expr) -> None:
+    pending: list[ast.expr] = [node]
+    while pending:
+        current = pending.pop()
         if isinstance(current, ast.BinOp) and isinstance(current.op, ast.Add):
-            _flatten(current.left)
-            _flatten(current.right)
+            pending.append(current.right)
+            pending.append(current.left)
         else:
             operands.append(current)
 
-    _flatten(node)
     has_string = False
     has_dynamic = False
     parts: list[str] = []
@@ -206,6 +289,8 @@ def _concatenated_string_template(node: ast.BinOp) -> str | None:
             has_string = True
             has_dynamic = True
             parts.append(nested)
+        elif isinstance(operand, ast.Constant):
+            return None
         else:
             has_dynamic = True
             parts.append("{expr}")
@@ -218,12 +303,68 @@ def _looks_like_sql_statement(template: str) -> bool:
     return bool(_SQL_STATEMENT_PREFIX_RE.search(template))
 
 
+def _select_requires_sql_context(template: str) -> bool:
+    return bool(
+        _SQL_CONTEXTUAL_DYNAMIC_SELECT_RE.fullmatch(template)
+        and not _SQL_STRONG_DYNAMIC_SELECT_RE.search(template)
+    )
+
+
+def _has_sql_context(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> bool:
+    current = node
+    while parent := parents.get(current):
+        if isinstance(parent, ast.Assign) and any(
+            _target_has_sql_name(target) for target in parent.targets
+        ):
+            return True
+        if isinstance(parent, (ast.AnnAssign, ast.NamedExpr)) and _target_has_sql_name(
+            parent.target
+        ):
+            return True
+        if isinstance(parent, ast.Call):
+            function_name = _qualified_name(parent.func)
+            if (
+                function_name is not None
+                and function_name.rsplit(".", 1)[-1].casefold()
+                in _SQL_EXECUTION_CALL_NAMES
+            ):
+                return True
+        if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return _is_sql_context_name(parent.name)
+        current = parent
+    return False
+
+
+def _target_has_sql_name(target: ast.AST) -> bool:
+    if isinstance(target, ast.Name):
+        return _is_sql_context_name(target.id)
+    if isinstance(target, ast.Attribute):
+        return _is_sql_context_name(target.attr)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return any(_target_has_sql_name(element) for element in target.elts)
+    return False
+
+
+def _is_sql_context_name(name: str) -> bool:
+    return bool(_SQL_CONTEXT_NAME_RE.search(name))
+
+
 def _python_interpolated_sql_lines_from_source(content: str) -> set[int]:
     matches = [
         *_PYTHON_FSTRING_SQL_FALLBACK_RE.finditer(content),
         *_PYTHON_CONCAT_SQL_FALLBACK_RE.finditer(content),
     ]
-    return {index_to_line(content, match.start()) for match in matches}
+    lines = {index_to_line(content, match.start()) for match in matches}
+    lines.update(
+        index_to_line(content, match.start())
+        for pattern in (
+            _PYTHON_FSTRING_CONTEXTUAL_SELECT_FALLBACK_RE,
+            _PYTHON_CONCAT_CONTEXTUAL_SELECT_FALLBACK_RE,
+        )
+        for match in pattern.finditer(content)
+        if _is_sql_context_name(match.group("target").rsplit(".", 1)[-1])
+    )
+    return lines
 
 
 def python_httpx_calls(content: str) -> list[PythonHttpxCall]:
