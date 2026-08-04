@@ -75,3 +75,26 @@ def test_live_llm_evidence_contract_invalidates_legacy_dedupe_keys() -> None:
     )
 
     assert evidence_contract != legacy
+
+
+def test_eq009_contract_invalidates_v1310_dedupe_keys() -> None:
+    common = {
+        "repo": "octo/repo",
+        "pr_number": 7,
+        "head_sha": "deadbeef",
+        "scan_mode": "deep",
+        "policy_pack": "omar",
+        "policy_pack_version": "v1",
+    }
+
+    v1310 = compute_idempotency_key(
+        action_major_version="1:llm-evidence-v1",
+        **common,
+    )
+    v1311 = compute_idempotency_key(
+        action_major_version=ACTION_IDEMPOTENCY_VERSION,
+        **common,
+    )
+
+    assert ACTION_IDEMPOTENCY_VERSION == "2:llm-evidence-v1:eq009-v2"
+    assert v1311 != v1310

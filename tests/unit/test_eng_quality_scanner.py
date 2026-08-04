@@ -180,6 +180,36 @@ def test_python_sql_concatenation_handles_large_expression_iteratively() -> None
     assert sum(finding.pattern_id == "EQ-009" for finding in findings) == 1
 
 
+def test_python_sql_concatenation_cannot_crash_gate_at_5000_operands() -> None:
+    source = (
+        'query = "SELECT * FROM users WHERE id = " + '
+        + " + ".join("user_id" for _ in range(5000))
+        + "\n"
+    )
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = scanner.scan({"src/stress_query.py": source})
+    assert sum(finding.pattern_id == "EQ-009" for finding in findings) == 1
+
+
+def test_javascript_sql_matching_is_anchored_and_supports_templates() -> None:
+    files = {
+        "src/query.js": (
+            "const query = `SELECT email FROM users WHERE id = "
+            "${userId}`;\n"
+        ),
+        "src/dns.js": (
+            'const message = "Refusing to update ambiguous DNS records for " '
+            "+ hostname;\n"
+        ),
+        "src/ui.js": 'const message = "Please select a server for " + user;\n',
+    }
+    scanner = EngQualityScanner(tech_stack=["Node.js"])
+    findings = [f for f in scanner.scan(files) if f.pattern_id == "EQ-009"]
+    assert [(finding.file_path, finding.line_start) for finding in findings] == [
+        ("src/query.js", 1)
+    ]
+
+
 def test_dns_update_error_fstring_is_not_misclassified_as_sql() -> None:
     files = {
         "scripts/cloudflare/check_dashboard_dns_origin.py": (
@@ -245,6 +275,75 @@ def test_unparseable_python_recovers_call_return_and_dataflow_context() -> None:
     }
 
     assert sql_lines == {1, 2, 5}
+
+
+def test_unparseable_python_recovers_multiline_logical_statements_only() -> None:
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    source = (
+        "# query = f\"SELECT * FROM users WHERE id = {commented}\"\n"
+        'documentation = """\n'
+        'query = f"SELECT * FROM users WHERE id = {example}"\n'
+        '"""\n'
+        "cursor.execute(\n"
+        '    f"SELECT {direct_value}"\n'
+        ")\n"
+        "query = (\n"
+        '    f"SELECT {assigned_value}"\n'
+        ")\n"
+        "def build_query():\n"
+        "    return (\n"
+        '        f"SELECT {returned_value}"\n'
+        "    )\n"
+        "this is invalid python\n"
+    )
+
+    findings = scanner.scan({"src/broken_multiline.py": source})
+    sql_lines = {
+        finding.line_start for finding in findings if finding.pattern_id == "EQ-009"
+    }
+
+    assert sql_lines == {6, 9, 13}
+
+
+def test_unparseable_python_recovers_one_line_query_function() -> None:
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    source = (
+        'def build_query(): return f"SELECT {value}"\n'
+        "this is invalid python\n"
+    )
+    findings = scanner.scan({"src/broken_one_line.py": source})
+    assert any(
+        finding.pattern_id == "EQ-009" and finding.line_start == 1
+        for finding in findings
+    )
+
+
+def test_dynamic_select_does_not_infer_flow_from_later_execute() -> None:
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    source = (
+        'payload = f"select {option}"\n'
+        "render(payload)\n"
+        'payload = "SELECT 1"\n'
+        "cursor.execute(payload)\n"
+        'cursor.execute("SELECT ?", message)\n'
+    )
+    findings = scanner.scan({"src/safe_flow.py": source})
+    assert not any(finding.pattern_id == "EQ-009" for finding in findings)
+
+
+def test_percent_and_format_sql_interpolation_remain_detected() -> None:
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    cases = {
+        "percent.py": '"SELECT * FROM users WHERE id = %s" % user_id\n',
+        "format.py": '"SELECT * FROM users WHERE id = {}".format(user_id)\n',
+        "format_map.py": (
+            '"SELECT * FROM users WHERE id = {user_id}".format_map(values)\n'
+        ),
+    }
+    findings = scanner.scan(cases)
+    assert {
+        finding.file_path for finding in findings if finding.pattern_id == "EQ-009"
+    } == set(cases)
 
 
 def test_dockerfile_without_user_detected_as_p2() -> None:

@@ -4,6 +4,7 @@ import ast
 from dataclasses import dataclass
 import io
 import re
+import textwrap
 import tokenize
 
 from .pattern_scanner import _truncate_snippet
@@ -18,12 +19,10 @@ class PythonHttpxCall:
 
 
 @dataclass(frozen=True)
-class _RecoveredPythonStatement:
-    line_number: int
-    scope_key: tuple[int, ...]
+class _PythonLogicalStatement:
+    tokens: tuple[tokenize.TokenInfo, ...]
+    start_line: int
     function_name: str | None
-    tree: ast.Module
-    parents: dict[ast.AST, ast.AST]
 
 
 _HTTPX_FUNCTION_NAMES = frozenset(
@@ -44,63 +43,42 @@ _MAX_FALLBACK_CALL_TOKENS = 512
 _SQL_LEADING_COMMENTS_PATTERN = (
     r"(?:(?:/\*[\s\S]{0,1000}?\*/|--[^\r\n]*(?:\r?\n|$))\s*)*"
 )
-
-
-def _sql_statement_pattern(
-    expression_pattern: str,
-    *,
-    include_contextual_select_expression: bool,
-    statement_end_pattern: str,
-) -> str:
-    contextual_select_expression = (
-        rf"| (?=[\s\S]{{0,4096}}{expression_pattern})"
-        rf"[\s\S]{{1,4096}}{statement_end_pattern}"
-        if include_contextual_select_expression
-        else ""
-    )
-    return rf"""
+_SQL_IDENTIFIER_PATTERN = (
+    r"(?:\{expr\}|[A-Za-z_][A-Za-z0-9_$]*"
+    r"(?:\.[A-Za-z_][A-Za-z0-9_$]*)*)"
+)
+_SQL_STRONG_STATEMENT_RE = re.compile(
+    rf"""
+    ^\s*{_SQL_LEADING_COMMENTS_PATTERN}
     (?:
         SELECT\s+(?:
             [\s\S]{{0,4096}}\bFROM\b
-            {contextual_select_expression}
-            | [A-Za-z_][A-Za-z0-9_$.]*\s*\([^)]*{expression_pattern}[^)]*\)\s*{statement_end_pattern}
+            | [A-Za-z_][A-Za-z0-9_$.]*\s*\([^)]*\{{expr\}}[^)]*\)
+            | CASE\b[\s\S]{{0,4096}}\bWHEN\b[\s\S]{{0,4096}}
+              \{{expr\}}[\s\S]{{0,4096}}\bTHEN\b
+            | [\s\S]{{0,4096}}\{{expr\}}[\s\S]{{0,256}}
+              \bAS\s+[A-Za-z_][A-Za-z0-9_$]*
+            | (?=[\s\S]{{0,4096}}\{{expr\}})
+              (?:[-+]?\d+(?:\.\d+)?|\{{expr\}})
+              \s*[-+*/%]\s*
+              (?:[-+]?\d+(?:\.\d+)?|\{{expr\}})
+            | \{{expr\}}\s*(?:::|->>|->|\#>>|\#>)\s*
+              [A-Za-z_'"][A-Za-z0-9_$'"]*
+            | (?:DISTINCT|ALL)\s+[\s\S]{{0,4096}}\{{expr\}}
+            | [\s\S]{{0,4096}}\{{expr\}}\s*,[\s\S]{{1,4096}}
         )
-        | INSERT\s+(?:(?:OR\s+(?:ABORT|FAIL|IGNORE|REPLACE|ROLLBACK)|IGNORE)\s+)?INTO\b
+        | INSERT\s+(?:(?:OR\s+(?:ABORT|FAIL|IGNORE|REPLACE|ROLLBACK)|IGNORE)\s+)?
+          INTO\s+{_SQL_IDENTIFIER_PATTERN}(?=\s|\()
         | DELETE\s+FROM\b
-        | UPDATE\s+(?:{expression_pattern}|[^\s;]+)\s+SET\b
+        | UPDATE\s+(?:{_SQL_IDENTIFIER_PATTERN}|[^\s;]+)\s+SET\b
         | WITH\b[\s\S]{{0,4096}}\bAS\s*\(
     )
-"""
-
-
-_SQL_TEMPLATE_EXPRESSION_PATTERN = r"\{expr\}"
-_SQL_SOURCE_EXPRESSION_PATTERN = r"\{[^{}\r\n]+\}"
-_SQL_STATEMENT_PATTERN = _sql_statement_pattern(
-    _SQL_TEMPLATE_EXPRESSION_PATTERN,
-    include_contextual_select_expression=True,
-    statement_end_pattern=r"(?:;|$)",
-)
-_SQL_SOURCE_STATEMENT_PATTERN = _sql_statement_pattern(
-    _SQL_SOURCE_EXPRESSION_PATTERN,
-    include_contextual_select_expression=False,
-    statement_end_pattern=r"(?=\s*(?:'''|\"\"\"|'|\"))",
-)
-_SQL_STATEMENT_PREFIX_RE = re.compile(
-    rf"^\s*{_SQL_LEADING_COMMENTS_PATTERN}{_SQL_STATEMENT_PATTERN}",
+    """,
     re.IGNORECASE | re.VERBOSE,
 )
-_SQL_CONTEXTUAL_DYNAMIC_SELECT_RE = re.compile(
+_SQL_AMBIGUOUS_DYNAMIC_SELECT_RE = re.compile(
     rf"^\s*{_SQL_LEADING_COMMENTS_PATTERN}SELECT\s+"
-    rf"(?=[\s\S]{{0,4096}}{_SQL_TEMPLATE_EXPRESSION_PATTERN})"
-    rf"[\s\S]{{1,4096}}\s*;?\s*$",
-    re.IGNORECASE | re.VERBOSE,
-)
-_SQL_STRONG_DYNAMIC_SELECT_RE = re.compile(
-    rf"^\s*{_SQL_LEADING_COMMENTS_PATTERN}SELECT\s+(?:"
-    rf"[\s\S]{{0,4096}}\bFROM\b"
-    rf"|[A-Za-z_][A-Za-z0-9_$.]*\s*\([^)]*"
-    rf"{_SQL_TEMPLATE_EXPRESSION_PATTERN}[^)]*\)\s*(?:;|$)"
-    rf")",
+    r"\{expr\}\s*;?\s*$",
     re.IGNORECASE | re.VERBOSE,
 )
 _SQL_CONTEXT_NAME_RE = re.compile(
@@ -110,52 +88,15 @@ _SQL_CONTEXT_NAME_RE = re.compile(
 _SQL_EXECUTION_CALL_NAMES = frozenset(
     {"execute", "executemany", "executescript", "fetch", "query", "raw"}
 )
-_PYTHON_SCOPE_DECLARATION_RE = re.compile(
-    r"^(?P<indent>[ \t]*)(?P<kind>async\s+def|def|class)\s+"
-    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b"
+_PYTHON_PERCENT_FIELD_RE = re.compile(
+    r"(?<!%)%(?:\([^)]+\))?[#0+\- ]*\d*(?:\.\d+)?[diouxXeEfFgGcrsa]"
 )
-_PYTHON_FSTRING_SQL_FALLBACK_RE = re.compile(
-    rf"""
-    (?:^|[=(,:])\s*
-    (?:[rub]*f[rub]*)
-    (?:'''|\"\"\"|'|\")
-    (?=[^\n]{{0,1000}}\{{[^{{}}\n]+\}})
-    \s*{_SQL_LEADING_COMMENTS_PATTERN}{_SQL_SOURCE_STATEMENT_PATTERN}
-    """,
-    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
-)
-_PYTHON_CONCAT_SQL_FALLBACK_RE = re.compile(
-    rf"""
-    (?:^|[=(,:])\s*
-    (?P<quote>'''|\"\"\"|'|\")
-    \s*{_SQL_LEADING_COMMENTS_PATTERN}{_SQL_SOURCE_STATEMENT_PATTERN}
-    [^\n]{{0,1000}}(?P=quote)\s*\+
-    """,
-    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
-)
-_PYTHON_FSTRING_CONTEXTUAL_SELECT_FALLBACK_RE = re.compile(
-    rf"""
-    ^[ \t]*
-    (?P<target>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)
-    (?:\s*:\s*[^=\r\n]+)?\s*=\s*
-    (?:[rub]*f[rub]*)
-    (?P<quote>'''|\"\"\"|'|\")
-    \s*{_SQL_LEADING_COMMENTS_PATTERN}SELECT\s+
-    (?=[^\n]{{0,1000}}{_SQL_SOURCE_EXPRESSION_PATTERN})
-    [^\n]{{1,1000}}?(?P=quote)
-    """,
-    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
-)
-_PYTHON_CONCAT_CONTEXTUAL_SELECT_FALLBACK_RE = re.compile(
-    rf"""
-    ^[ \t]*
-    (?P<target>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)
-    (?:\s*:\s*[^=\r\n]+)?\s*=\s*
-    (?P<quote>'''|\"\"\"|'|\")
-    \s*{_SQL_LEADING_COMMENTS_PATTERN}SELECT\b
-    [^\n]{{0,1000}}?(?P=quote)\s*\+
-    """,
-    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
+_PYTHON_FORMAT_FIELD_RE = re.compile(r"(?<!\{)\{[^{}]*\}(?!\})")
+_QUERY_ASSIGNMENT_PREFIX_RE = re.compile(
+    r"(?:^|[;])\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)?"
+    r"(?P<target>[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?:\s*:\s*[^=]+)?\s*=\s*(?:\(\s*)*$",
+    re.IGNORECASE,
 )
 _NON_CODE_TOKEN_TYPES = frozenset(
     {
@@ -207,7 +148,7 @@ def strip_js_comments_and_strings(content: str, comments_and_strings_re: re.Patt
 def python_eval_call_lines(content: str) -> set[int]:
     try:
         tree = ast.parse(content)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, ValueError):
         return set()
 
     lines: set[int] = set()
@@ -227,23 +168,29 @@ def python_eval_call_lines(content: str) -> set[int]:
 def python_interpolated_sql_lines(content: str) -> set[int]:
     """Return Python source lines that dynamically construct SQL statements.
 
-    Parsed Python is authoritative. The bounded regex fallback exists only for
-    otherwise-unparseable files and requires the string itself to begin with a
-    SQL statement shape; ordinary prose containing words such as ``update`` is
-    intentionally not enough.
+    Parsed Python is authoritative. If an unrelated syntax error prevents a
+    module parse, tokenized logical statements are recovered without treating
+    comments or string contents as executable source.
     """
 
     try:
         tree = ast.parse(content)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, ValueError):
         return _python_interpolated_sql_lines_from_source(content)
 
+    return _python_interpolated_sql_lines_from_tree(tree)
+
+
+def _python_interpolated_sql_lines_from_tree(
+    tree: ast.AST,
+    *,
+    line_offset: int = 0,
+) -> set[int]:
     parents = {
         child: parent
         for parent in ast.walk(tree)
         for child in ast.iter_child_nodes(parent)
     }
-    sql_usage_names = _sql_usage_names_by_scope(tree, parents)
     lines: set[int] = set()
     for node in ast.walk(tree):
         template = _dynamic_string_template(node, parents)
@@ -252,17 +199,10 @@ def python_interpolated_sql_lines(content: str) -> set[int]:
             and _looks_like_sql_statement(template)
             and (
                 not _select_requires_sql_context(template)
-                or _has_sql_context(
-                    node,
-                    parents,
-                    used_names=sql_usage_names.get(
-                        _enclosing_scope(node, parents),
-                        frozenset(),
-                    ),
-                )
+                or _has_sql_context(node, parents)
             )
         ):
-            lines.add(int(getattr(node, "lineno", 1) or 1))
+            lines.add(int(getattr(node, "lineno", 1) or 1) + line_offset)
     return lines
 
 
@@ -277,6 +217,10 @@ def _dynamic_string_template(
         if isinstance(parent, ast.BinOp) and isinstance(parent.op, ast.Add):
             return None
         return _concatenated_string_template(node)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        return _percent_formatted_string_template(node)
+    if isinstance(node, ast.Call):
+        return _format_call_template(node)
     return None
 
 
@@ -327,23 +271,42 @@ def _concatenated_string_template(node: ast.BinOp) -> str | None:
     return "".join(parts)
 
 
+def _percent_formatted_string_template(node: ast.BinOp) -> str | None:
+    if not isinstance(node.left, ast.Constant) or not isinstance(node.left.value, str):
+        return None
+    if not _PYTHON_PERCENT_FIELD_RE.search(node.left.value):
+        return None
+    return _PYTHON_PERCENT_FIELD_RE.sub("{expr}", node.left.value)
+
+
+def _format_call_template(node: ast.Call) -> str | None:
+    function = node.func
+    if (
+        not isinstance(function, ast.Attribute)
+        or function.attr not in {"format", "format_map"}
+        or not isinstance(function.value, ast.Constant)
+        or not isinstance(function.value.value, str)
+        or (not node.args and not node.keywords)
+        or not _PYTHON_FORMAT_FIELD_RE.search(function.value.value)
+    ):
+        return None
+    return _PYTHON_FORMAT_FIELD_RE.sub("{expr}", function.value.value)
+
+
 def _looks_like_sql_statement(template: str) -> bool:
-    return bool(_SQL_STATEMENT_PREFIX_RE.search(template))
+    return bool(
+        _SQL_STRONG_STATEMENT_RE.search(template)
+        or _SQL_AMBIGUOUS_DYNAMIC_SELECT_RE.fullmatch(template)
+    )
 
 
 def _select_requires_sql_context(template: str) -> bool:
-    return bool(
-        _SQL_CONTEXTUAL_DYNAMIC_SELECT_RE.fullmatch(template)
-        and not _SQL_STRONG_DYNAMIC_SELECT_RE.search(template)
-    )
+    return bool(_SQL_AMBIGUOUS_DYNAMIC_SELECT_RE.fullmatch(template))
 
 
 def _has_sql_context(
     node: ast.AST,
     parents: dict[ast.AST, ast.AST],
-    *,
-    used_names: frozenset[str] | set[str] = frozenset(),
-    return_context_name: str | None = None,
 ) -> bool:
     """Require a direct SQL sink/binding for ambiguous dynamic SELECT text."""
 
@@ -358,14 +321,7 @@ def _has_sql_context(
         targets.append(parent.target)
 
     if targets:
-        target_names = {
-            name
-            for target in targets
-            for name in _target_reference_names(target)
-        }
-        if any(_is_sql_context_name(name.rsplit(".", 1)[-1]) for name in target_names):
-            return True
-        if target_names.intersection(used_names):
+        if any(_target_has_sql_context_name(target) for target in targets):
             return True
 
     call = parent if isinstance(parent, ast.Call) else None
@@ -380,25 +336,20 @@ def _has_sql_context(
             return True
 
     if isinstance(parent, ast.Return) and parent.value is node:
-        if return_context_name is not None:
-            return _is_sql_context_name(return_context_name)
         function = _enclosing_function(parent, parents)
         return function is not None and _is_sql_context_name(function.name)
 
     return False
 
 
-def _target_reference_names(target: ast.AST) -> set[str]:
+def _target_has_sql_context_name(target: ast.AST) -> bool:
     if isinstance(target, ast.Name):
-        return {target.id}
+        return _is_sql_context_name(target.id)
     if isinstance(target, ast.Attribute):
-        qualified = _qualified_name(target)
-        return {qualified} if qualified is not None else {target.attr}
+        return _is_sql_context_name(target.attr)
     if isinstance(target, (ast.Tuple, ast.List)):
-        return {
-            name for element in target.elts for name in _target_reference_names(element)
-        }
-    return set()
+        return any(_target_has_sql_context_name(element) for element in target.elts)
+    return False
 
 
 def _is_sql_execution_call(call: ast.Call) -> bool:
@@ -408,41 +359,6 @@ def _is_sql_execution_call(call: ast.Call) -> bool:
         and function_name.rsplit(".", 1)[-1].casefold()
         in _SQL_EXECUTION_CALL_NAMES
     )
-
-
-def _sql_usage_names_by_scope(
-    tree: ast.Module,
-    parents: dict[ast.AST, ast.AST],
-) -> dict[ast.AST, frozenset[str]]:
-    names_by_scope: dict[ast.AST, set[str]] = {}
-    for candidate in ast.walk(tree):
-        if not isinstance(candidate, ast.Call) or not _is_sql_execution_call(candidate):
-            continue
-        scope = _enclosing_scope(candidate, parents)
-        names = names_by_scope.setdefault(scope, set())
-        for argument in [
-            *candidate.args,
-            *(keyword.value for keyword in candidate.keywords),
-        ]:
-            reference = _qualified_name(argument)
-            if reference is not None:
-                names.add(reference)
-    return {scope: frozenset(names) for scope, names in names_by_scope.items()}
-
-
-def _enclosing_scope(
-    node: ast.AST,
-    parents: dict[ast.AST, ast.AST],
-) -> ast.AST:
-    current: ast.AST | None = node
-    while current is not None:
-        if isinstance(
-            current,
-            (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda),
-        ):
-            return current
-        current = parents.get(current)
-    raise RuntimeError("Python AST node is detached from its module")
 
 
 def _enclosing_function(
@@ -461,127 +377,260 @@ def _is_sql_context_name(name: str) -> bool:
     return bool(_SQL_CONTEXT_NAME_RE.search(name))
 
 
-def _recoverable_python_statements(content: str) -> list[_RecoveredPythonStatement]:
-    """Parse valid one-line statements even when another line breaks the module."""
-
-    recovered: list[_RecoveredPythonStatement] = []
-    scope_stack: list[tuple[int, str, str, int]] = []
-    for line_number, line in enumerate(content.splitlines(), start=1):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-
-        indentation = len(line[: len(line) - len(line.lstrip())].expandtabs(8))
-        while scope_stack and indentation <= scope_stack[-1][0]:
-            scope_stack.pop()
-
-        declaration = _PYTHON_SCOPE_DECLARATION_RE.match(line)
-        if declaration is not None:
-            kind = declaration.group("kind").casefold()
-            scope_stack.append(
-                (
-                    indentation,
-                    "function" if "def" in kind else "class",
-                    declaration.group("name"),
-                    line_number,
-                )
-            )
-            continue
-
-        try:
-            tree = ast.parse(f"async def __recovered__():\n    {stripped}\n")
-        except SyntaxError:
-            continue
-        parents = {
-            child: parent
-            for parent in ast.walk(tree)
-            for child in ast.iter_child_nodes(parent)
-        }
-        function_name = next(
-            (
-                name
-                for _, kind, name, _ in reversed(scope_stack)
-                if kind == "function"
-            ),
-            None,
-        )
-        recovered.append(
-            _RecoveredPythonStatement(
-                line_number=line_number,
-                scope_key=tuple(entry[3] for entry in scope_stack),
-                function_name=function_name,
-                tree=tree,
-                parents=parents,
-            )
-        )
-    return recovered
-
-
-def _python_interpolated_sql_lines_from_recovered_statements(
-    content: str,
-) -> set[int]:
-    recovered = _recoverable_python_statements(content)
-    usage_by_scope: dict[tuple[int, ...], set[str]] = {}
-    for statement in recovered:
-        used_names = usage_by_scope.setdefault(statement.scope_key, set())
-        for candidate in ast.walk(statement.tree):
-            if not isinstance(candidate, ast.Call) or not _is_sql_execution_call(
-                candidate
-            ):
-                continue
-            for argument in [
-                *candidate.args,
-                *(keyword.value for keyword in candidate.keywords),
-            ]:
-                reference = _qualified_name(argument)
-                if reference is not None:
-                    used_names.add(reference)
-
+def _python_interpolated_sql_lines_from_source(content: str) -> set[int]:
     lines: set[int] = set()
-    for statement in recovered:
-        used_names = usage_by_scope.get(statement.scope_key, set())
-        for node in ast.walk(statement.tree):
-            template = _dynamic_string_template(node, statement.parents)
-            if (
-                template is not None
-                and _looks_like_sql_statement(template)
-                and (
-                    not _select_requires_sql_context(template)
-                    or _has_sql_context(
-                        node,
-                        statement.parents,
-                        used_names=used_names,
-                        return_context_name=statement.function_name,
+    for statement in _python_logical_statements(content):
+        source = _logical_statement_source(statement.tokens)
+        if source:
+            wrapper_name = (
+                statement.function_name
+                if statement.function_name
+                and statement.function_name.isidentifier()
+                else "__recovered__"
+            )
+            wrapped = (
+                f"async def {wrapper_name}():\n"
+                f"{textwrap.indent(source, '    ')}\n"
+            )
+            try:
+                tree = ast.parse(wrapped)
+            except (SyntaxError, RecursionError, ValueError):
+                pass
+            else:
+                lines.update(
+                    _python_interpolated_sql_lines_from_tree(
+                        tree,
+                        line_offset=statement.start_line - 2,
                     )
                 )
+        lines.update(_tokenized_statement_sql_lines(statement))
+    return lines
+
+
+def _python_logical_statements(content: str) -> list[_PythonLogicalStatement]:
+    statements: list[_PythonLogicalStatement] = []
+    current: list[tokenize.TokenInfo] = []
+    scope_stack: list[tuple[str, str]] = []
+    pending_scope: tuple[str, str] | None = None
+    token_stream = tokenize.generate_tokens(io.StringIO(content).readline)
+
+    try:
+        for token in token_stream:
+            if token.type == tokenize.INDENT:
+                if pending_scope is not None:
+                    scope_stack.append(pending_scope)
+                pending_scope = None
+                continue
+            if token.type == tokenize.DEDENT:
+                if scope_stack:
+                    scope_stack.pop()
+                continue
+            if (
+                pending_scope is not None
+                and token.type
+                not in {tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE}
             ):
-                lines.add(statement.line_number)
-    return lines
+                pending_scope = None
+            if token.type in {tokenize.ENCODING, tokenize.ENDMARKER}:
+                if token.type == tokenize.ENDMARKER:
+                    _append_logical_statement(statements, current, scope_stack)
+                    current = []
+                continue
+
+            current.append(token)
+            if token.type == tokenize.NEWLINE:
+                declaration = _append_logical_statement(
+                    statements,
+                    current,
+                    scope_stack,
+                )
+                pending_scope = declaration
+                current = []
+    except (SyntaxError, tokenize.TokenError):
+        _append_logical_statement(statements, current, scope_stack)
+
+    return statements
 
 
-def _python_interpolated_sql_lines_from_source(content: str) -> set[int]:
-    matches = [
-        *_PYTHON_FSTRING_SQL_FALLBACK_RE.finditer(content),
-        *_PYTHON_CONCAT_SQL_FALLBACK_RE.finditer(content),
+def _append_logical_statement(
+    statements: list[_PythonLogicalStatement],
+    tokens: list[tokenize.TokenInfo],
+    scope_stack: list[tuple[str, str]],
+) -> tuple[str, str] | None:
+    significant = [
+        token for token in tokens if token.type not in _NON_CODE_TOKEN_TYPES
     ]
-    lines = {index_to_line(content, match.start()) for match in matches}
-    lines.update(
-        index_to_line(content, match.start())
-        for pattern in (
-            _PYTHON_FSTRING_CONTEXTUAL_SELECT_FALLBACK_RE,
-            _PYTHON_CONCAT_CONTEXTUAL_SELECT_FALLBACK_RE,
-        )
-        for match in pattern.finditer(content)
-        if _is_sql_context_name(match.group("target").rsplit(".", 1)[-1])
+    if not significant:
+        return None
+    function_name = next(
+        (name for kind, name in reversed(scope_stack) if kind == "function"),
+        None,
     )
-    lines.update(_python_interpolated_sql_lines_from_recovered_statements(content))
+    statements.append(
+        _PythonLogicalStatement(
+            tokens=tuple(tokens),
+            start_line=significant[0].start[0],
+            function_name=function_name,
+        )
+    )
+    return _scope_declaration(significant)
+
+
+def _scope_declaration(
+    tokens: list[tokenize.TokenInfo],
+) -> tuple[str, str] | None:
+    names = [token.string for token in tokens if token.type == tokenize.NAME]
+    if not names:
+        return None
+    index = 1 if names[0].casefold() == "async" else 0
+    if index + 1 >= len(names) or names[index].casefold() not in {"def", "class"}:
+        return None
+    kind = "function" if names[index].casefold() == "def" else "class"
+    return kind, names[index + 1]
+
+
+def _logical_statement_source(
+    tokens: tuple[tokenize.TokenInfo, ...],
+) -> str:
+    pairs = [
+        (token.type, token.string)
+        for token in tokens
+        if token.type
+        not in {
+            tokenize.COMMENT,
+            tokenize.DEDENT,
+            tokenize.ENCODING,
+            tokenize.ENDMARKER,
+            tokenize.INDENT,
+        }
+    ]
+    return textwrap.dedent(tokenize.untokenize(pairs)).strip()
+
+
+def _tokenized_statement_sql_lines(
+    statement: _PythonLogicalStatement,
+) -> set[int]:
+    tokens = [
+        token
+        for token in statement.tokens
+        if token.type not in _NON_CODE_TOKEN_TYPES
+    ]
+    declaration = _scope_declaration(tokens)
+    function_name = (
+        declaration[1]
+        if declaration is not None and declaration[0] == "function"
+        else statement.function_name
+    )
+    lines: set[int] = set()
+    for index, token in enumerate(tokens):
+        if token.type != tokenize.STRING:
+            continue
+        template = _token_string_template(tokens, index)
+        if template is None or not _looks_like_sql_statement(template):
+            continue
+        if _select_requires_sql_context(template) and not _token_has_sql_context(
+            tokens,
+            index,
+            function_name=function_name,
+        ):
+            continue
+        lines.add(token.start[0])
     return lines
+
+
+def _token_string_template(
+    tokens: list[tokenize.TokenInfo],
+    index: int,
+) -> str | None:
+    literal = tokens[index].string
+    try:
+        expression = ast.parse(literal, mode="eval").body
+    except (SyntaxError, RecursionError, ValueError):
+        expression = None
+    if isinstance(expression, ast.JoinedStr):
+        return _joined_string_template(expression)
+
+    try:
+        value = ast.literal_eval(literal)
+    except (SyntaxError, RecursionError, ValueError):
+        return None
+    if not isinstance(value, str):
+        return None
+
+    following = tokens[index + 1 :]
+    if following and following[0].type == tokenize.OP:
+        operator = following[0].string
+        if operator == "+":
+            if _token_concat_has_dynamic_operand(following[1:]):
+                return f"{value}{{expr}}"
+        elif operator == "%" and _PYTHON_PERCENT_FIELD_RE.search(value):
+            return _PYTHON_PERCENT_FIELD_RE.sub("{expr}", value)
+        elif (
+            operator == "."
+            and len(following) >= 3
+            and following[1].type == tokenize.NAME
+            and following[1].string in {"format", "format_map"}
+            and following[2].type == tokenize.OP
+            and following[2].string == "("
+            and _PYTHON_FORMAT_FIELD_RE.search(value)
+        ):
+            return _PYTHON_FORMAT_FIELD_RE.sub("{expr}", value)
+    return None
+
+
+def _token_concat_has_dynamic_operand(tokens: list[tokenize.TokenInfo]) -> bool:
+    cursor = 0
+    while cursor < len(tokens):
+        token = tokens[cursor]
+        if token.type == tokenize.STRING:
+            try:
+                expression = ast.parse(token.string, mode="eval").body
+            except (SyntaxError, RecursionError, ValueError):
+                expression = None
+            if isinstance(expression, ast.JoinedStr):
+                return True
+            cursor += 1
+        else:
+            return True
+        if cursor >= len(tokens) or tokens[cursor].string != "+":
+            return False
+        cursor += 1
+    return False
+
+
+def _token_has_sql_context(
+    tokens: list[tokenize.TokenInfo],
+    index: int,
+    *,
+    function_name: str | None,
+) -> bool:
+    prefix = tokenize.untokenize(
+        [(token.type, token.string) for token in tokens[:index]]
+    )
+    assignment = _QUERY_ASSIGNMENT_PREFIX_RE.search(prefix)
+    if assignment is not None and _is_sql_context_name(assignment.group("target")):
+        return True
+
+    sink_names = "|".join(sorted(re.escape(name) for name in _SQL_EXECUTION_CALL_NAMES))
+    if re.search(
+        rf"(?:^|[^\w])(?:[A-Za-z_][A-Za-z0-9_]*\.)*"
+        rf"(?:{sink_names})\s*\(\s*"
+        r"(?:[A-Za-z_][A-Za-z0-9_]*\s*=\s*)?(?:\(\s*)*$",
+        prefix,
+        re.IGNORECASE,
+    ):
+        return True
+    return bool(
+        function_name
+        and _is_sql_context_name(function_name)
+        and re.search(r"\breturn\s*(?:\(\s*)*$", prefix, re.IGNORECASE)
+    )
 
 
 def python_httpx_calls(content: str) -> list[PythonHttpxCall]:
     try:
         tree = ast.parse(content)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, ValueError):
         return _python_httpx_calls_from_tokens(content)
 
     calls: list[PythonHttpxCall] = []
