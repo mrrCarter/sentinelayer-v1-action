@@ -7,6 +7,7 @@ from typing import Iterable, Optional
 from .eng_quality_helpers import (
     index_to_line,
     is_test_file,
+    javascript_interpolated_sql_lines,
     line_snippet,
     python_eval_call_lines,
     python_httpx_calls,
@@ -478,27 +479,11 @@ class EngQualityScanner:
         )
         findings: list[Finding] = []
 
-        sql_prefix = (
-            r"(?:SELECT\b[\s\S]{0,400}\bFROM\b|INSERT\s+INTO\b|DELETE\s+FROM\b|"
-            r"UPDATE\s+[^\s;]+\s+SET\b|WITH\b[\s\S]{0,400}\bAS\s*\()"
-        )
-        js_concat = re.compile(
-            rf"(['\"])\s*{sql_prefix}[\s\S]{{0,400}}?\1\s*\+\s*"
-            r"[A-Za-z_$][A-Za-z0-9_$.]*",
-            re.IGNORECASE,
-        )
-        js_template = re.compile(
-            rf"`\s*{sql_prefix}[^`]{{0,800}}\$\{{[^}}]+\}}[^`]*`",
-            re.IGNORECASE,
-        )
-
         for path, content in self._iter_files(files, exts=_BACKEND_EXTS):
             if self._is_test_file(path):
                 continue
             if path.endswith(_JS_EXTS):
-                matches = [*js_concat.finditer(content), *js_template.finditer(content)]
-                for m in sorted(matches, key=lambda match: match.start()):
-                    line = self._index_to_line(content, m.start())
+                for line in sorted(javascript_interpolated_sql_lines(content)):
                     snippet = self._line_snippet(content, line, line)
                     findings.append(
                         self._make_finding(
