@@ -32,6 +32,50 @@ _HTTPX_FUNCTION_NAMES_BY_CASEFOLD = {
     function_name.casefold(): function_name for function_name in _HTTPX_FUNCTION_NAMES
 }
 _MAX_FALLBACK_CALL_TOKENS = 512
+_SQL_STATEMENT_PREFIX_RE = re.compile(
+    r"""
+    ^\s*
+    (?:
+        SELECT\b[\s\S]{0,400}\bFROM\b
+        | INSERT\s+INTO\b
+        | DELETE\s+FROM\b
+        | UPDATE\s+(?:\{expr\}|[^\s;]+)\s+SET\b
+        | WITH\b[\s\S]{0,400}\bAS\s*\(
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+_PYTHON_FSTRING_SQL_FALLBACK_RE = re.compile(
+    r"""
+    (?:^|[=(,:])\s*
+    (?:[rub]*f[rub]*)
+    (?:'''|\"\"\"|'|\")
+    \s*(?:
+        SELECT\b[^\n]{0,400}\bFROM\b
+        | INSERT\s+INTO\b
+        | DELETE\s+FROM\b
+        | UPDATE\s+[^\s;]+\s+SET\b
+        | WITH\b[^\n]{0,400}\bAS\s*\(
+    )
+    [^\n]{0,1000}\{[^{}\n]+\}
+    """,
+    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
+)
+_PYTHON_CONCAT_SQL_FALLBACK_RE = re.compile(
+    r"""
+    (?:^|[=(,:])\s*
+    (?P<quote>'''|\"\"\"|'|\")
+    \s*(?:
+        SELECT\b[^\n]{0,400}\bFROM\b
+        | INSERT\s+INTO\b
+        | DELETE\s+FROM\b
+        | UPDATE\s+[^\s;]+\s+SET\b
+        | WITH\b[^\n]{0,400}\bAS\s*\(
+    )
+    [^\n]{0,1000}(?P=quote)\s*\+
+    """,
+    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
+)
 _NON_CODE_TOKEN_TYPES = frozenset(
     {
         tokenize.COMMENT,
@@ -97,6 +141,89 @@ def python_eval_call_lines(content: str) -> set[int]:
             if func.attr in {"eval", "exec"}:
                 lines.add(int(getattr(node, "lineno", 1) or 1))
     return lines
+
+
+def python_interpolated_sql_lines(content: str) -> set[int]:
+    """Return Python source lines that dynamically construct SQL statements.
+
+    Parsed Python is authoritative. The bounded regex fallback exists only for
+    otherwise-unparseable files and requires the string itself to begin with a
+    SQL statement shape; ordinary prose containing words such as ``update`` is
+    intentionally not enough.
+    """
+
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return _python_interpolated_sql_lines_from_source(content)
+
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        template: str | None = None
+        if isinstance(node, ast.JoinedStr):
+            template = _joined_string_template(node)
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            template = _concatenated_string_template(node)
+        if template is not None and _looks_like_sql_statement(template):
+            lines.add(int(getattr(node, "lineno", 1) or 1))
+    return lines
+
+
+def _joined_string_template(node: ast.JoinedStr) -> str | None:
+    if not any(isinstance(value, ast.FormattedValue) for value in node.values):
+        return None
+    parts: list[str] = []
+    for value in node.values:
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            parts.append(value.value)
+        elif isinstance(value, ast.FormattedValue):
+            parts.append("{expr}")
+    return "".join(parts)
+
+
+def _concatenated_string_template(node: ast.BinOp) -> str | None:
+    operands: list[ast.expr] = []
+
+    def _flatten(current: ast.expr) -> None:
+        if isinstance(current, ast.BinOp) and isinstance(current.op, ast.Add):
+            _flatten(current.left)
+            _flatten(current.right)
+        else:
+            operands.append(current)
+
+    _flatten(node)
+    has_string = False
+    has_dynamic = False
+    parts: list[str] = []
+    for operand in operands:
+        if isinstance(operand, ast.Constant) and isinstance(operand.value, str):
+            has_string = True
+            parts.append(operand.value)
+        elif isinstance(operand, ast.JoinedStr):
+            nested = _joined_string_template(operand)
+            if nested is None:
+                return None
+            has_string = True
+            has_dynamic = True
+            parts.append(nested)
+        else:
+            has_dynamic = True
+            parts.append("{expr}")
+    if not has_string or not has_dynamic:
+        return None
+    return "".join(parts)
+
+
+def _looks_like_sql_statement(template: str) -> bool:
+    return bool(_SQL_STATEMENT_PREFIX_RE.search(template))
+
+
+def _python_interpolated_sql_lines_from_source(content: str) -> set[int]:
+    matches = [
+        *_PYTHON_FSTRING_SQL_FALLBACK_RE.finditer(content),
+        *_PYTHON_CONCAT_SQL_FALLBACK_RE.finditer(content),
+    ]
+    return {index_to_line(content, match.start()) for match in matches}
 
 
 def python_httpx_calls(content: str) -> list[PythonHttpxCall]:

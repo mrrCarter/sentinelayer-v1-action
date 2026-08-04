@@ -49,6 +49,64 @@ def test_eval_call_detected_in_python() -> None:
     assert any(f.pattern_id == "EQ-008" for f in findings)
 
 
+def test_python_fstring_sql_interpolation_detected_as_p0() -> None:
+    files = {
+        "src/query.py": (
+            "def load(user_id):\n"
+            '    return f"SELECT email FROM users WHERE id = {user_id}"\n'
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = scanner.scan(files)
+    finding = next((f for f in findings if f.pattern_id == "EQ-009"), None)
+    assert finding is not None
+    assert finding.severity == "P0"
+    assert finding.line_start == 2
+
+
+def test_python_sql_string_concatenation_detected_as_p0() -> None:
+    files = {"src/query.py": 'query = "DELETE FROM users WHERE id = " + user_id\n'}
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = scanner.scan(files)
+    assert any(f.pattern_id == "EQ-009" and f.severity == "P0" for f in findings)
+
+
+def test_dns_update_error_fstring_is_not_misclassified_as_sql() -> None:
+    files = {
+        "scripts/cloudflare/check_dashboard_dns_origin.py": (
+            "raise DashboardDnsOriginError(\n"
+            '    f"Refusing to update ambiguous DNS records for {hostname}; "\n'
+            '    "clean them up explicitly."\n'
+            ")\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = scanner.scan(files)
+    assert not any(f.pattern_id == "EQ-009" for f in findings)
+
+
+def test_unparseable_python_uses_sql_anchored_fallback() -> None:
+    files = {
+        "src/broken.py": (
+            'query = f"UPDATE users SET name = {name} WHERE id = {user_id}"\n'
+            "this is invalid python\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+    findings = scanner.scan(files)
+    assert any(f.pattern_id == "EQ-009" and f.line_start == 1 for f in findings)
+
+
+def test_javascript_sql_template_interpolation_detected_but_update_prose_is_not() -> None:
+    files = {
+        "src/query.js": "const query = `SELECT email FROM users WHERE id = ${userId}`;\n",
+        "src/message.js": 'const message = "Refusing to update DNS for " + hostname;\n',
+    }
+    scanner = EngQualityScanner(tech_stack=["Node.js"])
+    findings = [finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-009"]
+    assert [finding.file_path for finding in findings] == ["src/query.js"]
+
+
 def test_dockerfile_without_user_detected_as_p2() -> None:
     files = {"Dockerfile": "FROM python:3.11\nRUN echo hi\n"}
     scanner = EngQualityScanner(tech_stack=[])

@@ -10,6 +10,7 @@ from .eng_quality_helpers import (
     line_snippet,
     python_eval_call_lines,
     python_httpx_calls,
+    python_interpolated_sql_lines,
     strip_js_comments_and_strings,
 )
 from .pattern_scanner import Finding, _truncate_snippet
@@ -477,16 +478,17 @@ class EngQualityScanner:
         )
         findings: list[Finding] = []
 
+        sql_prefix = (
+            r"(?:SELECT\b[\s\S]{0,400}\bFROM\b|INSERT\s+INTO\b|DELETE\s+FROM\b|"
+            r"UPDATE\s+[^\s;]+\s+SET\b|WITH\b[\s\S]{0,400}\bAS\s*\()"
+        )
         js_concat = re.compile(
-            r"(['\"]).{0,120}\b(SELECT|INSERT|UPDATE|DELETE)\b.{0,200}\1\s*\+\s*[A-Za-z_][A-Za-z0-9_]*",
+            rf"(['\"])\s*{sql_prefix}[\s\S]{{0,400}}?\1\s*\+\s*"
+            r"[A-Za-z_$][A-Za-z0-9_$.]*",
             re.IGNORECASE,
         )
-        py_concat = re.compile(
-            r"(['\"]).{0,120}\b(SELECT|INSERT|UPDATE|DELETE)\b.{0,200}\1\s*\+\s*[A-Za-z_][A-Za-z0-9_]*",
-            re.IGNORECASE,
-        )
-        py_fstring = re.compile(
-            r"f(['\"]).{0,200}\b(SELECT|INSERT|UPDATE|DELETE)\b.{0,400}\{[^}]+\}.*\1",
+        js_template = re.compile(
+            rf"`\s*{sql_prefix}[^`]{{0,800}}\$\{{[^}}]+\}}[^`]*`",
             re.IGNORECASE,
         )
 
@@ -494,7 +496,8 @@ class EngQualityScanner:
             if self._is_test_file(path):
                 continue
             if path.endswith(_JS_EXTS):
-                for m in js_concat.finditer(content):
+                matches = [*js_concat.finditer(content), *js_template.finditer(content)]
+                for m in sorted(matches, key=lambda match: match.start()):
                     line = self._index_to_line(content, m.start())
                     snippet = self._line_snippet(content, line, line)
                     findings.append(
@@ -507,8 +510,7 @@ class EngQualityScanner:
                         )
                     )
             if path.endswith(_PY_EXTS):
-                for m in py_concat.finditer(content):
-                    line = self._index_to_line(content, m.start())
+                for line in sorted(python_interpolated_sql_lines(content)):
                     snippet = self._line_snippet(content, line, line)
                     findings.append(
                         self._make_finding(
@@ -516,19 +518,7 @@ class EngQualityScanner:
                             file_path=path,
                             line_start=line,
                             snippet=snippet,
-                            confidence=0.85,
-                        )
-                    )
-                for m in py_fstring.finditer(content):
-                    line = self._index_to_line(content, m.start())
-                    snippet = self._line_snippet(content, line, line)
-                    findings.append(
-                        self._make_finding(
-                            rule,
-                            file_path=path,
-                            line_start=line,
-                            snippet=snippet,
-                            confidence=0.8,
+                            confidence=0.9,
                         )
                     )
 
