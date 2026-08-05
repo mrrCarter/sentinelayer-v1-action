@@ -3,6 +3,41 @@ from __future__ import annotations
 import hashlib
 import re
 
+
+_DEDUPE_CACHEABILITY_RE = re.compile(
+    r"<!--\s*sentinelayer:dedupe-cacheable:(true|false)\s*-->",
+    re.IGNORECASE,
+)
+
+
+def dedupe_cacheability_marker(cacheable: bool) -> str:
+    """Return the machine-readable cache policy embedded in a check run."""
+
+    value = "true" if cacheable else "false"
+    return f"<!-- sentinelayer:dedupe-cacheable:{value} -->"
+
+
+def check_run_is_dedupe_cacheable(run: dict) -> bool:
+    """Reject completed checks explicitly marked as retryable/non-cacheable."""
+
+    output = run.get("output") or {}
+    fields = (
+        output.get("title"),
+        output.get("summary"),
+        output.get("text"),
+    )
+    markers = {
+        match.casefold()
+        for field in fields
+        for match in _DEDUPE_CACHEABILITY_RE.findall(str(field or ""))
+    }
+    if "false" in markers:
+        return False
+    # Legacy checks remain eligible. ACTION_IDEMPOTENCY_VERSION is rotated
+    # when this contract changes, so they cannot collide with new keys.
+    return True
+
+
 def compute_idempotency_key(
     repo: str,
     pr_number: int,

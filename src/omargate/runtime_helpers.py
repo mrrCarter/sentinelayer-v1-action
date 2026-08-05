@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import OmarGateConfig
+from .idempotency import check_run_is_dedupe_cacheable
 from .models import Counts, GateResult, GateStatus
 from .packaging import write_pack_summary
 from .telemetry.schemas import SpecComplianceTelemetry
@@ -134,6 +135,12 @@ def _gate_result_from_check_run(run: dict, fallback_reason: str, extra_note: str
         "",
         text,
         flags=re.DOTALL,
+    )
+    cleaned_text = re.sub(
+        r"<!--\s*sentinelayer:dedupe-cacheable:(?:true|false)\s*-->",
+        "",
+        cleaned_text,
+        flags=re.IGNORECASE,
     ).strip()
     reason = (cleaned_text or summary.strip() or fallback_reason).strip()
     if extra_note:
@@ -186,10 +193,15 @@ def _find_check_run_by_marker(runs: list[dict], marker: str) -> Optional[dict]:
 
 
 def _select_check_run_for_dedupe(runs: list[dict], idem_key: str) -> Optional[dict]:
-    return _find_check_run_by_external_id(runs, idem_key) or _find_check_run_by_marker(
-        runs,
+    eligible = [
+        run
+        for run in runs
+        if run.get("status") == "completed" and check_run_is_dedupe_cacheable(run)
+    ]
+    return _find_check_run_by_external_id(
+        eligible,
         idem_key,
-    )
+    ) or _find_check_run_by_marker(eligible, idem_key)
 
 
 def _select_check_run_for_mirror(runs: list[dict]) -> Optional[dict]:

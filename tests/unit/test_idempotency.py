@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import hashlib
 
-from omargate.idempotency import compute_idempotency_key
+from omargate.idempotency import (
+    check_run_is_dedupe_cacheable,
+    compute_idempotency_key,
+    dedupe_cacheability_marker,
+)
 from omargate.main import ACTION_IDEMPOTENCY_VERSION
 
 
@@ -96,5 +100,27 @@ def test_eq009_contract_invalidates_v1310_dedupe_keys() -> None:
         **common,
     )
 
-    assert ACTION_IDEMPOTENCY_VERSION == "2:llm-evidence-v1:eq009-v2"
+    assert (
+        ACTION_IDEMPOTENCY_VERSION
+        == "3:llm-evidence-v1:eq009-v3:retryable-infra-v1"
+    )
     assert v1311 != v1310
+
+
+def test_retryable_check_marker_overrides_legacy_dedupe_identity() -> None:
+    run = {
+        "external_id": "same-content",
+        "output": {
+            "summary": "P0=1",
+            "text": dedupe_cacheability_marker(False),
+        },
+    }
+
+    assert check_run_is_dedupe_cacheable(run) is False
+
+
+def test_cacheable_and_legacy_check_markers_remain_eligible() -> None:
+    assert check_run_is_dedupe_cacheable(
+        {"output": {"text": dedupe_cacheability_marker(True)}}
+    )
+    assert check_run_is_dedupe_cacheable({"output": {"text": "legacy"}})

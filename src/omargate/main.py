@@ -16,7 +16,7 @@ from .config import OmarGateConfig
 from .context import GitHubContext
 from .gate import evaluate_gate
 from .github import GitHubClient, findings_to_annotations
-from .idempotency import compute_idempotency_key
+from .idempotency import compute_idempotency_key, dedupe_cacheability_marker
 from .ingest.codebase_snapshot import (
     build_codebase_snapshot,
     build_codebase_synopsis,
@@ -65,7 +65,7 @@ from .utils import ensure_writable_dir, json_dumps
 ACTION_VERSION = "1.3.12"
 # Rotate this whenever a security-control contract changes so dedupe cannot
 # mirror a successful check produced under weaker semantics on the same head.
-ACTION_IDEMPOTENCY_VERSION = "2:llm-evidence-v1:eq009-v2"
+ACTION_IDEMPOTENCY_VERSION = "3:llm-evidence-v1:eq009-v3:retryable-infra-v1"
 CHECK_NAME_BASE = "Omar Gate"
 __all__ = [
     "main",
@@ -85,6 +85,23 @@ def _check_name(comment_tag: str = "") -> str:
     if not tag:
         return CHECK_NAME_BASE
     return f"{CHECK_NAME_BASE} ({tag})"
+
+
+def _llm_result_is_dedupe_cacheable(
+    *,
+    attempted: bool,
+    success: bool,
+    output_valid: bool,
+    failure_class: Optional[str],
+    require_llm_success: bool,
+) -> bool:
+    """Cache only complete live reviews or intentionally deterministic runs."""
+
+    if success and output_valid:
+        return True
+    if attempted or (failure_class or "not_attempted") != "not_attempted":
+        return False
+    return not require_llm_success
 
 
 def _llm_fallback_used(llm_usage: dict, model_fallback: str) -> bool:
@@ -953,6 +970,13 @@ async def async_main() -> int:
                     f"🟡 P2={counts.get('P2', 0)} • ⚪ P3={counts.get('P3', 0)}"
                 )
                 check_text = gate_result.reason
+                dedupe_cacheable = _llm_result_is_dedupe_cacheable(
+                    attempted=bool(analysis.llm_attempted),
+                    success=bool(analysis.llm_success),
+                    output_valid=bool(analysis.llm_output_valid),
+                    failure_class=analysis.llm_failure_class,
+                    require_llm_success=bool(config.require_llm_success),
+                )
                 try:
                     counts_marker = json.dumps(
                         {
@@ -967,6 +991,10 @@ async def async_main() -> int:
                     check_text = f"{check_text}\n\n<!-- sentinelayer:counts:{counts_marker} -->"
                 except Exception:
                     pass
+                check_text = (
+                    f"{check_text}\n\n"
+                    f"{dedupe_cacheability_marker(dedupe_cacheable)}"
+                )
                 status_key = (
                     gate_result.status.value
                     if hasattr(gate_result.status, "value")
@@ -998,7 +1026,7 @@ async def async_main() -> int:
                             title=f"Omar Gate: {status_key.upper()}",
                             text=check_text,
                             details_url=workflow_run_url or dashboard_url,
-                            external_id=idem_key,
+                            external_id=idem_key if dedupe_cacheable else None,
                             annotations=annotations,
                         )
                         logger.info("Check run created", url=check_url)

@@ -8,7 +8,9 @@ from omargate.main import (
     _gate_result_from_check_run,
     _github_publish_enabled,
     _latest_completed_check_run,
+    _llm_result_is_dedupe_cacheable,
     _map_category_to_spec_sections,
+    _select_check_run_for_dedupe,
 )
 from omargate.config import OmarGateConfig
 from omargate.models import GateStatus
@@ -48,6 +50,42 @@ def test_latest_completed_check_run_picks_newest_completed() -> None:
     assert latest.get("id") == 3
 
 
+def test_dedupe_selection_excludes_retryable_check_results() -> None:
+    retryable = {
+        "status": "completed",
+        "external_id": "abc",
+        "output": {
+            "text": "<!-- sentinelayer:dedupe-cacheable:false -->"
+        },
+    }
+
+    assert _select_check_run_for_dedupe([retryable], "abc") is None
+
+
+def test_llm_dedupe_cacheability_requires_complete_or_disabled_review() -> None:
+    assert _llm_result_is_dedupe_cacheable(
+        attempted=True,
+        success=True,
+        output_valid=True,
+        failure_class=None,
+        require_llm_success=True,
+    )
+    assert not _llm_result_is_dedupe_cacheable(
+        attempted=True,
+        success=False,
+        output_valid=False,
+        failure_class="provider_failure",
+        require_llm_success=True,
+    )
+    assert _llm_result_is_dedupe_cacheable(
+        attempted=False,
+        success=False,
+        output_valid=False,
+        failure_class="not_attempted",
+        require_llm_success=False,
+    )
+
+
 def test_counts_from_check_run_output_prefers_marker() -> None:
     summary = "🔴 P0=9 • 🟠 P1=9 • 🟡 P2=9 • ⚪ P3=9"
     text = (
@@ -70,7 +108,11 @@ def test_gate_result_from_check_run_strips_counts_marker_from_reason() -> None:
         "external_id": "abc",
         "output": {
             "summary": "🔴 P0=0 • 🟠 P1=0 • 🟡 P2=0 • ⚪ P3=0",
-            "text": "No blocking findings\n\n<!-- sentinelayer:counts:{\"P0\":0,\"P1\":0,\"P2\":0,\"P3\":0} -->",
+            "text": (
+                "No blocking findings\n\n"
+                "<!-- sentinelayer:counts:{\"P0\":0,\"P1\":0,\"P2\":0,\"P3\":0} -->\n"
+                "<!-- sentinelayer:dedupe-cacheable:true -->"
+            ),
         },
     }
     result = _gate_result_from_check_run(
@@ -78,6 +120,7 @@ def test_gate_result_from_check_run_strips_counts_marker_from_reason() -> None:
     )
     assert result.status == GateStatus.PASSED
     assert "sentinelayer:counts" not in result.reason
+    assert "dedupe-cacheable" not in result.reason
     assert "Mirrored" in result.reason
 
 
