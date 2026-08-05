@@ -99,14 +99,14 @@ class PythonAnalysisContext:
         self.budget.consume_source(content)
         try:
             self.tree: ast.AST | None = ast.parse(content)
-        except MemoryError as exc:
+        except (MemoryError, RecursionError) as exc:
             raise DeterministicAnalysisBudgetExceeded(
                 path=file_path,
                 budget_kind="python_parser_resources",
                 limit=0,
                 observed_at_least=1,
             ) from exc
-        except (SyntaxError, RecursionError, ValueError):
+        except (SyntaxError, ValueError):
             self.tree = None
             self.ast_node_count = 0
         else:
@@ -499,14 +499,14 @@ def python_interpolated_sql_lines(
     """
 
     analysis = _python_analysis_context(content, file_path, context)
-    if analysis.tree is None:
-        return _python_interpolated_sql_lines_from_source(
-            content,
-            analysis.budget,
-        )
-
-    analysis.budget.consume_work(analysis.ast_node_count * 2)
     try:
+        if analysis.tree is None:
+            return _python_interpolated_sql_lines_from_source(
+                content,
+                analysis.budget,
+            )
+
+        analysis.budget.consume_work(analysis.ast_node_count * 2)
         return _python_interpolated_sql_lines_from_tree(
             analysis.tree,
             budget=analysis.budget,

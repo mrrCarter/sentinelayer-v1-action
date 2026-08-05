@@ -185,15 +185,20 @@ def test_python_sql_concatenation_handles_large_expression_iteratively() -> None
     assert sum(finding.pattern_id == "EQ-009" for finding in findings) == 1
 
 
-def test_python_sql_concatenation_cannot_crash_gate_at_5000_operands() -> None:
+def test_python_sql_concatenation_parser_exhaustion_fails_closed() -> None:
     source = (
         'query = "SELECT * FROM users WHERE id = " + '
         + " + ".join("user_id" for _ in range(5000))
         + "\n"
     )
-    scanner = EngQualityScanner(tech_stack=["Python"])
-    findings = scanner.scan({"src/stress_query.py": source})
-    assert sum(finding.pattern_id == "EQ-009" for finding in findings) == 1
+
+    with pytest.raises(DeterministicAnalysisBudgetExceeded) as caught:
+        EngQualityScanner(tech_stack=["Python"]).scan(
+            {"src/stress_query.py": source}
+        )
+
+    assert caught.value.path == "src/stress_query.py"
+    assert caught.value.budget_kind == "python_parser_resources"
 
 
 def test_javascript_sql_matching_is_anchored_and_supports_templates() -> None:
@@ -1597,6 +1602,21 @@ def _nested_comprehension_source(depth: int) -> str:
     return f"result=[0 {clauses}]\n"
 
 
+def _parser_recursion_sql_source(depth: int) -> str:
+    expression = "v"
+    for _ in range(depth):
+        expression = f"v if v else {expression}"
+    return (
+        "v=True\n"
+        "ok=True\n"
+        f"padding={expression}\n"
+        'q="SELECT * FROM users"\n'
+        'q += f" WHERE id={v}"\n'
+        "if ok:\n"
+        "    cursor.execute(q)\n"
+    )
+
+
 def test_python_parser_resource_failure_is_typed_at_helper_boundary() -> None:
     source = _nested_conditional_sql_source()
 
@@ -1611,6 +1631,39 @@ def test_python_parser_resource_failure_is_typed_at_helper_boundary() -> None:
     assert error.budget_kind == "python_parser_resources"
     assert error.limit == 0
     assert error.observed_at_least == 1
+
+
+def test_python_parser_recursion_never_downgrades_to_incomplete_recovery() -> None:
+    assert eng_quality_helpers.python_interpolated_sql_lines(
+        _parser_recursion_sql_source(2_500),
+        file_path="src/within_parser.py",
+    ) == {5}
+
+    with pytest.raises(DeterministicAnalysisBudgetExceeded) as caught:
+        eng_quality_helpers.python_interpolated_sql_lines(
+            _parser_recursion_sql_source(3_000),
+            file_path="src/parser_recursion.py",
+        )
+
+    assert caught.value.path == "src/parser_recursion.py"
+    assert caught.value.budget_kind == "python_parser_resources"
+
+
+def test_python_parser_recursion_never_returns_partial_findings() -> None:
+    not_returned = object()
+    result: object = not_returned
+
+    with pytest.raises(DeterministicAnalysisBudgetExceeded) as caught:
+        result = EngQualityScanner(tech_stack=["Python"]).scan(
+            {
+                "src/00_prior_finding.js": "eval(user_input);\n",
+                "src/parser_recursion.py": _parser_recursion_sql_source(3_000),
+            }
+        )
+
+    assert result is not_returned
+    assert caught.value.path == "src/parser_recursion.py"
+    assert caught.value.budget_kind == "python_parser_resources"
 
 
 def test_python_parser_resource_failure_never_returns_partial_findings() -> None:
@@ -1666,6 +1719,61 @@ def test_python_analysis_recursion_never_returns_partial_findings() -> None:
 
     assert result is not_returned
     assert caught.value.path == "src/deep_comprehension.py"
+    assert caught.value.budget_kind == "python_analysis_resources"
+
+
+def test_python_recovery_resource_failure_is_typed_at_helper_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parse_calls = 0
+
+    def exhaust_recovery(*_args, **_kwargs):
+        nonlocal parse_calls
+        parse_calls += 1
+        if parse_calls == 1:
+            raise SyntaxError("enter deterministic recovery")
+        raise MemoryError
+
+    monkeypatch.setattr(eng_quality_helpers.ast, "parse", exhaust_recovery)
+
+    with pytest.raises(DeterministicAnalysisBudgetExceeded) as caught:
+        eng_quality_helpers.python_interpolated_sql_lines(
+            'query = f"SELECT {value}"\n',
+            file_path="src/recovery.py",
+        )
+
+    assert parse_calls == 2
+    assert caught.value.path == "src/recovery.py"
+    assert caught.value.budget_kind == "python_analysis_resources"
+
+
+def test_python_recovery_resource_failure_never_returns_partial_findings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parse_calls = 0
+
+    def exhaust_recovery(*_args, **_kwargs):
+        nonlocal parse_calls
+        parse_calls += 1
+        if parse_calls == 1:
+            raise SyntaxError("enter deterministic recovery")
+        raise MemoryError
+
+    monkeypatch.setattr(eng_quality_helpers.ast, "parse", exhaust_recovery)
+    not_returned = object()
+    result: object = not_returned
+
+    with pytest.raises(DeterministicAnalysisBudgetExceeded) as caught:
+        result = EngQualityScanner(tech_stack=["Python"]).scan(
+            {
+                "src/00_prior_finding.js": "eval(user_input);\n",
+                "src/recovery.py": 'query = f"SELECT {value}"\n',
+            }
+        )
+
+    assert result is not_returned
+    assert parse_calls == 2
+    assert caught.value.path == "src/recovery.py"
     assert caught.value.budget_kind == "python_analysis_resources"
 
 
