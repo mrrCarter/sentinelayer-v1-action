@@ -187,6 +187,9 @@ class HarnessRunner:
         for suite in suites:
             remaining_total = max(0.0, deadline - time.monotonic())
             if remaining_total <= 0:
+                findings.append(
+                    self._timeout_finding("total_budget", self.total_timeout_s)
+                )
                 break
 
             timeout_s = min(float(self.per_suite_timeout_s), remaining_total)

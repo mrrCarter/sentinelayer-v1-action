@@ -78,6 +78,24 @@ def _parse_ignore_ids(raw: str) -> list[str]:
     return ids
 
 
+def _tool_execution_error(tool: str, file_path: str, reason: str) -> Finding:
+    normalized_tool = re.sub(r"[^A-Z0-9]+", "-", tool.upper()).strip("-")
+    return Finding(
+        id=f"HARNESS-ERROR-{normalized_tool}",
+        pattern_id="HARNESS-ERROR",
+        severity="P2",
+        category="harness",
+        file_path=file_path,
+        line_start=1,
+        line_end=1,
+        snippet="",
+        message=f"Harness dependency audit incomplete: {tool} {reason}",
+        recommendation=f"Install/fix {tool} and re-run the required harness",
+        confidence=1.0,
+        source="harness",
+    )
+
+
 @dataclass
 class DepAuditSuite(SecuritySuite):
     tech_stack: list[str]
@@ -100,13 +118,17 @@ class DepAuditSuite(SecuritySuite):
             timeout_s=50,
         )
         if res.returncode == 127:
-            return None
+            return _tool_execution_error("npm audit", "package.json", "is unavailable")
         if not res.stdout.strip():
-            return None
+            return _tool_execution_error(
+                "npm audit", "package.json", "returned no JSON result"
+            )
         try:
             payload = json.loads(res.stdout)
         except json.JSONDecodeError:
-            return None
+            return _tool_execution_error(
+                "npm audit", "package.json", "returned invalid JSON"
+            )
 
         critical_count = _parse_npm_critical_count(payload)
         if critical_count <= 0:
@@ -142,13 +164,19 @@ class DepAuditSuite(SecuritySuite):
             timeout_s=50,
         )
         if res.returncode == 127:
-            return None
+            return _tool_execution_error(
+                "pip-audit", "requirements.txt", "is unavailable"
+            )
         if not res.stdout.strip():
-            return None
+            return _tool_execution_error(
+                "pip-audit", "requirements.txt", "returned no JSON result"
+            )
         try:
             payload = json.loads(res.stdout)
         except json.JSONDecodeError:
-            return None
+            return _tool_execution_error(
+                "pip-audit", "requirements.txt", "returned invalid JSON"
+            )
         vuln_count = _parse_pip_vulnerability_count(payload)
         if vuln_count <= 0:
             return None
@@ -175,14 +203,20 @@ class DepAuditSuite(SecuritySuite):
 
         res = await run_command(["cargo", "audit", "--json"], cwd=root, timeout_s=50)
         if res.returncode == 127:
-            return None
+            return _tool_execution_error(
+                "cargo audit", "Cargo.toml", "is unavailable"
+            )
         if not res.stdout.strip():
-            return None
+            return _tool_execution_error(
+                "cargo audit", "Cargo.toml", "returned no JSON result"
+            )
 
         try:
             payload = json.loads(res.stdout)
         except json.JSONDecodeError:
-            return None
+            return _tool_execution_error(
+                "cargo audit", "Cargo.toml", "returned invalid JSON"
+            )
         vulns = payload.get("vulnerabilities") if isinstance(payload.get("vulnerabilities"), dict) else {}
         listed = vulns.get("list") if isinstance(vulns.get("list"), list) else []
         if not listed:

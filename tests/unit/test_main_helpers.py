@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from omargate.main import (
+    _build_dedupe_publication_contract,
     _check_name,
     _build_spec_compliance_from_findings,
     _counts_from_check_run_output,
@@ -128,6 +131,9 @@ def test_llm_dedupe_cacheability_requires_complete_or_disabled_review() -> None:
         output_valid=True,
         failure_class=None,
         require_llm_success=True,
+        harness_attempted=True,
+        harness_success=True,
+        require_harness_success=True,
     )
     assert not _llm_result_is_dedupe_cacheable(
         attempted=True,
@@ -135,6 +141,9 @@ def test_llm_dedupe_cacheability_requires_complete_or_disabled_review() -> None:
         output_valid=False,
         failure_class="provider_failure",
         require_llm_success=True,
+        harness_attempted=True,
+        harness_success=True,
+        require_harness_success=True,
     )
     assert _llm_result_is_dedupe_cacheable(
         attempted=False,
@@ -142,7 +151,67 @@ def test_llm_dedupe_cacheability_requires_complete_or_disabled_review() -> None:
         output_valid=False,
         failure_class="not_attempted",
         require_llm_success=False,
+        harness_attempted=False,
+        harness_success=False,
+        require_harness_success=False,
     )
+
+
+def test_dedupe_cacheability_requires_enabled_harness_to_complete() -> None:
+    common = {
+        "attempted": True,
+        "success": True,
+        "output_valid": True,
+        "failure_class": None,
+        "require_llm_success": True,
+        "harness_attempted": True,
+        "require_harness_success": True,
+    }
+
+    assert not _llm_result_is_dedupe_cacheable(
+        harness_success=False,
+        **common,
+    )
+    assert _llm_result_is_dedupe_cacheable(
+        harness_success=True,
+        **common,
+    )
+    assert _llm_result_is_dedupe_cacheable(
+        attempted=True,
+        success=True,
+        output_valid=True,
+        failure_class=None,
+        require_llm_success=True,
+        harness_attempted=False,
+        harness_success=False,
+        require_harness_success=False,
+    )
+
+
+def test_failed_required_harness_publishes_retryable_cache_contract() -> None:
+    analysis = SimpleNamespace(
+        llm_attempted=True,
+        llm_success=True,
+        llm_output_valid=True,
+        llm_failure_class=None,
+        harness_attempted=True,
+        harness_success=False,
+    )
+    config = OmarGateConfig(
+        openai_api_key="sk_test_dummy",
+        run_harness=True,
+        llm_failure_policy="block",
+    )
+
+    cacheable, external_id, marker = _build_dedupe_publication_contract(
+        analysis,
+        config,
+        "exact-subject-key",
+    )
+
+    assert cacheable is False
+    assert external_id is None
+    assert marker == "<!-- sentinelayer:dedupe-cacheable:false -->"
 
 
 def test_counts_from_check_run_output_prefers_marker() -> None:

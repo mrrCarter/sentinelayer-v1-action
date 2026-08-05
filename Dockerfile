@@ -60,7 +60,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY --from=builder /install /usr/local
 COPY src /app/src
 COPY prompts /app/prompts
-COPY entrypoint.sh /app/entrypoint.sh
+COPY action.yml requirements.lock.txt Dockerfile .dockerignore entrypoint.sh /app/
 
 RUN chmod +x /app/entrypoint.sh
 

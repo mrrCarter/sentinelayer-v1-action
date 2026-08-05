@@ -68,6 +68,33 @@ async def test_suite_timeout_is_enforced(tmp_path: Path, monkeypatch) -> None:
 
 
 @pytest.mark.anyio
+async def test_total_budget_exhaustion_is_explicit(tmp_path: Path, monkeypatch) -> None:
+    class NeverStartedSuite(SecuritySuite):
+        @property
+        def name(self) -> str:
+            return "never-started"
+
+        def applies_to(self, tech_stack: list[str]) -> bool:
+            return True
+
+        async def run(self, project_root: str):
+            raise AssertionError("suite must not start after total budget exhaustion")
+
+    runner = HarnessRunner(
+        project_root=str(tmp_path),
+        tech_stack=[],
+        total_timeout_s=0,
+    )
+    monkeypatch.setattr(runner, "_select_suites", lambda: [NeverStartedSuite()])
+
+    findings = await runner.run()
+
+    assert len(findings) == 1
+    assert findings[0].pattern_id == "HARNESS-TIMEOUT"
+    assert "total_budget" in findings[0].message
+
+
+@pytest.mark.anyio
 async def test_findings_are_harness_source(tmp_path: Path, monkeypatch) -> None:
     from omargate.analyze.deterministic.pattern_scanner import Finding
 
