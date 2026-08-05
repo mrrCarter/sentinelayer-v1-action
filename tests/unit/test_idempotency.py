@@ -119,6 +119,17 @@ def test_retryable_check_marker_overrides_legacy_dedupe_identity() -> None:
     assert check_run_is_dedupe_cacheable(run) is False
 
 
+def test_unkeyed_reuse_requires_explicit_current_cacheability_marker() -> None:
+    legacy = {"output": {"text": "legacy"}}
+    current = {
+        "output": {"text": "<!-- sentinelayer:dedupe-cacheable:true -->"}
+    }
+
+    assert check_run_is_dedupe_cacheable(legacy) is True
+    assert check_run_is_dedupe_cacheable(legacy, allow_legacy=False) is False
+    assert check_run_is_dedupe_cacheable(current, allow_legacy=False) is True
+
+
 def test_cacheable_and_legacy_check_markers_remain_eligible() -> None:
     assert check_run_is_dedupe_cacheable(
         {"output": {"text": dedupe_cacheability_marker(True)}}

@@ -65,6 +65,59 @@ async def test_preflight_exit_dedupe_uploads_telemetry(monkeypatch, tmp_path) ->
 
 
 @pytest.mark.anyio
+async def test_rate_limit_skip_check_is_explicitly_non_cacheable(monkeypatch, tmp_path) -> None:
+    from omargate import main as om
+
+    check_runs: list[dict] = []
+
+    async def fake_check_dedupe(*_args, **_kwargs):
+        return False, None
+
+    async def fake_check_rate_limits(*_args, **_kwargs):
+        return False, "cooldown_not_met"
+
+    async def fake_fetch_oidc_token(*_args, **_kwargs):
+        return None
+
+    async def fake_upload_telemetry_always(**_kwargs) -> None:
+        return None
+
+    class DummyGH:
+        def __init__(self, token: str, repo: str):
+            self.token = token
+            self.repo = repo
+
+        def list_check_runs(self, *_args, **_kwargs) -> list[dict]:
+            return []
+
+        def create_check_run(self, **kwargs) -> str:
+            check_runs.append(kwargs)
+            return "https://example.test/check"
+
+    monkeypatch.setenv("SENTINELAYER_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv("INPUT_SCAN_MODE", "deep")
+    monkeypatch.setenv("INPUT_OPENAI_API_KEY", "sk_test_dummy")
+    monkeypatch.setenv("INPUT_GITHUB_TOKEN", "gh_test_dummy")
+    monkeypatch.setenv("INPUT_MIN_SCAN_INTERVAL_MINUTES", "5")
+    monkeypatch.setattr(om.GitHubContext, "from_environment", classmethod(lambda cls: _DummyCtx()))
+    monkeypatch.setattr(om, "GitHubClient", DummyGH)
+    monkeypatch.setattr(om, "fetch_oidc_token", fake_fetch_oidc_token)
+    monkeypatch.setattr(om, "check_dedupe", fake_check_dedupe)
+    monkeypatch.setattr(om, "check_fork_policy", lambda *_args, **_kwargs: (True, None, "ok"))
+    monkeypatch.setattr(om, "check_rate_limits", fake_check_rate_limits)
+    monkeypatch.setattr(om, "_estimate_cost", lambda **_kwargs: 0.0)
+    monkeypatch.setattr(om, "_upload_telemetry_always", fake_upload_telemetry_always)
+
+    exit_code = await om.async_main()
+
+    assert exit_code == 0
+    assert len(check_runs) == 1
+    assert "external_id" not in check_runs[0]
+    assert "<!-- sentinelayer:dedupe-cacheable:false -->" in check_runs[0]["text"]
+
+
+@pytest.mark.anyio
 async def test_analysis_exception_uploads_telemetry_before_raising(monkeypatch, tmp_path) -> None:
     from omargate import main as om
 

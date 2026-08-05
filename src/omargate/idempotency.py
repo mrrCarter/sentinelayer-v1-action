@@ -17,8 +17,8 @@ def dedupe_cacheability_marker(cacheable: bool) -> str:
     return f"<!-- sentinelayer:dedupe-cacheable:{value} -->"
 
 
-def check_run_is_dedupe_cacheable(run: dict) -> bool:
-    """Reject completed checks explicitly marked as retryable/non-cacheable."""
+def check_run_is_dedupe_cacheable(run: dict, *, allow_legacy: bool = True) -> bool:
+    """Return whether a check may be reused under the requested contract."""
 
     output = run.get("output") or {}
     fields = (
@@ -33,9 +33,12 @@ def check_run_is_dedupe_cacheable(run: dict) -> bool:
     }
     if "false" in markers:
         return False
-    # Legacy checks remain eligible. ACTION_IDEMPOTENCY_VERSION is rotated
-    # when this contract changes, so they cannot collide with new keys.
-    return True
+    if "true" in markers:
+        return True
+    # Keyed dedupe may retain legacy compatibility because
+    # ACTION_IDEMPOTENCY_VERSION is rotated when this contract changes. An
+    # unkeyed latest-result mirror must pass allow_legacy=False instead.
+    return allow_legacy
 
 
 def compute_idempotency_key(

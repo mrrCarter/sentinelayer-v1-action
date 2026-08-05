@@ -538,7 +538,10 @@ async def async_main() -> int:
                                     conclusion="neutral",
                                     summary=reason_msg,
                                     title="Omar Gate: RATE LIMITED",
-                                    text=f"Scan skipped — cooldown period ({wait_mins} min) not met.",
+                                    text=(
+                                        f"Scan skipped — cooldown period ({wait_mins} min) "
+                                        f"not met.\n\n{dedupe_cacheability_marker(False)}"
+                                    ),
                                 )
                             except Exception:
                                 pass

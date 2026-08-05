@@ -92,6 +92,35 @@ def test_rate_limit_mirror_refuses_only_retryable_check_result() -> None:
     assert _select_check_run_for_mirror([retryable]) is None
 
 
+def test_rate_limit_mirror_refuses_newer_unmarked_legacy_result() -> None:
+    legacy_retryable = {
+        "id": "legacy-poison",
+        "status": "completed",
+        "completed_at": "2026-02-08T05:31:00Z",
+        "output": {"text": "provider 429"},
+    }
+    current_valid = {
+        "id": "current-valid",
+        "status": "completed",
+        "completed_at": "2026-02-08T05:30:00Z",
+        "output": {"text": "<!-- sentinelayer:dedupe-cacheable:true -->"},
+    }
+
+    selected = _select_check_run_for_mirror([legacy_retryable, current_valid])
+
+    assert selected is current_valid
+
+
+def test_rate_limit_mirror_refuses_only_unmarked_legacy_result() -> None:
+    legacy = {
+        "status": "completed",
+        "completed_at": "2026-02-08T05:31:00Z",
+        "output": {"text": "legacy result"},
+    }
+
+    assert _select_check_run_for_mirror([legacy]) is None
+
+
 def test_llm_dedupe_cacheability_requires_complete_or_disabled_review() -> None:
     assert _llm_result_is_dedupe_cacheable(
         attempted=True,

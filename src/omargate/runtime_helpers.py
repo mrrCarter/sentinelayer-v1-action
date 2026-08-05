@@ -208,7 +208,8 @@ def _select_check_run_for_mirror(runs: list[dict]) -> Optional[dict]:
     eligible = [
         run
         for run in runs
-        if run.get("status") == "completed" and check_run_is_dedupe_cacheable(run)
+        if run.get("status") == "completed"
+        and check_run_is_dedupe_cacheable(run, allow_legacy=False)
     ]
     return _latest_completed_check_run(eligible)
 
