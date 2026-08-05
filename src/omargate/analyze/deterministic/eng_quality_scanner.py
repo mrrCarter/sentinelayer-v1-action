@@ -5,6 +5,7 @@ import re
 from typing import Iterable, Optional
 
 from .eng_quality_helpers import (
+    PythonAnalysisContext,
     index_to_line,
     is_test_file,
     line_snippet,
@@ -76,12 +77,17 @@ class EngQualityScanner:
 
     def _scan_backend(self, files: dict[str, str]) -> list[Finding]:
         findings: list[Finding] = []
+        python_contexts: dict[str, PythonAnalysisContext] = {}
         findings.extend(self._scan_n_plus_one(files))
-        findings.extend(self._scan_eval_or_function_ctor(files))
-        findings.extend(self._scan_sql_string_concat(files))
+        findings.extend(
+            self._scan_eval_or_function_ctor(files, python_contexts)
+        )
+        findings.extend(self._scan_sql_string_concat(files, python_contexts))
         # EQ-010 large timeouts: dropped (magic number variant, not gate-worthy)
         findings.extend(self._scan_auth_routes_without_rate_limit(files))
-        findings.extend(self._scan_http_calls_without_timeout(files))
+        findings.extend(
+            self._scan_http_calls_without_timeout(files, python_contexts)
+        )
         findings.extend(self._scan_unbounded_retry_loops(files))
         findings.extend(self._scan_rate_limit_fail_open(files))
         findings.extend(self._scan_mutations_without_idempotency(files))
@@ -121,8 +127,30 @@ class EngQualityScanner:
     def _strip_js_comments_and_strings(self, content: str) -> str:
         return strip_js_comments_and_strings(content, _JS_COMMENTS_AND_STRINGS_RE)
 
-    def _python_eval_call_lines(self, content: str) -> set[int]:
-        return python_eval_call_lines(content)
+    def _python_eval_call_lines(
+        self,
+        content: str,
+        *,
+        file_path: str = "<memory>",
+        context: PythonAnalysisContext | None = None,
+    ) -> set[int]:
+        return python_eval_call_lines(
+            content,
+            file_path=file_path,
+            context=context,
+        )
+
+    def _python_context(
+        self,
+        contexts: dict[str, PythonAnalysisContext],
+        path: str,
+        content: str,
+    ) -> PythonAnalysisContext:
+        context = contexts.get(path)
+        if context is None:
+            context = PythonAnalysisContext(content, file_path=path)
+            contexts[path] = context
+        return context
 
     def _make_finding(
         self,
@@ -406,7 +434,11 @@ class EngQualityScanner:
                     )
         return findings
 
-    def _scan_eval_or_function_ctor(self, files: dict[str, str]) -> list[Finding]:
+    def _scan_eval_or_function_ctor(
+        self,
+        files: dict[str, str],
+        python_contexts: dict[str, PythonAnalysisContext] | None = None,
+    ) -> list[Finding]:
         rule = _Rule(
             pattern_id="EQ-008",
             severity="P0",
@@ -420,7 +452,15 @@ class EngQualityScanner:
             if self._is_test_file(path):
                 continue
             if path.endswith(_PY_EXTS):
-                for line in sorted(self._python_eval_call_lines(content)):
+                contexts = python_contexts if python_contexts is not None else {}
+                context = self._python_context(contexts, path, content)
+                for line in sorted(
+                    self._python_eval_call_lines(
+                        content,
+                        file_path=path,
+                        context=context,
+                    )
+                ):
                     snippet = self._line_snippet(content, line, line)
                     findings.append(
                         self._make_finding(
@@ -467,7 +507,11 @@ class EngQualityScanner:
                 )
         return findings
 
-    def _scan_sql_string_concat(self, files: dict[str, str]) -> list[Finding]:
+    def _scan_sql_string_concat(
+        self,
+        files: dict[str, str],
+        python_contexts: dict[str, PythonAnalysisContext] | None = None,
+    ) -> list[Finding]:
         rule = _Rule(
             pattern_id="EQ-009",
             severity="P0",
@@ -510,7 +554,15 @@ class EngQualityScanner:
                         )
                     )
             if path.endswith(_PY_EXTS):
-                for line in sorted(python_interpolated_sql_lines(content)):
+                contexts = python_contexts if python_contexts is not None else {}
+                context = self._python_context(contexts, path, content)
+                for line in sorted(
+                    python_interpolated_sql_lines(
+                        content,
+                        file_path=path,
+                        context=context,
+                    )
+                ):
                     snippet = self._line_snippet(content, line, line)
                     findings.append(
                         self._make_finding(
@@ -590,7 +642,11 @@ class EngQualityScanner:
                 )
         return findings
 
-    def _scan_http_calls_without_timeout(self, files: dict[str, str]) -> list[Finding]:
+    def _scan_http_calls_without_timeout(
+        self,
+        files: dict[str, str],
+        python_contexts: dict[str, PythonAnalysisContext] | None = None,
+    ) -> list[Finding]:
         rule = _Rule(
             pattern_id="EQ-012",
             severity="P2",
@@ -640,8 +696,14 @@ class EngQualityScanner:
                         )
 
             if path.endswith(_PY_EXTS):
+                contexts = python_contexts if python_contexts is not None else {}
+                context = self._python_context(contexts, path, content)
                 reported_lines: set[int] = set()
-                for call in python_httpx_calls(content):
+                for call in python_httpx_calls(
+                    content,
+                    file_path=path,
+                    context=context,
+                ):
                     if call.has_timeout or call.line_start in reported_lines:
                         continue
                     is_client = call.function_name in {"httpx.AsyncClient", "httpx.Client"}

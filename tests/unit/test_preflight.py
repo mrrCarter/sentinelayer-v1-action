@@ -201,6 +201,26 @@ def test_dedupe_detects_existing_run() -> None:
     assert url == "https://example.com/run/1"
 
 
+def test_dedupe_retries_explicit_non_cacheable_llm_failure() -> None:
+    gh = DummyGitHub(
+        runs=[
+            {
+                "external_id": "abc",
+                "status": "completed",
+                "html_url": "https://example.com/run/1",
+                "output": {
+                    "text": "<!-- sentinelayer:dedupe-cacheable:false -->"
+                },
+            }
+        ]
+    )
+
+    should_skip, url = asyncio.run(check_dedupe(gh, "headsha", "abc"))
+
+    assert should_skip is False
+    assert url is None
+
+
 def test_rate_limit_cooldown_blocks() -> None:
     now = datetime.now(timezone.utc)
     gh = DummyGitHub(

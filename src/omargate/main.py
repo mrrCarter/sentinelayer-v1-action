@@ -16,7 +16,13 @@ from .config import OmarGateConfig
 from .context import GitHubContext
 from .gate import evaluate_gate
 from .github import GitHubClient, findings_to_annotations
-from .idempotency import compute_idempotency_key
+from .idempotency import (
+    build_analysis_subject_contract,
+    compute_idempotency_key,
+    compute_tool_contract_digest,
+    dedupe_cacheability_marker,
+    resolve_spec_context_contract,
+)
 from .ingest.codebase_snapshot import (
     build_codebase_snapshot,
     build_codebase_synopsis,
@@ -62,10 +68,12 @@ from .telemetry.schemas import (
 from .telemetry.uploader import upload_telemetry
 from .utils import ensure_writable_dir, json_dumps
 
-ACTION_VERSION = "1.3.11"
+ACTION_VERSION = "1.3.12"
 # Rotate this whenever a security-control contract changes so dedupe cannot
 # mirror a successful check produced under weaker semantics on the same head.
-ACTION_IDEMPOTENCY_VERSION = "1:llm-evidence-v1"
+ACTION_IDEMPOTENCY_VERSION = (
+    "5:llm-evidence-v1:eq009-v3:retryable-infra-v1:subject-contract-v1:canonical-id-v1"
+)
 CHECK_NAME_BASE = "Omar Gate"
 __all__ = [
     "main",
@@ -85,6 +93,50 @@ def _check_name(comment_tag: str = "") -> str:
     if not tag:
         return CHECK_NAME_BASE
     return f"{CHECK_NAME_BASE} ({tag})"
+
+
+def _llm_result_is_dedupe_cacheable(
+    *,
+    attempted: bool,
+    success: bool,
+    output_valid: bool,
+    failure_class: Optional[str],
+    require_llm_success: bool,
+    harness_attempted: bool,
+    harness_success: bool,
+    require_harness_success: bool,
+) -> bool:
+    """Cache only complete live reviews or intentionally deterministic runs."""
+
+    if require_harness_success and not (harness_attempted and harness_success):
+        return False
+    if success and output_valid:
+        return True
+    if attempted or (failure_class or "not_attempted") != "not_attempted":
+        return False
+    return not require_llm_success
+
+
+def _build_dedupe_publication_contract(
+    analysis,
+    config: OmarGateConfig,
+    idem_key: str,
+) -> tuple[bool, Optional[str], str]:
+    cacheable = _llm_result_is_dedupe_cacheable(
+        attempted=bool(analysis.llm_attempted),
+        success=bool(analysis.llm_success),
+        output_valid=bool(analysis.llm_output_valid),
+        failure_class=analysis.llm_failure_class,
+        require_llm_success=config.llm_failure_policy == "block",
+        harness_attempted=bool(analysis.harness_attempted),
+        harness_success=bool(analysis.harness_success),
+        require_harness_success=bool(config.run_harness),
+    )
+    return (
+        cacheable,
+        idem_key if cacheable else None,
+        dedupe_cacheability_marker(cacheable),
+    )
 
 
 def _llm_fallback_used(llm_usage: dict, model_fallback: str) -> bool:
@@ -120,6 +172,15 @@ def _build_llm_evidence(analysis, config: OmarGateConfig) -> dict:
         "tokens_out": usage.get("tokens_out"),
         "latency_ms": usage.get("latency_ms"),
         "fallback_used": _llm_fallback_used(usage, config.model_fallback),
+    }
+
+
+def _build_harness_evidence(analysis, config: OmarGateConfig) -> dict:
+    return {
+        "schema_version": "1.0",
+        "required": bool(config.run_harness),
+        "attempted": bool(analysis.harness_attempted),
+        "success": bool(analysis.harness_success),
     }
 
 
@@ -354,17 +415,7 @@ async def async_main() -> int:
         if config.sentinelayer_token.get_secret_value():
             dashboard_url = f"https://sentinelayer.com/runs/{run_id}"
 
-        idem_key = compute_idempotency_key(
-            repo=ctx.repo_full_name,
-            pr_number=ctx.pr_number or 0,
-            head_sha=ctx.head_sha,
-            scan_mode=config.scan_mode,
-            policy_pack=config.policy_pack,
-            policy_pack_version=config.policy_pack_version,
-            action_major_version=ACTION_IDEMPOTENCY_VERSION,
-            comment_tag=config.comment_tag,
-        )
-
+        fork_proceed, fork_mode, fork_reason = check_fork_policy(ctx, config)
         token = config.github_token.get_secret_value() or os.environ.get("GITHUB_TOKEN", "")
         gh = GitHubClient(token=token, repo=ctx.repo_full_name)
 
@@ -380,6 +431,33 @@ async def async_main() -> int:
                     "Loaded Sentinelayer spec context",
                     spec_hash=str(spec_context.get("spec_hash", ""))[:12],
                 )
+
+        spec_context_state, spec_context_sha256 = resolve_spec_context_contract(
+            config.sentinelayer_spec_id,
+            spec_context,
+        )
+        tool_contract_sha256 = compute_tool_contract_digest(
+            Path(__file__).resolve().parents[2]
+        )
+        subject_contract = build_analysis_subject_contract(
+            config,
+            effective_scan_mode=effective_scan_mode,
+            fork_execution_mode=fork_mode,
+            tool_contract_sha256=tool_contract_sha256,
+            spec_context_state=spec_context_state,
+            spec_context_sha256=spec_context_sha256,
+        )
+        idem_key = compute_idempotency_key(
+            repo=ctx.repo_full_name,
+            pr_number=ctx.pr_number or 0,
+            head_sha=ctx.head_sha,
+            scan_mode=config.scan_mode,
+            policy_pack=config.policy_pack,
+            policy_pack_version=config.policy_pack_version,
+            action_major_version=ACTION_IDEMPOTENCY_VERSION,
+            subject_contract=subject_contract,
+            comment_tag=config.comment_tag,
+        )
 
         estimated_cost = _estimate_cost(ctx=ctx, gh=gh, config=config)
 
@@ -420,8 +498,8 @@ async def async_main() -> int:
                     collector.record_preflight_exit(reason="dedupe", exit_code=exit_code)
                     return exit_code
 
-                proceed, scan_mode_override, fork_reason = check_fork_policy(ctx, config)
-                if not proceed:
+                scan_mode_override = fork_mode
+                if not fork_proceed:
                     collector.fork_blocked = True
                     preflight_success = False
                     logger.info("Blocked by fork policy", reason=fork_reason)
@@ -521,7 +599,10 @@ async def async_main() -> int:
                                     conclusion="neutral",
                                     summary=reason_msg,
                                     title="Omar Gate: RATE LIMITED",
-                                    text=f"Scan skipped — cooldown period ({wait_mins} min) not met.",
+                                    text=(
+                                        f"Scan skipped — cooldown period ({wait_mins} min) "
+                                        f"not met.\n\n{dedupe_cacheability_marker(False)}"
+                                    ),
                                 )
                             except Exception:
                                 pass
@@ -729,7 +810,17 @@ async def async_main() -> int:
                         "policy_pack": config.policy_pack_version,
                     },
                     stages_completed=(
-                        ["preflight", "ingest", "deterministic"]
+                        ["preflight", "ingest"]
+                        + (
+                            ["harness"]
+                            if analysis.harness_success
+                            else (
+                                ["harness_attempted"]
+                                if analysis.harness_attempted
+                                else []
+                            )
+                        )
+                        + ["deterministic"]
                         + (
                             ["llm"]
                             if analysis.llm_success and analysis.llm_output_valid
@@ -741,6 +832,7 @@ async def async_main() -> int:
                     severity_gate=config.severity_gate,
                     llm_usage=analysis.llm_usage,
                     llm_evidence=_build_llm_evidence(analysis, config),
+                    harness_evidence=_build_harness_evidence(analysis, config),
                     fingerprint_count=fingerprint_count,
                     dedupe_key=idem_key,
                     policy_pack=config.policy_pack,
@@ -953,6 +1045,15 @@ async def async_main() -> int:
                     f"🟡 P2={counts.get('P2', 0)} • ⚪ P3={counts.get('P3', 0)}"
                 )
                 check_text = gate_result.reason
+                (
+                    _dedupe_cacheable,
+                    dedupe_external_id,
+                    dedupe_marker,
+                ) = _build_dedupe_publication_contract(
+                    analysis,
+                    config,
+                    idem_key,
+                )
                 try:
                     counts_marker = json.dumps(
                         {
@@ -967,6 +1068,10 @@ async def async_main() -> int:
                     check_text = f"{check_text}\n\n<!-- sentinelayer:counts:{counts_marker} -->"
                 except Exception:
                     pass
+                check_text = (
+                    f"{check_text}\n\n"
+                    f"{dedupe_marker}"
+                )
                 status_key = (
                     gate_result.status.value
                     if hasattr(gate_result.status, "value")
@@ -998,7 +1103,7 @@ async def async_main() -> int:
                             title=f"Omar Gate: {status_key.upper()}",
                             text=check_text,
                             details_url=workflow_run_url or dashboard_url,
-                            external_id=idem_key,
+                            external_id=dedupe_external_id,
                             annotations=annotations,
                         )
                         logger.info("Check run created", url=check_url)

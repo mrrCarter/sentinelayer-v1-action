@@ -19,6 +19,7 @@ def test_idempotency_key_is_stable() -> None:
         policy_pack="omar",
         policy_pack_version="v1",
         action_major_version="1",
+        subject_contract={"schema_version": "test"},
     )
     key2 = compute_idempotency_key(
         repo="octo/repo",
@@ -28,6 +29,7 @@ def test_idempotency_key_is_stable() -> None:
         policy_pack="omar",
         policy_pack_version="v1",
         action_major_version="1",
+        subject_contract={"schema_version": "test"},
     )
 
     assert key1 == key2
@@ -67,6 +69,12 @@ def test_packaging_writes_summary(tmp_path: Path) -> None:
         "model": "gpt-5.3-codex",
         "latency_ms": 25,
     }
+    harness_evidence = {
+        "schema_version": "1.0",
+        "required": True,
+        "attempted": True,
+        "success": False,
+    }
     summary_path = write_pack_summary(
         run_dir=run_dir,
         run_id=run_dir.name,
@@ -80,6 +88,7 @@ def test_packaging_writes_summary(tmp_path: Path) -> None:
         policy_pack="omar",
         policy_pack_version="v1",
         llm_evidence=llm_evidence,
+        harness_evidence=harness_evidence,
         error=None,
     )
 
@@ -89,6 +98,7 @@ def test_packaging_writes_summary(tmp_path: Path) -> None:
     assert data["fingerprint_count"] == 1
     assert data["dedupe_key"] == "dedupe-key"
     assert data["llm_evidence"] == llm_evidence
+    assert data["harness_evidence"] == harness_evidence
 
 
 def test_get_run_dir_prefers_workspace(tmp_path: Path, monkeypatch) -> None:

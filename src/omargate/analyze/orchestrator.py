@@ -9,6 +9,7 @@ from typing import List, Optional
 
 from ..artifacts import generate_review_brief
 from ..config import OmarGateConfig
+from ..constants import Limits
 from ..ingest import (
     QuickLearnSummary,
     build_llm_synopsis_prompt,
@@ -97,6 +98,8 @@ class AnalysisResult:
     llm_reported_finding_count: int = 0
     llm_parse_error_count: int = 0
     llm_failure_class: Optional[str] = None
+    harness_attempted: bool = False
+    harness_success: bool = False
 
 
 @dataclass
@@ -182,8 +185,8 @@ class AnalysisOrchestrator:
         with self.logger.stage("ingest"):
             ingest = run_ingest(
                 self.repo_root,
-                max_files=1000,
-                max_file_size_bytes=1_000_000,
+                max_files=Limits.MAX_FILES,
+                max_file_size_bytes=Limits.MAX_FILE_SIZE,
                 logger=self.logger,
             )
             stats = ingest.get("stats", {})
@@ -258,7 +261,10 @@ class AnalysisOrchestrator:
 
         # Step 2: Harness (portable suites)
         harness_findings: List[dict] = []
+        harness_attempted = False
+        harness_success = False
         if self.config.run_harness:
+            harness_attempted = True
             with self.logger.stage("harness"):
                 try:
                     runner = HarnessRunner(
@@ -270,10 +276,18 @@ class AnalysisOrchestrator:
                     harness_findings = [
                         self._finding_to_dict(f) for f in harness_results
                     ]
+                    incomplete_patterns = {"HARNESS-ERROR", "HARNESS-TIMEOUT"}
+                    harness_success = not any(
+                        str(finding.get("pattern_id") or "") in incomplete_patterns
+                        for finding in harness_findings
+                    )
                     self.logger.info(
                         "Harness complete",
                         findings_count=len(harness_findings),
+                        success=harness_success,
                     )
+                    if not harness_success:
+                        warnings.append("Harness incomplete")
                 except Exception as exc:
                     self.logger.warning("Harness failed", error=str(exc))
                     warnings.append("Harness failed")
@@ -487,6 +501,8 @@ class AnalysisOrchestrator:
             llm_reported_finding_count=llm_reported_finding_count,
             llm_parse_error_count=llm_parse_error_count,
             llm_failure_class=llm_failure_class,
+            harness_attempted=harness_attempted,
+            harness_success=harness_success,
         )
 
     def _should_run_llm(self) -> bool:
@@ -606,7 +622,7 @@ class AnalysisOrchestrator:
             if not rel_path:
                 continue
             size_bytes = file_info.get("size_bytes")
-            if isinstance(size_bytes, int) and size_bytes > 1_000_000:
+            if isinstance(size_bytes, int) and size_bytes > Limits.MAX_FILE_SIZE:
                 continue
             try:
                 content = (self.repo_root / rel_path).read_text(
@@ -1113,6 +1129,7 @@ class AnalysisOrchestrator:
         recommendation = finding.recommendation
         return {
             "id": finding.id,
+            "pattern_id": finding.pattern_id,
             "severity": finding.severity,
             "category": finding.category,
             "file_path": finding.file_path,

@@ -7,6 +7,7 @@ import pytest
 from omargate.analyze.llm.context_builder import BuiltContext
 from omargate.analyze.llm.llm_client import LLMClient, LLMResponse, LLMUsage
 from omargate.analyze.codex.codex_runner import CodexResult, CodexRunner
+from omargate.analyze.deterministic.pattern_scanner import Finding
 from omargate.analyze.orchestrator import AnalysisOrchestrator, LLMAnalysisResult
 from omargate.config import OmarGateConfig
 from omargate.logging import OmarLogger
@@ -51,6 +52,95 @@ def _successful_usage() -> LLMUsage:
         provider="openai",
         route="byo",
     )
+
+
+@pytest.mark.anyio
+async def test_enabled_harness_exception_records_incomplete_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = OmarGateConfig(
+        openai_api_key="sk_test_dummy",
+        use_codex=False,
+        run_harness=True,
+        llm_failure_policy="allow_with_warning",
+    )
+    orchestrator = AnalysisOrchestrator(
+        config=config,
+        logger=OmarLogger("test-run"),
+        repo_root=tmp_path,
+        allow_llm=False,
+    )
+
+    async def fail_harness(_self):
+        raise RuntimeError("transient harness failure")
+
+    monkeypatch.setattr(
+        "omargate.analyze.orchestrator.HarnessRunner.run",
+        fail_harness,
+    )
+    monkeypatch.setattr(
+        AnalysisOrchestrator,
+        "_run_deterministic_scans",
+        lambda *_args, **_kwargs: [],
+    )
+
+    result = await orchestrator.run(scan_mode="deep")
+
+    assert result.harness_attempted is True
+    assert result.harness_success is False
+    assert "Harness failed" in result.warnings
+
+
+@pytest.mark.anyio
+async def test_harness_timeout_finding_records_incomplete_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = AnalysisOrchestrator(
+        config=OmarGateConfig(
+            openai_api_key="sk_test_dummy",
+            use_codex=False,
+            run_harness=True,
+            llm_failure_policy="allow_with_warning",
+        ),
+        logger=OmarLogger("test-run"),
+        repo_root=tmp_path,
+        allow_llm=False,
+    )
+    timeout_finding = Finding(
+        id="HARNESS-TIMEOUT-suite",
+        pattern_id="HARNESS-TIMEOUT",
+        severity="P2",
+        category="harness",
+        file_path=".sentinelayer/harness",
+        line_start=1,
+        line_end=1,
+        snippet="",
+        message="Harness suite timed out",
+        recommendation="Retry",
+        confidence=1.0,
+        source="harness",
+    )
+
+    async def return_timeout(_self):
+        return [timeout_finding]
+
+    monkeypatch.setattr(
+        "omargate.analyze.orchestrator.HarnessRunner.run",
+        return_timeout,
+    )
+    monkeypatch.setattr(
+        AnalysisOrchestrator,
+        "_run_deterministic_scans",
+        lambda *_args, **_kwargs: [],
+    )
+
+    result = await orchestrator.run(scan_mode="deep")
+
+    assert result.harness_attempted is True
+    assert result.harness_success is False
+    assert "Harness incomplete" in result.warnings
 
 
 def test_byo_openai_managed_flag_allows_capacity_fallback_only(

@@ -16,4 +16,6 @@ dist
 build
 node_modules
 *.md
+!prompts/*.md
+!prompts/**/*.md
 *.zip

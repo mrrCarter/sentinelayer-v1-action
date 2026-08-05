@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from omargate.main import (
+    _build_dedupe_publication_contract,
     _check_name,
     _build_spec_compliance_from_findings,
     _counts_from_check_run_output,
@@ -8,7 +11,10 @@ from omargate.main import (
     _gate_result_from_check_run,
     _github_publish_enabled,
     _latest_completed_check_run,
+    _llm_result_is_dedupe_cacheable,
     _map_category_to_spec_sections,
+    _select_check_run_for_dedupe,
+    _select_check_run_for_mirror,
 )
 from omargate.config import OmarGateConfig
 from omargate.models import GateStatus
@@ -48,6 +54,166 @@ def test_latest_completed_check_run_picks_newest_completed() -> None:
     assert latest.get("id") == 3
 
 
+def test_dedupe_selection_excludes_retryable_check_results() -> None:
+    retryable = {
+        "status": "completed",
+        "external_id": "abc",
+        "output": {
+            "text": "<!-- sentinelayer:dedupe-cacheable:false -->"
+        },
+    }
+
+    assert _select_check_run_for_dedupe([retryable], "abc") is None
+
+
+def test_rate_limit_mirror_skips_newer_retryable_check_result() -> None:
+    retryable = {
+        "id": "bad",
+        "status": "completed",
+        "completed_at": "2026-02-08T05:31:00Z",
+        "output": {"text": "<!-- sentinelayer:dedupe-cacheable:false -->"},
+    }
+    valid = {
+        "id": "good",
+        "status": "completed",
+        "completed_at": "2026-02-08T05:30:00Z",
+        "output": {"text": "<!-- sentinelayer:dedupe-cacheable:true -->"},
+    }
+
+    selected = _select_check_run_for_mirror([retryable, valid])
+
+    assert selected is valid
+
+
+def test_rate_limit_mirror_refuses_only_retryable_check_result() -> None:
+    retryable = {
+        "status": "completed",
+        "completed_at": "2026-02-08T05:31:00Z",
+        "output": {"text": "<!-- sentinelayer:dedupe-cacheable:false -->"},
+    }
+
+    assert _select_check_run_for_mirror([retryable]) is None
+
+
+def test_rate_limit_mirror_refuses_newer_unmarked_legacy_result() -> None:
+    legacy_retryable = {
+        "id": "legacy-poison",
+        "status": "completed",
+        "completed_at": "2026-02-08T05:31:00Z",
+        "output": {"text": "provider 429"},
+    }
+    current_valid = {
+        "id": "current-valid",
+        "status": "completed",
+        "completed_at": "2026-02-08T05:30:00Z",
+        "output": {"text": "<!-- sentinelayer:dedupe-cacheable:true -->"},
+    }
+
+    selected = _select_check_run_for_mirror([legacy_retryable, current_valid])
+
+    assert selected is current_valid
+
+
+def test_rate_limit_mirror_refuses_only_unmarked_legacy_result() -> None:
+    legacy = {
+        "status": "completed",
+        "completed_at": "2026-02-08T05:31:00Z",
+        "output": {"text": "legacy result"},
+    }
+
+    assert _select_check_run_for_mirror([legacy]) is None
+
+
+def test_llm_dedupe_cacheability_requires_complete_or_disabled_review() -> None:
+    assert _llm_result_is_dedupe_cacheable(
+        attempted=True,
+        success=True,
+        output_valid=True,
+        failure_class=None,
+        require_llm_success=True,
+        harness_attempted=True,
+        harness_success=True,
+        require_harness_success=True,
+    )
+    assert not _llm_result_is_dedupe_cacheable(
+        attempted=True,
+        success=False,
+        output_valid=False,
+        failure_class="provider_failure",
+        require_llm_success=True,
+        harness_attempted=True,
+        harness_success=True,
+        require_harness_success=True,
+    )
+    assert _llm_result_is_dedupe_cacheable(
+        attempted=False,
+        success=False,
+        output_valid=False,
+        failure_class="not_attempted",
+        require_llm_success=False,
+        harness_attempted=False,
+        harness_success=False,
+        require_harness_success=False,
+    )
+
+
+def test_dedupe_cacheability_requires_enabled_harness_to_complete() -> None:
+    common = {
+        "attempted": True,
+        "success": True,
+        "output_valid": True,
+        "failure_class": None,
+        "require_llm_success": True,
+        "harness_attempted": True,
+        "require_harness_success": True,
+    }
+
+    assert not _llm_result_is_dedupe_cacheable(
+        harness_success=False,
+        **common,
+    )
+    assert _llm_result_is_dedupe_cacheable(
+        harness_success=True,
+        **common,
+    )
+    assert _llm_result_is_dedupe_cacheable(
+        attempted=True,
+        success=True,
+        output_valid=True,
+        failure_class=None,
+        require_llm_success=True,
+        harness_attempted=False,
+        harness_success=False,
+        require_harness_success=False,
+    )
+
+
+def test_failed_required_harness_publishes_retryable_cache_contract() -> None:
+    analysis = SimpleNamespace(
+        llm_attempted=True,
+        llm_success=True,
+        llm_output_valid=True,
+        llm_failure_class=None,
+        harness_attempted=True,
+        harness_success=False,
+    )
+    config = OmarGateConfig(
+        openai_api_key="sk_test_dummy",
+        run_harness=True,
+        llm_failure_policy="block",
+    )
+
+    cacheable, external_id, marker = _build_dedupe_publication_contract(
+        analysis,
+        config,
+        "exact-subject-key",
+    )
+
+    assert cacheable is False
+    assert external_id is None
+    assert marker == "<!-- sentinelayer:dedupe-cacheable:false -->"
+
+
 def test_counts_from_check_run_output_prefers_marker() -> None:
     summary = "🔴 P0=9 • 🟠 P1=9 • 🟡 P2=9 • ⚪ P3=9"
     text = (
@@ -70,7 +236,11 @@ def test_gate_result_from_check_run_strips_counts_marker_from_reason() -> None:
         "external_id": "abc",
         "output": {
             "summary": "🔴 P0=0 • 🟠 P1=0 • 🟡 P2=0 • ⚪ P3=0",
-            "text": "No blocking findings\n\n<!-- sentinelayer:counts:{\"P0\":0,\"P1\":0,\"P2\":0,\"P3\":0} -->",
+            "text": (
+                "No blocking findings\n\n"
+                "<!-- sentinelayer:counts:{\"P0\":0,\"P1\":0,\"P2\":0,\"P3\":0} -->\n"
+                "<!-- sentinelayer:dedupe-cacheable:true -->"
+            ),
         },
     }
     result = _gate_result_from_check_run(
@@ -78,6 +248,7 @@ def test_gate_result_from_check_run_strips_counts_marker_from_reason() -> None:
     )
     assert result.status == GateStatus.PASSED
     assert "sentinelayer:counts" not in result.reason
+    assert "dedupe-cacheable" not in result.reason
     assert "Mirrored" in result.reason
 
 

@@ -84,3 +84,25 @@ async def test_pip_audit_passes_ignore_ids(tmp_path: Path, monkeypatch) -> None:
         "--ignore-vuln",
         "GHSA-test",
     ]
+
+
+@pytest.mark.anyio
+async def test_missing_required_audit_tool_is_explicitly_incomplete(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "requirements.txt").write_text(
+        "requests==2.32.4\n",
+        encoding="utf-8",
+    )
+
+    async def _fake_run_command(*_args, **_kwargs):
+        return SimpleNamespace(returncode=127, stdout="", stderr="command not found")
+
+    monkeypatch.setattr(dep_audit, "run_command", _fake_run_command)
+
+    finding = await DepAuditSuite(tech_stack=[])._pip_audit(tmp_path)
+
+    assert finding is not None
+    assert finding.pattern_id == "HARNESS-ERROR"
+    assert "unavailable" in finding.message

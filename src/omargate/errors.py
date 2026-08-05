@@ -43,3 +43,25 @@ class EvidenceIntegrityError(OmarGateError):
     """Evidence bundle corrupted — fail closed."""
 
     exit_code = ExitCode.BLOCKED
+
+
+class DeterministicAnalysisBudgetExceeded(EvidenceIntegrityError):
+    """A deterministic scanner exhausted a non-configurable safety budget."""
+
+    def __init__(
+        self,
+        *,
+        path: str,
+        budget_kind: str,
+        limit: int,
+        observed_at_least: int,
+    ) -> None:
+        self.path = path
+        self.budget_kind = budget_kind
+        self.limit = limit
+        self.observed_at_least = observed_at_least
+        super().__init__(
+            "Deterministic analysis budget exceeded "
+            f"for {path}: {budget_kind} limit {limit}, "
+            f"observed at least {observed_at_least}"
+        )
