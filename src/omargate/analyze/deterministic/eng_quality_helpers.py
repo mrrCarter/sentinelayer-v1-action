@@ -99,6 +99,13 @@ class PythonAnalysisContext:
         self.budget.consume_source(content)
         try:
             self.tree: ast.AST | None = ast.parse(content)
+        except MemoryError as exc:
+            raise DeterministicAnalysisBudgetExceeded(
+                path=file_path,
+                budget_kind="python_parser_resources",
+                limit=0,
+                observed_at_least=1,
+            ) from exc
         except (SyntaxError, RecursionError, ValueError):
             self.tree = None
             self.ast_node_count = 0

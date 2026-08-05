@@ -1583,6 +1583,48 @@ def test_python_source_size_guard_is_exact_and_typed(
     assert caught.value.observed_at_least == 5
 
 
+def _nested_conditional_sql_source(depth: int = 8_000) -> str:
+    expression = '"safe"'
+    for index in reversed(range(depth)):
+        expression = (
+            f'f"SELECT {{v{index}}}" if c{index} else {expression}'
+        )
+    return f"payload={expression}\ncursor.execute(payload)\n"
+
+
+def test_python_parser_resource_failure_is_typed_at_helper_boundary() -> None:
+    source = _nested_conditional_sql_source()
+
+    with pytest.raises(DeterministicAnalysisBudgetExceeded) as caught:
+        eng_quality_helpers.python_interpolated_sql_lines(
+            source,
+            file_path="src/nested.py",
+        )
+
+    error = caught.value
+    assert error.path == "src/nested.py"
+    assert error.budget_kind == "python_parser_resources"
+    assert error.limit == 0
+    assert error.observed_at_least == 1
+
+
+def test_python_parser_resource_failure_never_returns_partial_findings() -> None:
+    not_returned = object()
+    result: object = not_returned
+
+    with pytest.raises(DeterministicAnalysisBudgetExceeded) as caught:
+        result = EngQualityScanner(tech_stack=["Python"]).scan(
+            {
+                "src/00_prior_finding.py": "eval(user_input)\n",
+                "src/nested.py": _nested_conditional_sql_source(),
+            }
+        )
+
+    assert result is not_returned
+    assert caught.value.path == "src/nested.py"
+    assert caught.value.budget_kind == "python_parser_resources"
+
+
 def test_python_rules_share_one_parse_and_one_per_file_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
