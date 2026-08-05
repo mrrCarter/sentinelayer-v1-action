@@ -1592,6 +1592,11 @@ def _nested_conditional_sql_source(depth: int = 8_000) -> str:
     return f"payload={expression}\ncursor.execute(payload)\n"
 
 
+def _nested_comprehension_source(depth: int) -> str:
+    clauses = " ".join(f"for x{index} in xs" for index in range(depth))
+    return f"result=[0 {clauses}]\n"
+
+
 def test_python_parser_resource_failure_is_typed_at_helper_boundary() -> None:
     source = _nested_conditional_sql_source()
 
@@ -1623,6 +1628,45 @@ def test_python_parser_resource_failure_never_returns_partial_findings() -> None
     assert result is not_returned
     assert caught.value.path == "src/nested.py"
     assert caught.value.budget_kind == "python_parser_resources"
+
+
+def test_python_analysis_recursion_is_typed_at_helper_boundary() -> None:
+    assert (
+        eng_quality_helpers.python_interpolated_sql_lines(
+            _nested_comprehension_source(750),
+            file_path="src/within_recursion.py",
+        )
+        == set()
+    )
+
+    with pytest.raises(DeterministicAnalysisBudgetExceeded) as caught:
+        eng_quality_helpers.python_interpolated_sql_lines(
+            _nested_comprehension_source(1_000),
+            file_path="src/deep_comprehension.py",
+        )
+
+    error = caught.value
+    assert error.path == "src/deep_comprehension.py"
+    assert error.budget_kind == "python_analysis_resources"
+    assert error.limit == 0
+    assert error.observed_at_least == 1
+
+
+def test_python_analysis_recursion_never_returns_partial_findings() -> None:
+    not_returned = object()
+    result: object = not_returned
+
+    with pytest.raises(DeterministicAnalysisBudgetExceeded) as caught:
+        result = EngQualityScanner(tech_stack=["Python"]).scan(
+            {
+                "src/00_prior_finding.py": "eval(user_input)\n",
+                "src/deep_comprehension.py": _nested_comprehension_source(1_000),
+            }
+        )
+
+    assert result is not_returned
+    assert caught.value.path == "src/deep_comprehension.py"
+    assert caught.value.budget_kind == "python_analysis_resources"
 
 
 def test_python_rules_share_one_parse_and_one_per_file_budget(

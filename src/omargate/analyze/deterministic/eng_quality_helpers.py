@@ -506,10 +506,18 @@ def python_interpolated_sql_lines(
         )
 
     analysis.budget.consume_work(analysis.ast_node_count * 2)
-    return _python_interpolated_sql_lines_from_tree(
-        analysis.tree,
-        budget=analysis.budget,
-    )
+    try:
+        return _python_interpolated_sql_lines_from_tree(
+            analysis.tree,
+            budget=analysis.budget,
+        )
+    except (MemoryError, RecursionError) as exc:
+        raise DeterministicAnalysisBudgetExceeded(
+            path=file_path,
+            budget_kind="python_analysis_resources",
+            limit=0,
+            observed_at_least=1,
+        ) from exc
 
 
 def _python_interpolated_sql_lines_from_tree(
