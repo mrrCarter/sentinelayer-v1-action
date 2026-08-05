@@ -342,6 +342,7 @@ class _SqlExpressionEvent:
     node: ast.AST
     state: _SqlBindingState
     branches: tuple[_SqlBindingState, _SqlBindingState] | None = None
+    sink_nodes: frozenset[int] = frozenset()
 
 
 _HTTPX_FUNCTION_NAMES = frozenset(
@@ -532,7 +533,11 @@ def _python_interpolated_sql_lines_from_tree(
         for parent in ast.walk(tree)
         for child in ast.iter_child_nodes(parent)
     }
-    lines = _direct_python_interpolated_sql_lines(tree, parents)
+    lines = _direct_python_interpolated_sql_lines(
+        tree,
+        parents,
+        analysis_budget,
+    )
     lines.update(_ordered_sql_binding_lines(tree, parents, analysis_budget))
     if line_offset:
         return {line + line_offset for line in lines}
@@ -542,6 +547,7 @@ def _python_interpolated_sql_lines_from_tree(
 def _direct_python_interpolated_sql_lines(
     tree: ast.AST,
     parents: dict[ast.AST, ast.AST],
+    budget: _PythonAnalysisBudget,
 ) -> set[int]:
     lines: set[int] = set()
     for node in ast.walk(tree):
@@ -551,7 +557,7 @@ def _direct_python_interpolated_sql_lines(
             and _looks_like_sql_statement(template)
             and (
                 not _select_requires_sql_context(template)
-                or _has_sql_context(node, parents)
+                or _has_sql_context(node, parents, budget)
             )
         ):
             lines.add(int(getattr(node, "lineno", 1) or 1))
@@ -774,6 +780,7 @@ def _without_leading_sql_comments(template: str) -> str:
 def _has_sql_context(
     node: ast.AST,
     parents: dict[ast.AST, ast.AST],
+    budget: _PythonAnalysisBudget,
 ) -> bool:
     """Require a direct SQL sink/binding for ambiguous dynamic SELECT text.
 
@@ -815,7 +822,7 @@ def _has_sql_context(
             )
 
         if isinstance(parent, ast.Call):
-            if current in _sql_execution_value_arguments(parent):
+            if current in _sql_execution_value_arguments(parent, budget):
                 return _is_sql_execution_call(parent)
             if current is parent.func and _is_transparent_string_call(parent):
                 current = parent
@@ -880,15 +887,143 @@ def _is_sql_execution_call(call: ast.Call) -> bool:
     )
 
 
-def _sql_execution_value_arguments(call: ast.Call) -> list[ast.expr]:
-    arguments = list(call.args[:1])
-    arguments.extend(
-        keyword.value
-        for keyword in call.keywords
-        if keyword.arg is not None
-        and keyword.arg.casefold() in _SQL_EXECUTION_KEYWORD_NAMES
-    )
-    return arguments
+def _static_keyword_unpack_items(
+    expression: ast.expr,
+    budget: _PythonAnalysisBudget,
+) -> tuple[tuple[str, ast.expr], ...]:
+    """Return statically guaranteed final items of a ``**`` mapping.
+
+    An unknown nested unpack invalidates all keys established before it because
+    it may overwrite any of them.  Literal keys that follow it are guaranteed
+    again.  This models dict construction order without guessing which keys an
+    arbitrary mapping supplies, while each retained value node still records
+    its real lexical evaluation point.
+    """
+
+    items: dict[str, ast.expr] = {}
+    events: list[tuple[str, ast.expr, str | None]] = [
+        ("mapping", expression, None)
+    ]
+    while events:
+        budget.consume_work()
+        kind, current, name = events.pop()
+        if kind == "item":
+            assert name is not None
+            items[name] = current
+            continue
+        if kind == "invalidate":
+            items.clear()
+            continue
+        if not isinstance(current, ast.Dict):
+            items.clear()
+            continue
+        entries = list(zip(current.keys, current.values, strict=True))
+        budget.consume_work(len(entries))
+        for key, value in reversed(entries):
+            if key is None:
+                events.append(("mapping", value, None))
+                continue
+            if not (
+                isinstance(key, ast.Constant)
+                and isinstance(key.value, str)
+            ):
+                events.append(("invalidate", value, None))
+                continue
+            events.append(("item", value, key.value))
+    return tuple(items.items())
+
+
+def _starred_positional_first_values(
+    expression: ast.expr,
+    budget: _PythonAnalysisBudget,
+) -> tuple[tuple[ast.expr, ...], bool]:
+    """Return possible first values and whether an expansion may be empty."""
+
+    values: list[ast.expr] = []
+    events: list[tuple[str, ast.expr]] = [("expand", expression)]
+    stream_open = True
+    while events and stream_open:
+        budget.consume_work()
+        kind, current = events.pop()
+        if kind == "value":
+            values.append(current)
+            stream_open = False
+            continue
+        if isinstance(current, (ast.Tuple, ast.List)):
+            budget.consume_work(len(current.elts))
+            for element in reversed(current.elts):
+                if isinstance(element, ast.Starred):
+                    events.append(("expand", element.value))
+                else:
+                    events.append(("value", element))
+            continue
+
+        # An arbitrary iterable can provide the first value or be empty.
+        values.append(current)
+
+    return tuple(values), stream_open
+
+
+def _sql_execution_argument_projections(
+    call: ast.Call,
+    budget: _PythonAnalysisBudget,
+) -> dict[int, tuple[ast.expr, ...]]:
+    """Map each outer call argument to its possible SQL-value expressions.
+
+    Python's first effective positional value can come from a starred
+    expansion rather than from ``call.args[0]``.  Literal tuple/list
+    expansions are exact.  An unknown expansion may be empty, so both it and
+    the next definite positional expression remain possible under the
+    scanner's conservative may-analysis.
+    """
+
+    projected: dict[int, list[ast.expr]] = {}
+
+    def add(outer: ast.expr, value: ast.expr) -> None:
+        projected.setdefault(id(outer), []).append(value)
+
+    first_positional_open = True
+    for argument in call.args:
+        budget.consume_work()
+        if not first_positional_open:
+            break
+        if not isinstance(argument, ast.Starred):
+            add(argument, argument)
+            first_positional_open = False
+            continue
+
+        values, first_positional_open = _starred_positional_first_values(
+            argument.value,
+            budget,
+        )
+        for value in values:
+            add(argument, value)
+
+    for keyword in call.keywords:
+        budget.consume_work()
+        if keyword.arg is not None:
+            if keyword.arg.casefold() in _SQL_EXECUTION_KEYWORD_NAMES:
+                add(keyword.value, keyword.value)
+            continue
+        unpacked = _static_keyword_unpack_items(keyword.value, budget)
+        for name, value in unpacked:
+            if name.casefold() in _SQL_EXECUTION_KEYWORD_NAMES:
+                add(keyword.value, value)
+
+    return {outer: tuple(values) for outer, values in projected.items()}
+
+
+def _sql_execution_value_arguments(
+    call: ast.Call,
+    budget: _PythonAnalysisBudget,
+) -> list[ast.expr]:
+    """Return statically projected SQL values for direct ancestry checks."""
+
+    return [
+        value
+        for values in _sql_execution_argument_projections(call, budget).values()
+        for value in values
+    ]
 
 
 def _call_argument_expressions_in_order(call: ast.Call) -> list[ast.expr]:
@@ -1797,6 +1932,10 @@ def _process_sql_expression(
         kind = event.kind
         current = event.node
         current_state = event.state
+        sink_nodes = event.sink_nodes
+        if kind == "visit" and id(current) in sink_nodes:
+            events.append(_SqlExpressionEvent("sink", current, current_state))
+            sink_nodes = sink_nodes - {id(current)}
         if kind == "bind":
             assert isinstance(current, ast.NamedExpr)
             _assign_sql_bindings(
@@ -1876,20 +2015,29 @@ def _process_sql_expression(
             )
             continue
         if isinstance(current, ast.Call):
-            sql_arguments = {
-                id(argument) for argument in _sql_execution_value_arguments(current)
-            } if _is_sql_execution_call(current) else set()
+            sql_projections = (
+                _sql_execution_argument_projections(
+                    current,
+                    current_state.graph.budget,
+                )
+                if _is_sql_execution_call(current)
+                else {}
+            )
             ordered = [
                 _SqlExpressionEvent("visit", current.func, current_state)
             ]
             for argument in _call_argument_expressions_in_order(current):
                 ordered.append(
-                    _SqlExpressionEvent("visit", argument, current_state)
-                )
-                if id(argument) in sql_arguments:
-                    ordered.append(
-                        _SqlExpressionEvent("sink", argument, current_state)
+                    _SqlExpressionEvent(
+                        "visit",
+                        argument,
+                        current_state,
+                        sink_nodes=frozenset(
+                            id(value)
+                            for value in sql_projections.get(id(argument), ())
+                        ),
                     )
+                )
             ordered.append(_SqlExpressionEvent("raise", current, current_state))
             events.extend(reversed(ordered))
             continue
@@ -1898,10 +2046,20 @@ def _process_sql_expression(
             for key, value in zip(current.keys, current.values, strict=True):
                 if key is not None:
                     ordered.append(
-                        _SqlExpressionEvent("visit", key, current_state)
+                        _SqlExpressionEvent(
+                            "visit",
+                            key,
+                            current_state,
+                            sink_nodes=sink_nodes,
+                        )
                     )
                 ordered.append(
-                    _SqlExpressionEvent("visit", value, current_state)
+                    _SqlExpressionEvent(
+                        "visit",
+                        value,
+                        current_state,
+                        sink_nodes=sink_nodes,
+                    )
                 )
             events.extend(reversed(ordered))
             continue
@@ -1931,7 +2089,12 @@ def _process_sql_expression(
         ):
             events.append(_SqlExpressionEvent("raise", current, current_state))
         events.extend(
-            _SqlExpressionEvent("visit", child, current_state)
+            _SqlExpressionEvent(
+                "visit",
+                child,
+                current_state,
+                sink_nodes=sink_nodes,
+            )
             for child in reversed(children)
         )
 
@@ -2447,7 +2610,13 @@ def _python_interpolated_sql_lines_from_source(
                     for parent in ast.walk(tree)
                     for child in ast.iter_child_nodes(parent)
                 }
-                lines.update(_direct_python_interpolated_sql_lines(tree, parents))
+                lines.update(
+                    _direct_python_interpolated_sql_lines(
+                        tree,
+                        parents,
+                        analysis_budget,
+                    )
+                )
                 recovered_function = tree.body[0]
                 assert isinstance(recovered_function, ast.AsyncFunctionDef)
                 scope_state = states_by_scope.get(statement.scope_key)

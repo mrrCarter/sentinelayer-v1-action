@@ -1320,6 +1320,143 @@ def test_sql_flow_evaluates_call_arguments_in_lexical_order() -> None:
     } == {("src/positive.py", 1), ("src/star_first_dynamic.py", 2)}
 
 
+def test_sql_flow_projects_static_starred_sql_arguments_exactly() -> None:
+    files = {
+        "src/tuple_direct.py": 'cursor.execute(*(f"SELECT {column}",))\n',
+        "src/list_direct.py": 'cursor.execute(*[f"SELECT {column}"])\n',
+        "src/tuple_alias.py": (
+            'payload = f"SELECT {column}"\n'
+            "cursor.execute(*(payload,))\n"
+        ),
+        "src/list_alias.py": (
+            'payload = f"SELECT {column}"\n'
+            "cursor.execute(*[payload])\n"
+        ),
+        "src/empty_tuple.py": (
+            'payload = f"SELECT {column}"\n'
+            "cursor.execute(*(), payload)\n"
+        ),
+        "src/empty_list.py": (
+            'payload = f"SELECT {column}"\n'
+            "cursor.execute(*[], payload)\n"
+        ),
+        "src/unknown_star.py": (
+            'payload = f"SELECT {column}"\n'
+            "cursor.execute(*arguments, payload)\n"
+        ),
+        "src/first_star_wins.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(*(payload,), *((payload := "safe"),))\n'
+        ),
+        "src/safe_star_wins.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(*((payload := "safe"),), payload)\n'
+        ),
+        "src/safe_literal_wins.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(*("SELECT 1",), payload)\n'
+        ),
+        "src/nested_safe_then_unknown.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(*("safe", *arguments, payload))\n'
+        ),
+        "src/nested_unknown_then_safe.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(*(*arguments, "safe", payload))\n'
+        ),
+        "src/nested_empty_then_payload.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(*(*(), payload))\n'
+        ),
+        "src/nested_payload_then_unknown.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(*(payload, *arguments))\n'
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {
+        ("src/empty_list.py", 1),
+        ("src/empty_tuple.py", 1),
+        ("src/first_star_wins.py", 1),
+        ("src/list_alias.py", 1),
+        ("src/list_direct.py", 1),
+        ("src/nested_empty_then_payload.py", 1),
+        ("src/nested_payload_then_unknown.py", 1),
+        ("src/tuple_alias.py", 1),
+        ("src/tuple_direct.py", 1),
+        ("src/unknown_star.py", 1),
+    }
+
+
+def test_sql_flow_projects_static_dstar_sql_arguments_in_value_order() -> None:
+    files = {
+        "src/direct.py": 'cursor.execute(**{"query": f"SELECT {column}"})\n',
+        "src/alias.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(**{"query": payload})\n'
+        ),
+        "src/nested.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(**{**{"query": payload}})\n'
+        ),
+        "src/positive_order.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(**{"query": payload, '
+            '"parameters": (payload := "safe")})\n'
+        ),
+        "src/negative_order.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(**{"parameters": (payload := "safe"), '
+            '"query": payload})\n'
+        ),
+        "src/non_sql_key.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(**{"parameters": payload})\n'
+        ),
+        "src/overwritten.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(**{"query": payload, "query": "SELECT 1"})\n'
+        ),
+        "src/unknown_then_query.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(**{**options, "query": payload})\n'
+        ),
+        "src/query_then_unknown.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(**{"query": payload, **options})\n'
+        ),
+        "src/nested_unknown_then_query.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(**{**{**options, "query": payload}})\n'
+        ),
+        "src/unknown_then_non_sql.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(**{**options, "parameters": payload})\n'
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {
+        ("src/alias.py", 1),
+        ("src/direct.py", 1),
+        ("src/nested.py", 1),
+        ("src/nested_unknown_then_query.py", 1),
+        ("src/positive_order.py", 1),
+        ("src/unknown_then_query.py", 1),
+    }
+
+
 def test_sql_flow_tracks_value_preserving_fstring_wrappers() -> None:
     files = {
         "src/direct.py": (
