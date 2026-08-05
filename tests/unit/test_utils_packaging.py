@@ -19,6 +19,7 @@ def test_idempotency_key_is_stable() -> None:
         policy_pack="omar",
         policy_pack_version="v1",
         action_major_version="1",
+        subject_contract={"schema_version": "test"},
     )
     key2 = compute_idempotency_key(
         repo="octo/repo",
@@ -28,6 +29,7 @@ def test_idempotency_key_is_stable() -> None:
         policy_pack="omar",
         policy_pack_version="v1",
         action_major_version="1",
+        subject_contract={"schema_version": "test"},
     )
 
     assert key1 == key2

@@ -16,7 +16,12 @@ from .config import OmarGateConfig
 from .context import GitHubContext
 from .gate import evaluate_gate
 from .github import GitHubClient, findings_to_annotations
-from .idempotency import compute_idempotency_key, dedupe_cacheability_marker
+from .idempotency import (
+    build_analysis_subject_contract,
+    compute_idempotency_key,
+    compute_tool_contract_digest,
+    dedupe_cacheability_marker,
+)
 from .ingest.codebase_snapshot import (
     build_codebase_snapshot,
     build_codebase_synopsis,
@@ -65,7 +70,9 @@ from .utils import ensure_writable_dir, json_dumps
 ACTION_VERSION = "1.3.12"
 # Rotate this whenever a security-control contract changes so dedupe cannot
 # mirror a successful check produced under weaker semantics on the same head.
-ACTION_IDEMPOTENCY_VERSION = "3:llm-evidence-v1:eq009-v3:retryable-infra-v1"
+ACTION_IDEMPOTENCY_VERSION = (
+    "4:llm-evidence-v1:eq009-v3:retryable-infra-v1:subject-contract-v1"
+)
 CHECK_NAME_BASE = "Omar Gate"
 __all__ = [
     "main",
@@ -371,6 +378,16 @@ async def async_main() -> int:
         if config.sentinelayer_token.get_secret_value():
             dashboard_url = f"https://sentinelayer.com/runs/{run_id}"
 
+        fork_proceed, fork_mode, fork_reason = check_fork_policy(ctx, config)
+        tool_contract_sha256 = compute_tool_contract_digest(
+            Path(__file__).resolve().parents[2]
+        )
+        subject_contract = build_analysis_subject_contract(
+            config,
+            effective_scan_mode=effective_scan_mode,
+            fork_execution_mode=fork_mode,
+            tool_contract_sha256=tool_contract_sha256,
+        )
         idem_key = compute_idempotency_key(
             repo=ctx.repo_full_name,
             pr_number=ctx.pr_number or 0,
@@ -379,6 +396,7 @@ async def async_main() -> int:
             policy_pack=config.policy_pack,
             policy_pack_version=config.policy_pack_version,
             action_major_version=ACTION_IDEMPOTENCY_VERSION,
+            subject_contract=subject_contract,
             comment_tag=config.comment_tag,
         )
 
@@ -437,8 +455,8 @@ async def async_main() -> int:
                     collector.record_preflight_exit(reason="dedupe", exit_code=exit_code)
                     return exit_code
 
-                proceed, scan_mode_override, fork_reason = check_fork_policy(ctx, config)
-                if not proceed:
+                scan_mode_override = fork_mode
+                if not fork_proceed:
                     collector.fork_blocked = True
                     preflight_success = False
                     logger.info("Blocked by fork policy", reason=fork_reason)
