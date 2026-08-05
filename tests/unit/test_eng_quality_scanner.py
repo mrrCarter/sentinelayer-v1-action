@@ -2111,6 +2111,117 @@ def test_multiline_httpx_get_with_explicit_timeout_is_not_flagged() -> None:
     assert not any(f.pattern_id == "EQ-012" for f in findings)
 
 
+def test_httpx_literal_mapping_timeout_is_not_flagged() -> None:
+    files = {
+        "src/literal.py": (
+            'direct = httpx.get("https://example.test", **{"timeout": 5})\n'
+            "nested = httpx.post(\n"
+            '    "https://example.test",\n'
+            '    **{**{"timeout": 5}, "headers": {}},\n'
+            ")\n"
+        ),
+        "src/duplicate.py": (
+            'response = httpx.put("https://example.test", '
+            '**{"timeout": 5}, **{"timeout": 10})\n'
+        ),
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+
+    findings = [
+        finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-012"
+    ]
+
+    assert findings == []
+
+
+def test_httpx_non_timeout_or_dynamic_mapping_keys_remain_flagged() -> None:
+    files = {
+        "src/other.py": (
+            'limits = httpx.get("https://example.test", **{"limits": 5})\n'
+            'nested = httpx.post("https://example.test", **{**{"limits": 5}})\n'
+            'computed = httpx.put("https://example.test", '
+            '**{"time" + "out": 5})\n'
+            'nested_value = httpx.patch("https://example.test", '
+            '**{"limits": {"timeout": 5}})\n'
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+
+    findings = [
+        finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-012"
+    ]
+
+    assert [finding.line_start for finding in findings] == [1, 2, 3, 4]
+
+
+def test_malformed_module_recovers_literal_mapping_timeout_precisely() -> None:
+    files = {
+        "src/client.py": (
+            'direct = httpx.get("https://example.test", **{"timeout": 5})\n'
+            'nested = httpx.post("https://example.test", '
+            '**{**{"timeout": 5}})\n'
+            'other = httpx.put("https://example.test", **{"limits": 5})\n'
+            'nested_only = httpx.patch(other(**{"timeout": 5}))\n'
+            "def broken(:\n"
+        )
+    }
+    scanner = EngQualityScanner(tech_stack=["Python"])
+
+    findings = [
+        finding for finding in scanner.scan(files) if finding.pattern_id == "EQ-012"
+    ]
+
+    assert [finding.line_start for finding in findings] == [3, 4]
+
+
+@pytest.mark.parametrize("resource_error", [MemoryError, RecursionError])
+def test_malformed_httpx_recovery_resource_failure_is_typed_and_atomic(
+    monkeypatch: pytest.MonkeyPatch,
+    resource_error: type[BaseException],
+) -> None:
+    parse_calls = 0
+    original_parse = eng_quality_helpers.ast.parse
+
+    def exhaust_recovered_call(*args, **kwargs):
+        nonlocal parse_calls
+        parse_calls += 1
+        if parse_calls == 1:
+            return original_parse(*args, **kwargs)
+        raise resource_error
+
+    monkeypatch.setattr(
+        eng_quality_helpers.ast,
+        "parse",
+        exhaust_recovered_call,
+    )
+    monkeypatch.setattr(
+        "omargate.analyze.deterministic.eng_quality_scanner."
+        "python_interpolated_sql_lines",
+        lambda *_args, **_kwargs: set(),
+    )
+    source = (
+        'httpx.get("https://example.test", **{"timeout": 5})\n'
+        "def broken(:\n"
+    )
+    not_returned = object()
+    result: object = not_returned
+
+    with pytest.raises(DeterministicAnalysisBudgetExceeded) as caught:
+        result = EngQualityScanner(tech_stack=["Python"]).scan(
+            {
+                "src/00_prior.js": "eval(user_input);\n",
+                "src/recovery.py": source,
+            }
+        )
+
+    assert result is not_returned
+    assert parse_calls == 2
+    assert caught.value.path == "src/recovery.py"
+    assert caught.value.budget_kind == "python_analysis_resources"
+    assert caught.value.limit == 0
+    assert caught.value.observed_at_least == 1
+
+
 def test_timeout_text_in_comment_or_string_does_not_suppress_finding() -> None:
     files = {
         "src/comment.py": "client = httpx.Client(  # timeout inherited elsewhere\n)\n",

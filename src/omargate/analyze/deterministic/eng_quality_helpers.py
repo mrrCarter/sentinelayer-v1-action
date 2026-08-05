@@ -3185,11 +3185,46 @@ def python_httpx_calls(
                 function_name=canonical_name,
                 line_start=line_start,
                 line_end=int(getattr(node, "end_lineno", line_start) or line_start),
-                has_timeout=any(keyword.arg == "timeout" for keyword in node.keywords),
+                has_timeout=_python_httpx_call_has_timeout(
+                    node,
+                    analysis.budget,
+                ),
             )
         )
 
     return sorted(calls, key=lambda call: (call.line_start, call.line_end))
+
+
+def _python_httpx_call_has_timeout(
+    call: ast.Call,
+    budget: _PythonAnalysisBudget,
+) -> bool:
+    """Recognize exact timeout keys without resolving arbitrary mappings."""
+
+    literal_mappings: list[ast.Dict] = []
+    for keyword in call.keywords:
+        budget.consume_work()
+        if keyword.arg == "timeout":
+            return True
+        if keyword.arg is None and isinstance(keyword.value, ast.Dict):
+            literal_mappings.append(keyword.value)
+
+    while literal_mappings:
+        budget.consume_work()
+        mapping = literal_mappings.pop()
+        for key, value in zip(mapping.keys, mapping.values, strict=True):
+            budget.consume_work()
+            if key is None:
+                if isinstance(value, ast.Dict):
+                    literal_mappings.append(value)
+                continue
+            if (
+                isinstance(key, ast.Constant)
+                and isinstance(key.value, str)
+                and key.value == "timeout"
+            ):
+                return True
+    return False
 
 
 def _qualified_name(node: ast.expr) -> str | None:
@@ -3243,6 +3278,7 @@ def _python_httpx_calls_from_tokens(
             function_name=canonical_name,
             function_index=index + 2,
             open_paren_index=index + 3,
+            budget=analysis_budget,
         )
         if call is not None:
             calls.append(call)
@@ -3256,11 +3292,13 @@ def _balanced_httpx_call(
     function_name: str,
     function_index: int,
     open_paren_index: int,
+    budget: _PythonAnalysisBudget,
 ) -> PythonHttpxCall | None:
     opening_for_closing = {")": "(", "]": "[", "}": "{"}
     opening_tokens = frozenset(opening_for_closing.values())
     stack: list[str] = []
     has_timeout = False
+    has_keyword_unpack = False
     scan_limit = min(
         len(tokens),
         open_paren_index + _MAX_FALLBACK_CALL_TOKENS + 1,
@@ -3276,13 +3314,25 @@ def _balanced_httpx_call(
                 return None
             stack.pop()
             if not stack:
+                recovered_timeout = (
+                    _balanced_httpx_timeout(
+                        tokens,
+                        function_index=function_index,
+                        close_paren_index=index,
+                        budget=budget,
+                    )
+                    if has_keyword_unpack and not has_timeout
+                    else False
+                )
                 return PythonHttpxCall(
                     function_name=function_name,
                     line_start=tokens[function_index - 2].start[0],
                     line_end=token.end[0],
-                    has_timeout=has_timeout,
+                    has_timeout=has_timeout or recovered_timeout,
                 )
             continue
+        if len(stack) == 1 and token.type == tokenize.OP and token.string == "**":
+            has_keyword_unpack = True
         if (
             len(stack) == 1
             and token.type == tokenize.NAME
@@ -3301,3 +3351,39 @@ def _balanced_httpx_call(
             has_timeout = True
 
     return None
+
+
+def _balanced_httpx_timeout(
+    tokens: list[tokenize.TokenInfo],
+    *,
+    function_index: int,
+    close_paren_index: int,
+    budget: _PythonAnalysisBudget,
+) -> bool:
+    """Parse one bounded, balanced call recovered from a malformed module."""
+
+    call_tokens = tokens[function_index - 2 : close_paren_index + 1]
+    budget.consume_work(len(call_tokens))
+    try:
+        expression = tokenize.untokenize(
+            (token.type, token.string) for token in call_tokens
+        )
+        recovered = ast.parse(expression, mode="eval").body
+    except (SyntaxError, ValueError):
+        return False
+    except (MemoryError, RecursionError) as exc:
+        raise DeterministicAnalysisBudgetExceeded(
+            path=budget.path,
+            budget_kind="python_analysis_resources",
+            limit=0,
+            observed_at_least=1,
+        ) from exc
+    if not isinstance(recovered, ast.Call):
+        return False
+
+    pending: list[ast.AST] = [recovered]
+    while pending:
+        budget.consume_work()
+        current = pending.pop()
+        pending.extend(ast.iter_child_nodes(current))
+    return _python_httpx_call_has_timeout(recovered, budget)
