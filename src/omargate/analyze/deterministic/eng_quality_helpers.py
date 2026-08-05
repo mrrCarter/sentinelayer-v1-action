@@ -222,7 +222,27 @@ class _SqlBindingState(dict[str, _ProvRef]):
         )
 
     def copy(self) -> _SqlBindingState:
-        return _SqlBindingState(self.graph, self, self.defined_keys)
+        indexed_definitions = sum(
+            len(descendants) for descendants in self.defined_descendants.values()
+        )
+        self.graph.budget.consume_work(
+            len(self)
+            + len(self.dotted_keys)
+            + len(self.defined_keys)
+            + len(self.defined_descendants)
+            + indexed_definitions
+            + 1
+        )
+        result = _SqlBindingState.__new__(_SqlBindingState)
+        dict.__init__(result, self)
+        result.graph = self.graph
+        result.dotted_keys = set(self.dotted_keys)
+        result.defined_keys = set(self.defined_keys)
+        result.defined_descendants = {
+            prefix: set(descendants)
+            for prefix, descendants in self.defined_descendants.items()
+        }
+        return result
 
     def set_reference(self, key: str, reference: _ProvRef) -> None:
         super().__setitem__(key, reference)
@@ -231,14 +251,11 @@ class _SqlBindingState(dict[str, _ProvRef]):
         self.define_key(key)
 
     def define_key(self, key: str) -> None:
-        parts = key.split(".")
-        self.graph.budget.consume_work(len(parts))
-        for length in range(1, len(parts) + 1):
-            definition = ".".join(parts[:length])
-            if definition in self.defined_keys:
-                continue
-            self.defined_keys.add(definition)
-            self._index_defined_descendant(definition)
+        self.graph.budget.consume_work(len(key) + 1)
+        if key in self.defined_keys:
+            return
+        self.defined_keys.add(key)
+        self._index_defined_descendant(key)
 
     def undefine_key(self, key: str) -> None:
         targets = {key, *self.defined_descendants.get(key, ())}
@@ -255,6 +272,16 @@ class _SqlBindingState(dict[str, _ProvRef]):
 
     def replace_with(self, other: _SqlBindingState) -> None:
         assert self.graph is other.graph
+        self.graph.budget.consume_work(
+            len(other)
+            + len(other.dotted_keys)
+            + len(other.defined_keys)
+            + sum(
+                len(descendants)
+                for descendants in other.defined_descendants.values()
+            )
+            + 1
+        )
         super().clear()
         super().update(other)
         self.dotted_keys = set(other.dotted_keys)
@@ -266,20 +293,29 @@ class _SqlBindingState(dict[str, _ProvRef]):
 
     def _index_defined_descendant(self, key: str) -> None:
         parts = key.split(".")
-        for length in range(1, len(parts)):
-            prefix = ".".join(parts[:length])
+        if len(parts) < 2:
+            return
+        prefix = parts[0]
+        for part in parts[1:]:
+            self.graph.budget.consume_work(len(prefix) + len(part) + 2)
             self.defined_descendants.setdefault(prefix, set()).add(key)
+            prefix = f"{prefix}.{part}"
 
     def _unindex_defined_descendant(self, key: str) -> None:
         parts = key.split(".")
-        for length in range(1, len(parts)):
-            prefix = ".".join(parts[:length])
+        if len(parts) < 2:
+            return
+        prefix = parts[0]
+        for part in parts[1:]:
+            self.graph.budget.consume_work(len(prefix) + len(part) + 2)
             descendants = self.defined_descendants.get(prefix)
             if descendants is None:
+                prefix = f"{prefix}.{part}"
                 continue
             descendants.discard(key)
             if not descendants:
                 self.defined_descendants.pop(prefix, None)
+            prefix = f"{prefix}.{part}"
 
 
 @dataclass
@@ -2266,13 +2302,12 @@ def _undefine_sql_binding_key(state: _SqlBindingState, key: str) -> None:
 
 
 def _clear_sql_binding_key(state: _SqlBindingState, key: str) -> None:
-    state.graph.budget.consume_work(len(state.dotted_keys) + 1)
     state.discard_reference(key)
     prefix = f"{key}."
-    for candidate in [
-        candidate for candidate in state.dotted_keys if candidate.startswith(prefix)
-    ]:
-        state.discard_reference(candidate)
+    for candidate in tuple(state.dotted_keys):
+        state.graph.budget.consume_work(len(prefix) + len(candidate) + 1)
+        if candidate.startswith(prefix):
+            state.discard_reference(candidate)
     state.undefine_key(key)
 
 

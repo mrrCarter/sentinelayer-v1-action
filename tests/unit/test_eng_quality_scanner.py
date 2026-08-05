@@ -1439,6 +1439,60 @@ def test_descending_loop_alias_flow_uses_linear_state_copy_volume(
     assert copied_slots <= aliases * 20
 
 
+def test_deep_dotted_binding_index_is_compact_and_fully_metered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_units: list[int] = []
+    for depth in (25, 50, 100, 200):
+        key = "root." + ".".join(f"a{index}" for index in range(depth))
+        source = f'{key} = f"SELECT {{value}}"\ncursor.execute({key})\n'
+        context = eng_quality_helpers.PythonAnalysisContext(
+            source,
+            file_path=f"deep-{depth}.py",
+        )
+
+        assert eng_quality_helpers.python_interpolated_sql_lines(
+            source,
+            file_path=f"deep-{depth}.py",
+            context=context,
+        ) == {1}
+        work_units.append(context.budget.work_units)
+
+    assert all(
+        larger <= smaller * 5
+        for smaller, larger in zip(work_units, work_units[1:])
+    )
+
+    monkeypatch.setattr(Limits, "MAX_PYTHON_ANALYSIS_WORK_UNITS", 50_000)
+    key = "root." + ".".join(f"a{index}" for index in range(200))
+    source = f'{key} = f"SELECT {{value}}"\ncursor.execute({key})\n'
+    with pytest.raises(DeterministicAnalysisBudgetExceeded):
+        eng_quality_helpers.python_interpolated_sql_lines(
+            source,
+            file_path="deep-budget.py",
+        )
+
+
+def test_parent_rebind_and_delete_clear_deep_dotted_provenance() -> None:
+    key = "root." + ".".join(f"a{index}" for index in range(200))
+    files = {
+        "src/rebound.py": (
+            f'{key} = f"SELECT {{value}}"\n'
+            "root = object()\n"
+            f"cursor.execute({key})\n"
+        ),
+        "src/deleted.py": (
+            f'{key} = f"SELECT {{value}}"\n'
+            "del root\n"
+            f"cursor.execute({key})\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert not any(finding.pattern_id == "EQ-009" for finding in findings)
+
+
 def test_python_ast_budget_is_exact_and_fails_closed_with_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
