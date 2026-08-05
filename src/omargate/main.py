@@ -975,7 +975,7 @@ async def async_main() -> int:
                     success=bool(analysis.llm_success),
                     output_valid=bool(analysis.llm_output_valid),
                     failure_class=analysis.llm_failure_class,
-                    require_llm_success=bool(config.require_llm_success),
+                    require_llm_success=config.llm_failure_policy == "block",
                 )
                 try:
                     counts_marker = json.dumps(

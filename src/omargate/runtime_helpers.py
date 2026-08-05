@@ -205,7 +205,12 @@ def _select_check_run_for_dedupe(runs: list[dict], idem_key: str) -> Optional[di
 
 
 def _select_check_run_for_mirror(runs: list[dict]) -> Optional[dict]:
-    return _latest_completed_check_run(runs) or (runs[0] if runs else None)
+    eligible = [
+        run
+        for run in runs
+        if run.get("status") == "completed" and check_run_is_dedupe_cacheable(run)
+    ]
+    return _latest_completed_check_run(eligible)
 
 
 def _write_preflight_artifacts(

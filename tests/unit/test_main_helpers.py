@@ -11,6 +11,7 @@ from omargate.main import (
     _llm_result_is_dedupe_cacheable,
     _map_category_to_spec_sections,
     _select_check_run_for_dedupe,
+    _select_check_run_for_mirror,
 )
 from omargate.config import OmarGateConfig
 from omargate.models import GateStatus
@@ -60,6 +61,35 @@ def test_dedupe_selection_excludes_retryable_check_results() -> None:
     }
 
     assert _select_check_run_for_dedupe([retryable], "abc") is None
+
+
+def test_rate_limit_mirror_skips_newer_retryable_check_result() -> None:
+    retryable = {
+        "id": "bad",
+        "status": "completed",
+        "completed_at": "2026-02-08T05:31:00Z",
+        "output": {"text": "<!-- sentinelayer:dedupe-cacheable:false -->"},
+    }
+    valid = {
+        "id": "good",
+        "status": "completed",
+        "completed_at": "2026-02-08T05:30:00Z",
+        "output": {"text": "<!-- sentinelayer:dedupe-cacheable:true -->"},
+    }
+
+    selected = _select_check_run_for_mirror([retryable, valid])
+
+    assert selected is valid
+
+
+def test_rate_limit_mirror_refuses_only_retryable_check_result() -> None:
+    retryable = {
+        "status": "completed",
+        "completed_at": "2026-02-08T05:31:00Z",
+        "output": {"text": "<!-- sentinelayer:dedupe-cacheable:false -->"},
+    }
+
+    assert _select_check_run_for_mirror([retryable]) is None
 
 
 def test_llm_dedupe_cacheability_requires_complete_or_disabled_review() -> None:
