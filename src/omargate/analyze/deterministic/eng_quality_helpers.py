@@ -10,6 +10,8 @@ import string
 import textwrap
 import tokenize
 
+from ...constants import Limits
+from ...errors import DeterministicAnalysisBudgetExceeded
 from .pattern_scanner import _truncate_snippet
 
 
@@ -32,10 +34,95 @@ class _PythonLogicalStatement:
 _ProvRef = int
 
 
+class _PythonAnalysisBudget:
+    """Deterministic per-file resource accounting for Python analysis."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.ast_nodes = 0
+        self.work_units = 0
+
+    def consume_ast(self, tree: ast.AST) -> int:
+        observed = 0
+        pending = [tree]
+        while pending:
+            current = pending.pop()
+            observed += 1
+            self.ast_nodes += 1
+            if self.ast_nodes > Limits.MAX_PYTHON_AST_NODES:
+                self._raise(
+                    "python_ast_nodes",
+                    Limits.MAX_PYTHON_AST_NODES,
+                    self.ast_nodes,
+                )
+            pending.extend(ast.iter_child_nodes(current))
+        self.consume_work(observed)
+        return observed
+
+    def consume_source(self, content: str) -> None:
+        source_bytes = len(content.encode("utf-8"))
+        if source_bytes > Limits.MAX_FILE_SIZE:
+            self._raise(
+                "python_source_bytes",
+                Limits.MAX_FILE_SIZE,
+                source_bytes,
+            )
+        self.consume_work(source_bytes)
+
+    def consume_work(self, amount: int = 1) -> None:
+        if amount <= 0:
+            return
+        self.work_units += amount
+        if self.work_units > Limits.MAX_PYTHON_ANALYSIS_WORK_UNITS:
+            self._raise(
+                "python_analysis_work_units",
+                Limits.MAX_PYTHON_ANALYSIS_WORK_UNITS,
+                self.work_units,
+            )
+
+    def _raise(self, budget_kind: str, limit: int, observed: int) -> None:
+        raise DeterministicAnalysisBudgetExceeded(
+            path=self.path,
+            budget_kind=budget_kind,
+            limit=limit,
+            observed_at_least=observed,
+        )
+
+
+class PythonAnalysisContext:
+    """One parsed tree and one shared deterministic budget for a Python file."""
+
+    def __init__(self, content: str, *, file_path: str = "<memory>") -> None:
+        self.content = content
+        self.file_path = file_path
+        self.budget = _PythonAnalysisBudget(file_path)
+        self.budget.consume_source(content)
+        try:
+            self.tree: ast.AST | None = ast.parse(content)
+        except (SyntaxError, RecursionError, ValueError):
+            self.tree = None
+            self.ast_node_count = 0
+        else:
+            self.ast_node_count = self.budget.consume_ast(self.tree)
+
+
+def _python_analysis_context(
+    content: str,
+    file_path: str,
+    context: PythonAnalysisContext | None,
+) -> PythonAnalysisContext:
+    if context is None:
+        return PythonAnalysisContext(content, file_path=file_path)
+    if context.content is not content and context.content != content:
+        raise ValueError("Python analysis context content mismatch")
+    return context
+
+
 class _SqlProvenance:
     """Compact provenance DAG resolved only after control-flow construction."""
 
-    def __init__(self) -> None:
+    def __init__(self, budget: _PythonAnalysisBudget | None = None) -> None:
+        self.budget = budget or _PythonAnalysisBudget("<memory>")
         self._edges: list[list[_ProvRef]] = []
         self._source_lines: list[int | None] = []
         self._sources: dict[int, _ProvRef] = {}
@@ -52,6 +139,7 @@ class _SqlProvenance:
 
     def union(self, references: Iterable[_ProvRef | None]) -> _ProvRef | None:
         unique = tuple(sorted({ref for ref in references if ref is not None}))
+        self.budget.consume_work(len(unique) + 1)
         if not unique:
             return None
         if len(unique) == 1:
@@ -71,14 +159,17 @@ class _SqlProvenance:
         phi: _ProvRef,
         references: Iterable[_ProvRef | None],
     ) -> None:
+        candidates = tuple(references)
+        self.budget.consume_work(len(candidates) + 1)
         edges = self._edges[phi]
         known = set(edges)
-        for reference in references:
+        for reference in candidates:
             if reference is not None and reference not in known:
                 edges.append(reference)
                 known.add(reference)
 
     def add_sink(self, reference: _ProvRef | None) -> None:
+        self.budget.consume_work()
         if reference is not None:
             self._sinks.add(reference)
 
@@ -87,6 +178,7 @@ class _SqlProvenance:
         visited: set[_ProvRef] = set()
         pending = list(self._sinks)
         while pending:
+            self.budget.consume_work()
             reference = pending.pop()
             if reference in visited:
                 continue
@@ -103,8 +195,10 @@ class _SqlProvenance:
         source_line: int | None = None,
         edges: Iterable[_ProvRef] = (),
     ) -> _ProvRef:
+        edge_list = list(edges)
+        self.budget.consume_work(len(edge_list) + 1)
         reference = len(self._edges)
-        self._edges.append(list(edges))
+        self._edges.append(edge_list)
         self._source_lines.append(source_line)
         return reference
 
@@ -114,18 +208,46 @@ class _SqlBindingState(dict[str, _ProvRef]):
         self,
         graph: _SqlProvenance,
         initial: dict[str, _ProvRef] | None = None,
+        defined_keys: Iterable[str] = (),
     ) -> None:
         super().__init__(initial or {})
         self.graph = graph
         self.dotted_keys = {key for key in self if "." in key}
+        self.defined_keys = set(defined_keys)
+        self.defined_descendants: dict[str, set[str]] = {}
+        for key in self.defined_keys:
+            self._index_defined_descendant(key)
+        self.graph.budget.consume_work(
+            len(self) + len(self.defined_keys) + 1
+        )
 
     def copy(self) -> _SqlBindingState:
-        return _SqlBindingState(self.graph, self)
+        return _SqlBindingState(self.graph, self, self.defined_keys)
 
     def set_reference(self, key: str, reference: _ProvRef) -> None:
         super().__setitem__(key, reference)
         if "." in key:
             self.dotted_keys.add(key)
+        self.define_key(key)
+
+    def define_key(self, key: str) -> None:
+        parts = key.split(".")
+        self.graph.budget.consume_work(len(parts))
+        for length in range(1, len(parts) + 1):
+            definition = ".".join(parts[:length])
+            if definition in self.defined_keys:
+                continue
+            self.defined_keys.add(definition)
+            self._index_defined_descendant(definition)
+
+    def undefine_key(self, key: str) -> None:
+        targets = {key, *self.defined_descendants.get(key, ())}
+        self.graph.budget.consume_work(len(targets))
+        for target in targets:
+            if target not in self.defined_keys:
+                continue
+            self.defined_keys.remove(target)
+            self._unindex_defined_descendant(target)
 
     def discard_reference(self, key: str) -> None:
         super().pop(key, None)
@@ -136,6 +258,28 @@ class _SqlBindingState(dict[str, _ProvRef]):
         super().clear()
         super().update(other)
         self.dotted_keys = set(other.dotted_keys)
+        self.defined_keys = set(other.defined_keys)
+        self.defined_descendants = {
+            prefix: set(descendants)
+            for prefix, descendants in other.defined_descendants.items()
+        }
+
+    def _index_defined_descendant(self, key: str) -> None:
+        parts = key.split(".")
+        for length in range(1, len(parts)):
+            prefix = ".".join(parts[:length])
+            self.defined_descendants.setdefault(prefix, set()).add(key)
+
+    def _unindex_defined_descendant(self, key: str) -> None:
+        parts = key.split(".")
+        for length in range(1, len(parts)):
+            prefix = ".".join(parts[:length])
+            descendants = self.defined_descendants.get(prefix)
+            if descendants is None:
+                continue
+            descendants.discard(key)
+            if not descendants:
+                self.defined_descendants.pop(prefix, None)
 
 
 @dataclass
@@ -273,14 +417,19 @@ def strip_js_comments_and_strings(content: str, comments_and_strings_re: re.Patt
     return comments_and_strings_re.sub(_replace, content)
 
 
-def python_eval_call_lines(content: str) -> set[int]:
-    try:
-        tree = ast.parse(content)
-    except (SyntaxError, RecursionError, ValueError):
+def python_eval_call_lines(
+    content: str,
+    *,
+    file_path: str = "<memory>",
+    context: PythonAnalysisContext | None = None,
+) -> set[int]:
+    analysis = _python_analysis_context(content, file_path, context)
+    if analysis.tree is None:
         return set()
 
+    analysis.budget.consume_work(analysis.ast_node_count)
     lines: set[int] = set()
-    for node in ast.walk(tree):
+    for node in ast.walk(analysis.tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
@@ -293,7 +442,12 @@ def python_eval_call_lines(content: str) -> set[int]:
     return lines
 
 
-def python_interpolated_sql_lines(content: str) -> set[int]:
+def python_interpolated_sql_lines(
+    content: str,
+    *,
+    file_path: str = "<memory>",
+    context: PythonAnalysisContext | None = None,
+) -> set[int]:
     """Return Python source lines that dynamically construct SQL statements.
 
     Parsed Python is authoritative. If an unrelated syntax error prevents a
@@ -301,26 +455,34 @@ def python_interpolated_sql_lines(content: str) -> set[int]:
     comments or string contents as executable source.
     """
 
-    try:
-        tree = ast.parse(content)
-    except (SyntaxError, RecursionError, ValueError):
-        return _python_interpolated_sql_lines_from_source(content)
+    analysis = _python_analysis_context(content, file_path, context)
+    if analysis.tree is None:
+        return _python_interpolated_sql_lines_from_source(
+            content,
+            analysis.budget,
+        )
 
-    return _python_interpolated_sql_lines_from_tree(tree)
+    analysis.budget.consume_work(analysis.ast_node_count * 2)
+    return _python_interpolated_sql_lines_from_tree(
+        analysis.tree,
+        budget=analysis.budget,
+    )
 
 
 def _python_interpolated_sql_lines_from_tree(
     tree: ast.AST,
     *,
     line_offset: int = 0,
+    budget: _PythonAnalysisBudget | None = None,
 ) -> set[int]:
+    analysis_budget = budget or _PythonAnalysisBudget("<memory>")
     parents = {
         child: parent
         for parent in ast.walk(tree)
         for child in ast.iter_child_nodes(parent)
     }
     lines = _direct_python_interpolated_sql_lines(tree, parents)
-    lines.update(_ordered_sql_binding_lines(tree, parents))
+    lines.update(_ordered_sql_binding_lines(tree, parents, analysis_budget))
     if line_offset:
         return {line + line_offset for line in lines}
     return lines
@@ -678,9 +840,27 @@ def _sql_execution_value_arguments(call: ast.Call) -> list[ast.expr]:
     return arguments
 
 
+def _call_argument_expressions_in_order(call: ast.Call) -> list[ast.expr]:
+    """Return positional/starred and keyword values in source order.
+
+    CPython stores ``args`` and ``keywords`` in separate lists even though
+    starred arguments and keyword arguments may be interleaved in source.
+    Evaluation follows lexical order, so the flow model must reconstruct it.
+    """
+
+    return sorted(
+        [*call.args, *(keyword.value for keyword in call.keywords)],
+        key=lambda expression: (
+            int(getattr(expression, "lineno", 0) or 0),
+            int(getattr(expression, "col_offset", 0) or 0),
+        ),
+    )
+
+
 def _ordered_sql_binding_lines(
     tree: ast.AST,
     parents: dict[ast.AST, ast.AST],
+    budget: _PythonAnalysisBudget | None = None,
 ) -> set[int]:
     """Find dynamic SQL definitions that reach a later SQL execution call.
 
@@ -691,7 +871,7 @@ def _ordered_sql_binding_lines(
     text without restoring the old flow-insensitive name search.
     """
 
-    graph = _SqlProvenance()
+    graph = _SqlProvenance(budget)
     initial = _SqlBindingState(graph)
     lines: set[int] = set()
     if isinstance(tree, ast.Module):
@@ -742,8 +922,12 @@ def _analyze_sql_statement(
         ]:
             _process_sql_expression(expression, current, parents, lines, exceptions)
         _kill_sql_binding_key(current, statement.name)
+        function_state = _SqlBindingState(
+            current.graph,
+            defined_keys=_function_parameter_keys(statement.args),
+        )
         _analyze_sql_statement_block(
-            statement.body, _SqlBindingState(current.graph), parents, lines
+            statement.body, function_state, parents, lines
         )
         return _SqlFlow(
             normal=current,
@@ -836,7 +1020,7 @@ def _analyze_sql_statement(
     elif isinstance(statement, ast.Delete):
         for target in statement.targets:
             _process_sql_expression(target, current, parents, lines, exceptions)
-            _kill_sql_binding_targets(current, [target])
+            _undefine_sql_binding_targets(current, [target])
     elif isinstance(statement, (ast.Import, ast.ImportFrom)):
         for alias in statement.names:
             _kill_sql_binding_key(
@@ -1085,12 +1269,15 @@ def _sql_loop_header(
     extra_keys: Iterable[str] = (),
 ) -> tuple[_SqlBindingState, dict[str, _ProvRef]]:
     keys = set(entry).union(_assigned_sql_binding_keys(nodes), extra_keys)
-    header = _SqlBindingState(entry.graph)
     phis: dict[str, _ProvRef] = {}
     for key in keys:
         phi = entry.graph.phi(entry.get(key))
-        header.set_reference(key, phi)
         phis[key] = phi
+    header = _SqlBindingState(
+        entry.graph,
+        phis,
+        defined_keys=entry.defined_keys,
+    )
     return header, phis
 
 
@@ -1139,6 +1326,19 @@ def _assigned_sql_binding_keys(nodes: Iterable[ast.AST]) -> set[str]:
                 keys.update(_match_capture_names(case.pattern))
         pending.extend(ast.iter_child_nodes(current))
     return keys
+
+
+def _function_parameter_keys(arguments: ast.arguments) -> set[str]:
+    parameters = [
+        *arguments.posonlyargs,
+        *arguments.args,
+        *arguments.kwonlyargs,
+    ]
+    if arguments.vararg is not None:
+        parameters.append(arguments.vararg)
+    if arguments.kwarg is not None:
+        parameters.append(arguments.kwarg)
+    return {parameter.arg for parameter in parameters}
 
 
 def _analyze_sql_try(
@@ -1503,7 +1703,7 @@ def _map_sql_flow_states(
 
 def _state_without_key(state: _SqlBindingState, key: str) -> _SqlBindingState:
     result = state.copy()
-    _kill_sql_binding_key(result, key)
+    _undefine_sql_binding_key(result, key)
     return result
 
 
@@ -1532,6 +1732,7 @@ def _process_sql_expression(
         ast.Lambda,
     )
     while events:
+        state.graph.budget.consume_work()
         event = events.pop()
         kind = event.kind
         current = event.node
@@ -1621,21 +1822,13 @@ def _process_sql_expression(
             ordered = [
                 _SqlExpressionEvent("visit", current.func, current_state)
             ]
-            for argument in current.args:
+            for argument in _call_argument_expressions_in_order(current):
                 ordered.append(
                     _SqlExpressionEvent("visit", argument, current_state)
                 )
                 if id(argument) in sql_arguments:
                     ordered.append(
                         _SqlExpressionEvent("sink", argument, current_state)
-                    )
-            for keyword in current.keywords:
-                ordered.append(
-                    _SqlExpressionEvent("visit", keyword.value, current_state)
-                )
-                if id(keyword.value) in sql_arguments:
-                    ordered.append(
-                        _SqlExpressionEvent("sink", keyword.value, current_state)
                     )
             ordered.append(_SqlExpressionEvent("raise", current, current_state))
             events.extend(reversed(ordered))
@@ -1674,6 +1867,7 @@ def _process_sql_expression(
             isinstance(current, ast.Name)
             and isinstance(current.ctx, ast.Load)
             and current.id not in _PYTHON_BUILTIN_NAMES
+            and current.id not in current_state.defined_keys
         ):
             events.append(_SqlExpressionEvent("raise", current, current_state))
         events.extend(
@@ -1786,10 +1980,13 @@ def _process_eager_sql_comprehension(
     merged = _merge_sql_binding_states(*outcomes)
     assert merged is not None
     for key in local_keys:
-        _kill_sql_binding_key(merged, key)
+        _undefine_sql_binding_key(merged, key)
     for key, origin in outer.items():
         if any(key == local or key.startswith(f"{local}.") for local in local_keys):
             merged.set_reference(key, origin)
+    for key in outer.defined_keys:
+        if any(key == local or key.startswith(f"{local}.") for local in local_keys):
+            merged.define_key(key)
     state.replace_with(merged)
 
 
@@ -1974,11 +2171,33 @@ def _sql_origins_in_expression(
         elif isinstance(candidate, ast.Call) and _is_transparent_string_call(candidate):
             assert isinstance(candidate.func, ast.Attribute)
             pending.append(candidate.func.value)
+        elif isinstance(candidate, ast.JoinedStr):
+            pending.extend(
+                reversed(_transparent_joined_string_values(candidate))
+            )
         elif isinstance(candidate, ast.BinOp) and isinstance(candidate.op, ast.Add):
             pending.extend((candidate.right, candidate.left))
         elif isinstance(candidate, (ast.Tuple, ast.List, ast.Set)):
             pending.extend(reversed(candidate.elts))
     return state.graph.union(references)
+
+
+def _transparent_joined_string_values(node: ast.JoinedStr) -> tuple[ast.expr, ...]:
+    """Return embedded values only when an f-string adds no semantic text."""
+
+    values: list[ast.expr] = []
+    for part in node.values:
+        if isinstance(part, ast.FormattedValue):
+            if part.format_spec is not None or part.conversion not in {-1, ord("s")}:
+                return ()
+            values.append(part.value)
+        elif not (
+            isinstance(part, ast.Constant)
+            and isinstance(part.value, str)
+            and not part.value.strip()
+        ):
+            return ()
+    return tuple(values) if len(values) == 1 else ()
 
 
 def _reachable_or_values(values: list[ast.expr]) -> list[ast.expr]:
@@ -2033,12 +2252,28 @@ def _set_sql_binding_key(
 
 
 def _kill_sql_binding_key(state: _SqlBindingState, key: str) -> None:
+    """Replace a binding with a definitely-defined, untainted value."""
+
+    _clear_sql_binding_key(state, key)
+    state.define_key(key)
+
+
+def _undefine_sql_binding_key(state: _SqlBindingState, key: str) -> None:
+    """Remove a binding after ``del`` or scope-local cleanup."""
+
+    _clear_sql_binding_key(state, key)
+    state.undefine_key(key)
+
+
+def _clear_sql_binding_key(state: _SqlBindingState, key: str) -> None:
+    state.graph.budget.consume_work(len(state.dotted_keys) + 1)
     state.discard_reference(key)
     prefix = f"{key}."
     for candidate in [
         candidate for candidate in state.dotted_keys if candidate.startswith(prefix)
     ]:
         state.discard_reference(candidate)
+    state.undefine_key(key)
 
 
 def _kill_sql_binding_targets(
@@ -2046,6 +2281,15 @@ def _kill_sql_binding_targets(
     targets: list[ast.expr],
 ) -> None:
     _set_sql_binding_targets(state, targets, None)
+
+
+def _undefine_sql_binding_targets(
+    state: _SqlBindingState,
+    targets: list[ast.expr],
+) -> None:
+    for target in targets:
+        for key in _binding_target_keys(target):
+            _undefine_sql_binding_key(state, key)
 
 
 def _origins_for_binding_targets(
@@ -2069,12 +2313,18 @@ def _merge_sql_binding_states(
         return active[0]
     graph = active[0].graph
     assert all(state.graph is graph for state in active)
-    merged = _SqlBindingState(graph)
+    graph.budget.consume_work(
+        sum(len(state) + len(state.defined_keys) for state in active) + 1
+    )
+    references: dict[str, _ProvRef] = {}
     for key in {key for state in active for key in state}:
         reference = graph.union(state.get(key) for state in active)
         if reference is not None:
-            merged.set_reference(key, reference)
-    return merged
+            references[key] = reference
+    defined_keys = set(active[0].defined_keys)
+    for candidate in active[1:]:
+        defined_keys.intersection_update(candidate.defined_keys)
+    return _SqlBindingState(graph, references, defined_keys)
 
 
 def _enclosing_function(
@@ -2093,14 +2343,19 @@ def _is_sql_context_name(name: str) -> bool:
     return bool(_SQL_CONTEXT_NAME_RE.search(name))
 
 
-def _python_interpolated_sql_lines_from_source(content: str) -> set[int]:
+def _python_interpolated_sql_lines_from_source(
+    content: str,
+    budget: _PythonAnalysisBudget | None = None,
+) -> set[int]:
     lines: set[int] = set()
-    graph = _SqlProvenance()
+    analysis_budget = budget or _PythonAnalysisBudget("<memory>")
+    graph = _SqlProvenance(analysis_budget)
     states_by_scope: dict[
         tuple[int, ...],
         _SqlBindingState | None,
     ] = {}
     for statement in _python_logical_statements(content):
+        analysis_budget.consume_work(len(statement.tokens) + 1)
         if _is_compound_control_header(statement.tokens):
             # Recovery intentionally supports only straight-line def/use.
             # Without a complete CFG for malformed modules, carrying a value
@@ -2125,6 +2380,8 @@ def _python_interpolated_sql_lines_from_source(content: str) -> set[int]:
                 pass
             else:
                 parsed = True
+                node_count = analysis_budget.consume_ast(tree)
+                analysis_budget.consume_work(node_count * 2)
                 ast.increment_lineno(tree, statement.start_line - 2)
                 parents = {
                     child: parent
@@ -2668,14 +2925,22 @@ def _token_sql_context_indices(
     return contexts
 
 
-def python_httpx_calls(content: str) -> list[PythonHttpxCall]:
-    try:
-        tree = ast.parse(content)
-    except (SyntaxError, RecursionError, ValueError):
-        return _python_httpx_calls_from_tokens(content)
+def python_httpx_calls(
+    content: str,
+    *,
+    file_path: str = "<memory>",
+    context: PythonAnalysisContext | None = None,
+) -> list[PythonHttpxCall]:
+    analysis = _python_analysis_context(content, file_path, context)
+    if analysis.tree is None:
+        return _python_httpx_calls_from_tokens(
+            content,
+            budget=analysis.budget,
+        )
 
+    analysis.budget.consume_work(analysis.ast_node_count)
     calls: list[PythonHttpxCall] = []
-    for node in ast.walk(tree):
+    for node in ast.walk(analysis.tree):
         if not isinstance(node, ast.Call):
             continue
         function_name = _qualified_name(node.func)
@@ -2711,11 +2976,17 @@ def _qualified_name(node: ast.expr) -> str | None:
     return ".".join(reversed(parts))
 
 
-def _python_httpx_calls_from_tokens(content: str) -> list[PythonHttpxCall]:
+def _python_httpx_calls_from_tokens(
+    content: str,
+    *,
+    budget: _PythonAnalysisBudget | None = None,
+) -> list[PythonHttpxCall]:
+    analysis_budget = budget or _PythonAnalysisBudget("<memory>")
     tokens: list[tokenize.TokenInfo] = []
     token_stream = tokenize.generate_tokens(io.StringIO(content).readline)
     try:
         for token in token_stream:
+            analysis_budget.consume_work()
             if token.type not in _NON_CODE_TOKEN_TYPES:
                 tokens.append(token)
     except (SyntaxError, tokenize.TokenError):

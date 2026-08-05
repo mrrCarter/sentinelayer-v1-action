@@ -9,6 +9,7 @@ from typing import List, Optional
 
 from ..artifacts import generate_review_brief
 from ..config import OmarGateConfig
+from ..constants import Limits
 from ..ingest import (
     QuickLearnSummary,
     build_llm_synopsis_prompt,
@@ -182,8 +183,8 @@ class AnalysisOrchestrator:
         with self.logger.stage("ingest"):
             ingest = run_ingest(
                 self.repo_root,
-                max_files=1000,
-                max_file_size_bytes=1_000_000,
+                max_files=Limits.MAX_FILES,
+                max_file_size_bytes=Limits.MAX_FILE_SIZE,
                 logger=self.logger,
             )
             stats = ingest.get("stats", {})
@@ -606,7 +607,7 @@ class AnalysisOrchestrator:
             if not rel_path:
                 continue
             size_bytes = file_info.get("size_bytes")
-            if isinstance(size_bytes, int) and size_bytes > 1_000_000:
+            if isinstance(size_bytes, int) and size_bytes > Limits.MAX_FILE_SIZE:
                 continue
             try:
                 content = (self.repo_root / rel_path).read_text(

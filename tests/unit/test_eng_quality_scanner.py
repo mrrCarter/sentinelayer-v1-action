@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
+from omargate.analyze.deterministic import eng_quality_helpers
 from omargate.analyze.deterministic.eng_quality_scanner import EngQualityScanner
+from omargate.constants import Limits
+from omargate.errors import DeterministicAnalysisBudgetExceeded
 
 
 def test_frontend_rules_only_apply_to_react_projects() -> None:
@@ -1277,6 +1282,240 @@ def test_sql_flow_preserves_dict_order_and_precise_starred_unpacking() -> None:
         for finding in findings
         if finding.pattern_id == "EQ-009"
     } == {("src/dict_order.py", 1)}
+
+
+def test_sql_flow_evaluates_call_arguments_in_lexical_order() -> None:
+    files = {
+        "src/positive.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(query=payload, *((payload := "safe") and ()))\n'
+        ),
+        "src/negative.py": (
+            'payload = "safe"\n'
+            'cursor.execute(query=payload, '
+            '*((payload := f"SELECT {column}") and ()))\n'
+        ),
+        "src/star_first_safe.py": (
+            'payload = f"SELECT {column}"\n'
+            'cursor.execute(*((payload := "safe") and ()), query=payload)\n'
+        ),
+        "src/star_first_dynamic.py": (
+            'payload = "safe"\n'
+            'cursor.execute('
+            '*((payload := f"SELECT {column}") and ()), query=payload)\n'
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {("src/positive.py", 1), ("src/star_first_dynamic.py", 2)}
+
+
+def test_sql_flow_tracks_value_preserving_fstring_wrappers() -> None:
+    files = {
+        "src/direct.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = f"{source}"\n'
+            "cursor.execute(payload)\n"
+        ),
+        "src/whitespace.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = f"  {source}\t"\n'
+            "cursor.execute(payload)\n"
+        ),
+        "src/not_transparent.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = f"log: {source}"\n'
+            "cursor.execute(payload)\n"
+        ),
+        "src/repr.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = f"{source!r}"\n'
+            "cursor.execute(payload)\n"
+        ),
+        "src/ascii.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = f"{source!a}"\n'
+            "cursor.execute(payload)\n"
+        ),
+        "src/format_spec.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = f"{source:.3}"\n'
+            "cursor.execute(payload)\n"
+        ),
+        "src/string_conversion.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = f"{source!s}"\n'
+            "cursor.execute(payload)\n"
+        ),
+        "src/multiple.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = f"{source}{source}"\n'
+            "cursor.execute(payload)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {
+        ("src/direct.py", 1),
+        ("src/string_conversion.py", 1),
+        ("src/whitespace.py", 1),
+    }
+
+
+def test_defined_name_loads_do_not_create_spurious_exception_paths() -> None:
+    files = {
+        "src/local.py": (
+            'source = f"SELECT {column}"\n'
+            "try:\n"
+            "    payload = source\n"
+            "    observed = payload\n"
+            "except Exception:\n"
+            "    cursor.execute(payload)\n"
+        ),
+        "src/parameter.py": (
+            "def run(parameter):\n"
+            '    source = f"SELECT {column}"\n'
+            "    try:\n"
+            "        payload = source\n"
+            "        parameter\n"
+            "    except Exception:\n"
+            "        cursor.execute(payload)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert not any(finding.pattern_id == "EQ-009" for finding in findings)
+
+
+def test_descending_loop_alias_flow_uses_linear_state_copy_volume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    aliases = 800
+    copied_slots = 0
+    copy_calls = 0
+    original_copy = eng_quality_helpers._SqlBindingState.copy
+
+    def measured_copy(
+        state: eng_quality_helpers._SqlBindingState,
+    ) -> eng_quality_helpers._SqlBindingState:
+        nonlocal copied_slots, copy_calls
+        copy_calls += 1
+        copied_slots += len(state) + len(state.defined_keys)
+        return original_copy(state)
+
+    monkeypatch.setattr(
+        eng_quality_helpers._SqlBindingState,
+        "copy",
+        measured_copy,
+    )
+    initializers = "\n".join(
+        f'q{index} = "safe"' for index in range(aliases)
+    )
+    transfers = "\n".join(
+        f"    q{index} = q{index + 1}" for index in range(aliases - 1)
+    )
+    source = (
+        'source = f"SELECT {column}"\n'
+        f"{initializers}\n"
+        "while condition:\n"
+        "    cursor.execute(q0)\n"
+        f"{transfers}\n"
+        f"    q{aliases - 1} = source\n"
+    )
+
+    assert eng_quality_helpers.python_interpolated_sql_lines(source) == {1}
+    assert copy_calls <= 20
+    assert copied_slots <= aliases * 20
+
+
+def test_python_ast_budget_is_exact_and_fails_closed_with_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Limits, "MAX_PYTHON_AST_NODES", 2)
+    scanner = EngQualityScanner(tech_stack=["Python"])
+
+    assert scanner.scan({"src/at_limit.py": "pass\n"}) == []
+
+    with pytest.raises(DeterministicAnalysisBudgetExceeded) as caught:
+        scanner.scan({"src/over_limit.py": "x = 1\n"})
+
+    error = caught.value
+    assert error.path == "src/over_limit.py"
+    assert error.budget_kind == "python_ast_nodes"
+    assert error.limit == 2
+    assert error.observed_at_least == 3
+    assert "x = 1" not in str(error)
+
+
+def test_python_work_budget_never_returns_partial_findings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Limits, "MAX_PYTHON_ANALYSIS_WORK_UNITS", 20)
+    source = (
+        'payload = f"SELECT {column}"\n'
+        "cursor.execute(payload)\n"
+    )
+
+    with pytest.raises(DeterministicAnalysisBudgetExceeded) as caught:
+        EngQualityScanner(tech_stack=["Python"]).scan(
+            {"src/work_budget.py": source}
+        )
+
+    assert caught.value.path == "src/work_budget.py"
+    assert caught.value.budget_kind == "python_analysis_work_units"
+
+
+def test_python_source_size_guard_is_exact_and_typed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Limits, "MAX_FILE_SIZE", 4)
+    scanner = EngQualityScanner(tech_stack=["Python"])
+
+    assert scanner.scan({"src/at_limit.py": "pass"}) == []
+
+    with pytest.raises(DeterministicAnalysisBudgetExceeded) as caught:
+        scanner.scan({"src/over_limit.py": "pass\n"})
+
+    assert caught.value.path == "src/over_limit.py"
+    assert caught.value.budget_kind == "python_source_bytes"
+    assert caught.value.observed_at_least == 5
+
+
+def test_python_rules_share_one_parse_and_one_per_file_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parse_calls = 0
+    original_parse = eng_quality_helpers.ast.parse
+
+    def measured_parse(*args, **kwargs):
+        nonlocal parse_calls
+        parse_calls += 1
+        return original_parse(*args, **kwargs)
+
+    monkeypatch.setattr(eng_quality_helpers.ast, "parse", measured_parse)
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(
+        {
+            "src/shared.py": (
+                'payload = f"SELECT {column}"\n'
+                "cursor.execute(payload)\n"
+                'httpx.get("https://example.test")\n'
+            )
+        }
+    )
+
+    assert parse_calls == 1
+    assert {finding.pattern_id for finding in findings} == {"EQ-009", "EQ-012"}
 
 
 def test_sql_flow_handles_deep_conditional_expression_without_recursion() -> None:
