@@ -504,6 +504,9 @@ class _SqlExpressionEvent:
     sink_nodes: frozenset[int] = frozenset()
 
 
+_UNKNOWN_SQL_LITERAL = object()
+
+
 @dataclass(frozen=True)
 class _SqlValue:
     origin: _ProvRef | None
@@ -511,6 +514,7 @@ class _SqlValue:
     mapping: tuple[tuple[ast.expr | None, _SqlValue], ...] | None = None
     iterated_values: tuple[_SqlValue, ...] | None = None
     iterated_origin: _ProvRef | None = None
+    literal: object = _UNKNOWN_SQL_LITERAL
 
 
 _MAX_EXACT_SQL_ITERATIONS = 16
@@ -3892,11 +3896,23 @@ def _evaluate_sql_assignment_value(
             exceptions.capture(state, base=True)
         evaluated = tuple(evaluated_values)
         elements = tuple(exact_values) if exact else None
+        container_literal: object = _UNKNOWN_SQL_LITERAL
+        if isinstance(expression, ast.Tuple) and elements is not None and all(
+            element.literal is not _UNKNOWN_SQL_LITERAL for element in elements
+        ):
+            candidate_literal = tuple(element.literal for element in elements)
+            try:
+                hash(candidate_literal)
+            except TypeError:
+                pass
+            else:
+                container_literal = candidate_literal
         return _SqlValue(
             state.graph.union(element.origin for element in evaluated),
             elements,
             iterated_values=elements,
             iterated_origin=state.graph.union(element.origin for element in evaluated),
+            literal=container_literal,
         )
     if isinstance(expression, (ast.DictComp, ast.ListComp, ast.SetComp)):
         projection_entry = state.copy()
@@ -4047,7 +4063,15 @@ def _evaluate_sql_assignment_value(
             iterated_origin=state.graph.union(value.origin for value in values),
         )
     _process_sql_expression(expression, state, parents, lines, exceptions)
-    return _SqlValue(_sql_origins_in_expression(expression, state, parents))
+    scalar_literal: object = (
+        expression.value
+        if isinstance(expression, ast.Constant)
+        else _UNKNOWN_SQL_LITERAL
+    )
+    return _SqlValue(
+        _sql_origins_in_expression(expression, state, parents),
+        literal=scalar_literal,
+    )
 
 
 def _ordered_starred_sql_values(value: _SqlValue) -> tuple[_SqlValue, ...] | None:
@@ -4156,7 +4180,12 @@ def _sql_pair_mapping_entries(
             or len(pair_value.elements) != 2
         ):
             return None
-        entries.append((components[0], pair_value.elements[1]))
+        entries.append(
+            (
+                _sql_literal_mapping_key(components[0], pair_value.elements[0]),
+                pair_value.elements[1],
+            )
+        )
     return entries
 
 
@@ -4242,7 +4271,7 @@ def _project_singleton_sql_comprehension_value(
                 lines,
                 ignored_exceptions,
             )
-            entries.append((expression.key, value))
+            entries.append((_sql_literal_mapping_key(expression.key, key), value))
             keys.append(key)
             origins.extend((key.origin, value.origin))
         return _SqlValue(
@@ -4268,6 +4297,52 @@ def _project_singleton_sql_comprehension_value(
         iterated_values=results if ordered else None,
         iterated_origin=entry.graph.union(result.origin for result in results),
     )
+
+
+def _sql_literal_mapping_key(
+    expression: ast.expr,
+    value: _SqlValue,
+) -> ast.expr:
+    """Materialize an exact comprehension key when replay resolved a literal.
+
+    The provenance value and the key identity are separate facts.  Keeping the
+    original bound ``Name`` after exact unrolling makes every generated entry
+    look like an unknown key and unions unrelated values during mapping-pattern
+    lookup.  A resolved hashable literal is safe to snapshot; unknown or
+    unhashable keys retain the conservative expression.
+    """
+
+    literal = value.literal
+    if literal is _UNKNOWN_SQL_LITERAL:
+        return expression
+    try:
+        hash(literal)
+    except TypeError:
+        return expression
+    key = _sql_literal_expression(literal)
+    if key is None or ast.literal_eval(key) != literal:
+        return expression
+    return key
+
+
+def _sql_literal_expression(value: object) -> ast.expr | None:
+    """Encode only values accepted by Python literal syntax."""
+
+    if value is None:
+        return ast.Constant(value=None)
+    if value is Ellipsis:
+        return ast.Constant(value=...)
+    if isinstance(value, (str, bytes, bool, int, float, complex)):
+        return ast.Constant(value=value)
+    if isinstance(value, tuple):
+        elements = tuple(_sql_literal_expression(element) for element in value)
+        if any(element is None for element in elements):
+            return None
+        return ast.Tuple(
+            elts=[element for element in elements if element is not None],
+            ctx=ast.Load(),
+        )
+    return None
 
 
 def _sql_comprehension_projection_is_replay_safe(expression: ast.AST) -> bool:

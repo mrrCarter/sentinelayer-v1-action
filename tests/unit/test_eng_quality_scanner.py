@@ -3101,6 +3101,58 @@ def test_singleton_dict_comprehension_preserves_mapping_and_key_provenance() -> 
     } == {(path, 1) for path in files}
 
 
+def test_multi_result_dict_comprehension_preserves_key_value_correlation() -> None:
+    files = {
+        "src/safe_selected.py": (
+            'source = f"SELECT {column}"\n'
+            'subject = {key: value for key, value in [("other", source), '
+            '("query", "safe")]}\n'
+            "match subject:\n"
+            '    case {"query": payload}:\n'
+            "        cursor.execute(payload)\n"
+        ),
+        "src/unsafe_selected.py": (
+            'source = f"SELECT {column}"\n'
+            'subject = {key: value for key, value in [("other", "safe"), '
+            '("query", source)]}\n'
+            "match subject:\n"
+            '    case {"query": payload}:\n'
+            "        cursor.execute(payload)\n"
+        ),
+        "src/safe_duplicate.py": (
+            'source = f"SELECT {column}"\n'
+            'subject = {key: value for key, value in [("other", source), '
+            '("query", source), ("query", "safe")]}\n'
+            "match subject:\n"
+            '    case {"query": payload}:\n'
+            "        cursor.execute(payload)\n"
+        ),
+        "src/unsafe_duplicate.py": (
+            'source = f"SELECT {column}"\n'
+            'subject = {key: value for key, value in [("other", "safe"), '
+            '("query", "safe"), ("query", source)]}\n'
+            "match subject:\n"
+            '    case {"query": payload}:\n'
+            "        cursor.execute(payload)\n"
+        ),
+        "src/safe_pair_generator.py": (
+            'source = f"SELECT {column}"\n'
+            'subject = dict((key, value) for key, value in [("other", source)])\n'
+            "match subject:\n"
+            '    case {"query": payload}:\n'
+            "        cursor.execute(payload)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        finding.file_path
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {"src/unsafe_duplicate.py", "src/unsafe_selected.py"}
+
+
 def test_exact_generator_consumers_preserve_eager_result_provenance() -> None:
     files = {
         "src/dict_generator.py": (
