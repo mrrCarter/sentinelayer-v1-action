@@ -223,10 +223,6 @@ class _SqlBindingState(dict[str, _ProvRef]):
         self.active_exception_channels = frozenset(active_exception_channels)
         self.binding_values: dict[str, _SqlValue] = {}
         self.class_comprehension_outer: _SqlBindingState | None = None
-        self.implicit_methods: dict[
-            tuple[str, str, str], tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]
-        ] = {}
-        self.summary_depth = 0
         self.reference_descendants = _SqlDescendantIndex(self)
         self.defined_descendants = _SqlDescendantIndex(self.defined_keys)
         self.possible_defined_descendants = _SqlDescendantIndex(
@@ -242,8 +238,6 @@ class _SqlBindingState(dict[str, _ProvRef]):
         duplicate.active_exception_channels = self.active_exception_channels
         duplicate.binding_values = dict(self.binding_values)
         duplicate.class_comprehension_outer = self.class_comprehension_outer
-        duplicate.implicit_methods = self.implicit_methods
-        duplicate.summary_depth = self.summary_depth
         duplicate.reference_descendants = self.reference_descendants.copy()
         duplicate.defined_descendants = self.defined_descendants.copy()
         duplicate.possible_defined_descendants = (
@@ -318,8 +312,6 @@ class _SqlBindingState(dict[str, _ProvRef]):
         self.active_exception_channels = other.active_exception_channels
         self.binding_values = dict(other.binding_values)
         self.class_comprehension_outer = other.class_comprehension_outer
-        self.implicit_methods = other.implicit_methods
-        self.summary_depth = other.summary_depth
         self.reference_descendants = other.reference_descendants.copy()
         self.defined_descendants = other.defined_descendants.copy()
         self.possible_defined_descendants = other.possible_defined_descendants.copy()
@@ -384,7 +376,11 @@ class _SqlValue:
     origin: _ProvRef | None
     elements: tuple[_SqlValue, ...] | None = None
     mapping: tuple[tuple[ast.expr | None, _SqlValue], ...] | None = None
-    type_name: str | None = None
+    iterated_values: tuple[_SqlValue, ...] | None = None
+    iterated_origin: _ProvRef | None = None
+
+
+_MAX_EXACT_SQL_ITERATIONS = 16
 
 
 @dataclass
@@ -993,7 +989,6 @@ def _ordered_sql_binding_lines(
 
     graph = _SqlProvenance()
     initial = _SqlBindingState(graph)
-    initial.implicit_methods = _collect_sql_implicit_methods(tree)
     lines: set[int] = set()
     if isinstance(tree, ast.Module):
         _analyze_sql_statement_block(tree.body, initial, parents, lines)
@@ -1363,16 +1358,23 @@ def _analyze_sql_mutation_statement(
             )
         return _sql_normal_flow(current, exceptions)
     if isinstance(statement, ast.AnnAssign):
-        if _annotation_evaluates_at_runtime(statement, parents):
-            _process_sql_expression(
-                statement.annotation, current, parents, lines, exceptions
+        if statement.value is None:
+            _process_sql_annotation_target(
+                statement.target,
+                current,
+                parents,
+                lines,
+                exceptions,
+                evaluate_name=not bool(statement.simple),
             )
-        if statement.value is not None:
-            value = _evaluate_sql_assignment_value(
-                statement.value, current, parents, lines, exceptions
-            )
-        else:
-            value = _SqlValue(None)
+            if _annotation_evaluates_at_runtime(statement, parents):
+                _process_sql_expression(
+                    statement.annotation, current, parents, lines, exceptions
+                )
+            return _sql_normal_flow(current, exceptions)
+        value = _evaluate_sql_assignment_value(
+            statement.value, current, parents, lines, exceptions
+        )
         if not _apply_sql_assignment_targets(
             current,
             [statement.target],
@@ -1384,6 +1386,10 @@ def _analyze_sql_mutation_statement(
             return _SqlFlow(
                 raises=_merge_sql_binding_states(*exceptions.ordinary),
                 base_raises=_merge_sql_binding_states(*exceptions.base),
+            )
+        if _annotation_evaluates_at_runtime(statement, parents):
+            _process_sql_expression(
+                statement.annotation, current, parents, lines, exceptions
             )
         return _sql_normal_flow(current, exceptions)
     if isinstance(statement, ast.AugAssign):
@@ -1410,6 +1416,29 @@ def _analyze_sql_mutation_statement(
             _kill_sql_binding_key(current, alias.asname or alias.name.split(".", 1)[0])
         return _sql_normal_flow(current, exceptions)
     return None
+
+
+def _process_sql_annotation_target(
+    target: ast.expr,
+    state: _SqlBindingState,
+    parents: dict[ast.AST, ast.AST],
+    lines: set[int],
+    exceptions: _SqlExceptions,
+    *,
+    evaluate_name: bool,
+) -> None:
+    """Evaluate an annotation-only expression target without performing a store."""
+
+    if isinstance(target, ast.Name) and evaluate_name:
+        # Parentheses make a name annotation target non-simple.  Python loads
+        # that name (and can therefore raise NameError) without storing it.
+        loaded = ast.copy_location(ast.Name(id=target.id, ctx=ast.Load()), target)
+        _process_sql_expression(loaded, state, parents, lines, exceptions)
+    elif isinstance(target, ast.Attribute):
+        _process_sql_expression(target.value, state, parents, lines, exceptions)
+    elif isinstance(target, ast.Subscript):
+        _process_sql_expression(target.value, state, parents, lines, exceptions)
+        _process_sql_expression(target.slice, state, parents, lines, exceptions)
 
 
 def _analyze_sql_completion_statement(
@@ -1649,6 +1678,19 @@ def _analyze_sql_for(
         return else_flow
 
     iterated_values = _literal_iterated_values(statement.iter, iterable_value)
+    if (
+        iterated_values is not None
+        and len(iterated_values) <= _MAX_EXACT_SQL_ITERATIONS
+        and not isinstance(statement, ast.AsyncFor)
+    ):
+        return _analyze_exact_sql_for(
+            statement,
+            entry,
+            iterated_values,
+            parents,
+            lines,
+            exceptions,
+        )
     successful_values: list[_SqlValue] = []
     unpack_failure = False
     if iterated_values is not None:
@@ -1720,6 +1762,71 @@ def _analyze_sql_for(
     )
 
 
+def _analyze_exact_sql_for(
+    statement: ast.For,
+    entry: _SqlBindingState,
+    values: tuple[_SqlValue, ...],
+    parents: dict[ast.AST, ast.AST],
+    lines: set[int],
+    exceptions: _SqlExceptions,
+) -> _SqlFlow:
+    """Execute a small literal loop in source order.
+
+    A merged loop body is conservative for unknown or large iterables, but it
+    retains overwritten provenance after a statically known final iteration.
+    Bounded unrolling preserves Python's last-binding behavior without making
+    generated literal inputs quadratic in the loop-body size.
+    """
+
+    active: _SqlBindingState | None = entry
+    break_exits: _SqlBindingState | None = None
+    returns: _SqlBindingState | None = None
+    raises: _SqlBindingState | None = None
+    base_raises: _SqlBindingState | None = None
+    for value in values:
+        if active is None:
+            break
+        iteration = active.copy()
+        if not _apply_sql_assignment_targets(
+            iteration,
+            [statement.target],
+            value,
+            parents,
+            lines,
+            exceptions,
+        ):
+            active = None
+            break
+        body = _analyze_sql_statement_block(statement.body, iteration, parents, lines)
+        break_exits = _merge_sql_binding_states(break_exits, body.breaks)
+        returns = _merge_sql_binding_states(returns, body.returns)
+        raises = _merge_sql_binding_states(raises, body.raises)
+        base_raises = _merge_sql_binding_states(base_raises, body.base_raises)
+        active = _merge_sql_binding_states(body.normal, body.continues)
+
+    else_flow = (
+        _analyze_sql_statement_block(statement.orelse, active, parents, lines)
+        if statement.orelse and active is not None
+        else _SqlFlow(normal=active)
+    )
+    return _SqlFlow(
+        normal=_merge_sql_binding_states(break_exits, else_flow.normal),
+        breaks=else_flow.breaks,
+        continues=else_flow.continues,
+        returns=_merge_sql_binding_states(returns, else_flow.returns),
+        raises=_merge_sql_binding_states(
+            *exceptions.ordinary,
+            raises,
+            else_flow.raises,
+        ),
+        base_raises=_merge_sql_binding_states(
+            *exceptions.base,
+            base_raises,
+            else_flow.base_raises,
+        ),
+    )
+
+
 def _literal_iterable_cardinality(expression: ast.expr) -> int | None:
     results: dict[int, int | None] = {}
     pending: list[tuple[ast.expr, bool]] = [(expression, False)]
@@ -1746,19 +1853,8 @@ def _literal_iterable_cardinality(expression: ast.expr) -> int | None:
                     cardinality = None
                     break
                 cardinality += expanded
-        elif isinstance(current, ast.Set) and not any(
-            isinstance(element, ast.Starred) for element in current.elts
-        ):
-            values: set[object] = set()
-            try:
-                for element in current.elts:
-                    value = ast.literal_eval(element)
-                    hash(value)
-                    values.add(value)
-            except (TypeError, ValueError):
-                cardinality = None
-            else:
-                cardinality = len(values)
+        elif isinstance(current, ast.Set):
+            cardinality = _literal_set_display_cardinality(current)
         elif isinstance(current, ast.Dict):
             cardinality = _literal_dict_cardinality(current)
         elif isinstance(current, ast.Constant) and isinstance(
@@ -1767,6 +1863,54 @@ def _literal_iterable_cardinality(expression: ast.expr) -> int | None:
             cardinality = len(current.value)
         results[id(current)] = cardinality
     return results[id(expression)]
+
+
+def _static_display_elements(
+    expression: ast.expr,
+) -> tuple[ast.expr, ...] | None:
+    """Flatten exact starred list/tuple/set displays without Python recursion."""
+
+    if not isinstance(expression, (ast.List, ast.Set, ast.Tuple)):
+        return None
+    flattened: list[ast.expr] = []
+    pending = list(reversed(expression.elts))
+    while pending:
+        element = pending.pop()
+        if not isinstance(element, ast.Starred):
+            flattened.append(element)
+            continue
+        # A list/tuple display has deterministic iteration order and no user
+        # iterator. Set displays can invoke user hashing and have unstable
+        # order, so they remain an unknown expansion here.
+        if not isinstance(element.value, (ast.List, ast.Tuple)):
+            return None
+        pending.extend(reversed(element.value.elts))
+    return tuple(flattened)
+
+
+def _literal_set_display_cardinality(expression: ast.Set) -> int | None:
+    """Return exact cardinality for literal set displays, including ``*``.
+
+    This deliberately computes only membership, not iteration order.  Literal
+    built-in operands have no user iterator or hashing hooks, so expanding
+    them is exact while an arbitrary starred expression remains unknown.
+    """
+
+    values: set[object] = set()
+    try:
+        for element in expression.elts:
+            if isinstance(element, ast.Starred):
+                expanded = ast.literal_eval(element.value)
+                for value in iter(expanded):
+                    hash(value)
+                    values.add(value)
+                continue
+            value = ast.literal_eval(element)
+            hash(value)
+            values.add(value)
+    except (TypeError, ValueError):
+        return None
+    return len(values)
 
 
 def _literal_dict_cardinality(expression: ast.Dict) -> int | None:
@@ -1822,10 +1966,18 @@ def _iterated_sql_value(
 ) -> _SqlValue:
     """Project a precise value for a statically singleton iterable."""
 
-    if iterable.elements is not None:
-        if len(iterable.elements) == 1:
-            return iterable.elements[0]
-        return _merge_sql_values(list(iterable.elements), state.graph)
+    iterated = iterable.iterated_values or iterable.elements
+    if iterated is not None:
+        if len(iterated) == 1:
+            return iterated[0]
+        return _merge_sql_values(list(iterated), state.graph)
+    if iterable.iterated_origin is not None:
+        return _SqlValue(iterable.iterated_origin)
+    if isinstance(expression, (ast.Dict, ast.List, ast.Set, ast.Tuple)):
+        # A literal display has already projected its runtime items.  ``None``
+        # here can be an exact clean result (for example ``[*sql_string]``
+        # yields characters), so do not fall back to the container's origin.
+        return _SqlValue(None)
     return _SqlValue(_iterated_sql_origins(expression, state, parents))
 
 
@@ -1833,10 +1985,14 @@ def _literal_iterated_values(
     expression: ast.expr,
     iterable: _SqlValue,
 ) -> tuple[_SqlValue, ...] | None:
-    if isinstance(expression, (ast.List, ast.Tuple)) and not any(
-        isinstance(element, ast.Starred) for element in expression.elts
+    if isinstance(expression, (ast.List, ast.Tuple)):
+        return iterable.iterated_values
+    if (
+        isinstance(expression, ast.Set)
+        and iterable.iterated_values is not None
+        and len(iterable.iterated_values) <= 1
     ):
-        return iterable.elements
+        return iterable.iterated_values
     return None
 
 
@@ -1967,6 +2123,7 @@ def _sql_loop_header(
     header.binding_values = {
         key: value for key, value in entry.binding_values.items() if key not in assigned
     }
+    header.class_comprehension_outer = entry.class_comprehension_outer
     return header, phis
 
 
@@ -2538,7 +2695,7 @@ def _match_mapping_capture_origins(
             literal_key = ast.literal_eval(key)
             hash(literal_key)
         except (TypeError, ValueError):
-            child_subject = _SqlValue(
+            child_subject: _SqlValue | None = _SqlValue(
                 graph.union(value.origin for _, _, value in events)
             )
             captures.update(_match_capture_origins(child_pattern, child_subject, graph))
@@ -2659,23 +2816,26 @@ def _match_pattern_truth(
     if isinstance(pattern, ast.MatchSequence) and isinstance(
         subject, (ast.List, ast.Tuple)
     ):
+        subject_elements = _static_display_elements(subject)
+        if subject_elements is None:
+            return None
         starred = [
             index
             for index, item in enumerate(pattern.patterns)
             if isinstance(item, ast.MatchStar)
         ]
         if len(starred) > 1 or (
-            not starred and len(pattern.patterns) != len(subject.elts)
+            not starred and len(pattern.patterns) != len(subject_elements)
         ):
             return False
-        if starred and len(subject.elts) < len(pattern.patterns) - 1:
+        if starred and len(subject_elements) < len(pattern.patterns) - 1:
             return False
         star_index = starred[0] if starred else len(pattern.patterns)
         trailing = len(pattern.patterns) - star_index - (1 if starred else 0)
         pairs = list(
             zip(
                 pattern.patterns[:star_index],
-                subject.elts[:star_index],
+                subject_elements[:star_index],
                 strict=True,
             )
         )
@@ -2683,7 +2843,7 @@ def _match_pattern_truth(
             pairs.extend(
                 zip(
                     pattern.patterns[-trailing:],
-                    subject.elts[-trailing:],
+                    subject_elements[-trailing:],
                     strict=True,
                 )
             )
@@ -2708,7 +2868,7 @@ def _match_pattern_truth(
                 unknown_keys = True
                 continue
             subject_keys[literal_key] = value
-        truths: list[bool | None] = []
+        mapping_truths: list[bool | None] = []
         for key, child_pattern in zip(pattern.keys, pattern.patterns, strict=True):
             try:
                 literal_key = ast.literal_eval(key)
@@ -2718,14 +2878,14 @@ def _match_pattern_truth(
             child_subject = subject_keys.get(literal_key)
             if child_subject is None:
                 if unknown_keys:
-                    truths.append(None)
+                    mapping_truths.append(None)
                     continue
                 return False
             child_truth = _match_pattern_truth(child_pattern, child_subject)
             if child_truth is False:
                 return False
-            truths.append(child_truth)
-        return True if all(truth is True for truth in truths) else None
+            mapping_truths.append(child_truth)
+        return True if all(truth is True for truth in mapping_truths) else None
     return None
 
 
@@ -3085,13 +3245,28 @@ def _process_single_generator_sql_comprehension(
     iterable_value = _evaluate_sql_assignment_value(
         generator.iter, entry, parents, lines, exceptions
     )
-    target_value = _iterated_sql_value(generator.iter, iterable_value, entry, parents)
     cardinality = _literal_iterable_cardinality(generator.iter)
     _record_sql_iteration_exceptions(
         entry,
         exceptions,
         unknown=cardinality is None or bool(generator.is_async),
     )
+    iterated_values = _literal_iterated_values(generator.iter, iterable_value)
+    if (
+        iterated_values is not None
+        and len(iterated_values) <= _MAX_EXACT_SQL_ITERATIONS
+        and not generator.is_async
+    ):
+        return _process_exact_single_generator_sql_comprehension(
+            node,
+            generator,
+            iterated_values,
+            entry,
+            parents,
+            lines,
+            exceptions,
+        )
+    target_value = _iterated_sql_value(generator.iter, iterable_value, entry, parents)
     if cardinality == 0:
         return [entry]
     if cardinality == 1:
@@ -3126,6 +3301,43 @@ def _process_single_generator_sql_comprehension(
     _complete_sql_loop_phis(phis, *backedges)
     outcomes.append(header)
     return outcomes
+
+
+def _process_exact_single_generator_sql_comprehension(
+    node: ast.DictComp | ast.ListComp | ast.SetComp,
+    generator: ast.comprehension,
+    values: tuple[_SqlValue, ...],
+    entry: _SqlBindingState,
+    parents: dict[ast.AST, ast.AST],
+    lines: set[int],
+    exceptions: _SqlExceptions,
+) -> list[_SqlBindingState]:
+    """Execute a bounded eager comprehension in literal iteration order."""
+
+    active: _SqlBindingState | None = entry
+    for value in values:
+        if active is None:
+            break
+        passed, skipped = _process_sql_comprehension_filters(
+            generator,
+            value,
+            active,
+            parents,
+            lines,
+            exceptions,
+        )
+        completed = list(skipped)
+        for candidate in passed:
+            _process_sql_comprehension_value(
+                node,
+                candidate,
+                parents,
+                lines,
+                exceptions,
+            )
+            completed.append(candidate)
+        active = _merge_sql_binding_states(*completed)
+    return [] if active is None else [active]
 
 
 def _process_nested_sql_comprehension(
@@ -3298,26 +3510,67 @@ def _evaluate_sql_assignment_value(
         _process_sql_expression(expression, state, parents, lines, exceptions)
         return read_state.binding_values[reference]
     if isinstance(expression, (ast.List, ast.Tuple)):
-        elements = tuple(
-            _evaluate_sql_assignment_value(element, state, parents, lines, exceptions)
-            for element in expression.elts
-        )
+        evaluated_values: list[_SqlValue] = []
+        exact_values: list[_SqlValue] = []
+        exact = True
+        for element in expression.elts:
+            if not isinstance(element, ast.Starred):
+                value = _evaluate_sql_assignment_value(
+                    element, state, parents, lines, exceptions
+                )
+                evaluated_values.append(value)
+                exact_values.append(value)
+                continue
+            candidate = _evaluate_sql_assignment_value(
+                element.value, state, parents, lines, exceptions
+            )
+            expanded = _ordered_starred_sql_values(candidate)
+            if expanded is None:
+                exact = False
+                if candidate.iterated_origin is not None:
+                    evaluated_values.append(_SqlValue(candidate.iterated_origin))
+            else:
+                evaluated_values.extend(expanded)
+                exact_values.extend(expanded)
+            exceptions.capture(state, base=True)
+        evaluated = tuple(evaluated_values)
+        elements = tuple(exact_values) if exact else None
         return _SqlValue(
-            state.graph.union(element.origin for element in elements),
+            state.graph.union(element.origin for element in evaluated),
             elements,
+            iterated_values=elements,
+            iterated_origin=state.graph.union(element.origin for element in evaluated),
         )
+    if isinstance(expression, (ast.DictComp, ast.ListComp, ast.SetComp)):
+        projection_entry = state.copy()
+        _process_sql_expression(expression, state, parents, lines, exceptions)
+        projected = _project_singleton_sql_comprehension_value(
+            expression,
+            projection_entry,
+            parents,
+            lines,
+        )
+        if projected is not None:
+            return projected
+        return _SqlValue(_sql_origins_in_expression(expression, state, parents))
     if isinstance(expression, ast.Dict):
         entries: list[tuple[ast.expr | None, _SqlValue]] = []
         origins: list[_ProvRef | None] = []
+        iterated_values: list[_SqlValue] = []
         for key, item in zip(expression.keys, expression.values, strict=True):
             if key is not None:
                 key_value = _evaluate_sql_assignment_value(
                     key, state, parents, lines, exceptions
                 )
                 origins.append(key_value.origin)
+                iterated_values.append(key_value)
             item_value = _evaluate_sql_assignment_value(
                 item, state, parents, lines, exceptions
             )
+            if key is None:
+                iterated_values.extend(
+                    item_value.iterated_values or (_SqlValue(item_value.origin),)
+                )
             origins.append(item_value.origin)
             entries.append((key, item_value))
             # Hashing a key or applying ``**`` happens after that entry's
@@ -3326,6 +3579,10 @@ def _evaluate_sql_assignment_value(
         return _SqlValue(
             state.graph.union(origins),
             mapping=tuple(entries),
+            iterated_values=tuple(iterated_values),
+            iterated_origin=state.graph.union(
+                value.origin for value in iterated_values
+            ),
         )
     if (
         isinstance(expression, ast.Call)
@@ -3335,39 +3592,343 @@ def _evaluate_sql_assignment_value(
         and len(expression.args) <= 1
     ):
         _process_sql_expression(expression.func, state, parents, lines, exceptions)
-        entries: list[tuple[ast.expr | None, _SqlValue]] = []
+        constructed_entries: list[tuple[ast.expr | None, _SqlValue]] = []
         if expression.args:
-            entries.append(
-                (
-                    None,
-                    _evaluate_sql_assignment_value(
-                        expression.args[0], state, parents, lines, exceptions
-                    ),
+            argument = expression.args[0]
+            positional = (
+                _consume_exact_singleton_sql_generator(
+                    argument, state, parents, lines, exceptions
+                )
+                if _is_exact_singleton_sql_generator(argument)
+                else _evaluate_sql_assignment_value(
+                    argument, state, parents, lines, exceptions
                 )
             )
+            pair_entries = _sql_pair_mapping_entries(argument, positional)
+            if pair_entries is None:
+                constructed_entries.append((None, positional))
+            else:
+                constructed_entries.extend(pair_entries)
         for keyword in expression.keywords:
             item_value = _evaluate_sql_assignment_value(
                 keyword.value, state, parents, lines, exceptions
             )
             key = ast.Constant(value=keyword.arg) if keyword.arg is not None else None
-            entries.append((key, item_value))
+            constructed_entries.append((key, item_value))
         exceptions.capture(state, base=True)
+        constructed_iterated_values: list[_SqlValue] = []
+        for constructed_key, constructed_item in constructed_entries:
+            if constructed_key is None:
+                constructed_iterated_values.extend(
+                    constructed_item.iterated_values
+                    or (_SqlValue(constructed_item.origin),)
+                )
+            else:
+                constructed_iterated_values.append(_SqlValue(None))
         return _SqlValue(
-            state.graph.union(item.origin for _, item in entries),
-            mapping=tuple(entries),
+            state.graph.union(
+                constructed_value.origin for _, constructed_value in constructed_entries
+            ),
+            mapping=tuple(constructed_entries),
+            iterated_values=tuple(constructed_iterated_values),
+            iterated_origin=state.graph.union(
+                value.origin for value in constructed_iterated_values
+            ),
         )
+    if (
+        isinstance(expression, ast.Call)
+        and isinstance(expression.func, ast.Name)
+        and expression.func.id in {"list", "set", "tuple"}
+        and expression.func.id not in state.shadowed_keys
+        and len(expression.args) == 1
+        and not expression.keywords
+        and _is_exact_singleton_sql_generator(expression.args[0])
+    ):
+        _process_sql_expression(expression.func, state, parents, lines, exceptions)
+        consumed = _consume_exact_singleton_sql_generator(
+            expression.args[0], state, parents, lines, exceptions
+        )
+        exceptions.capture(state, base=True)
+        return consumed
     if isinstance(expression, ast.Set):
         values: list[_SqlValue] = []
         for element in expression.elts:
-            values.append(
-                _evaluate_sql_assignment_value(
-                    element, state, parents, lines, exceptions
-                )
+            candidate = _evaluate_sql_assignment_value(
+                element.value if isinstance(element, ast.Starred) else element,
+                state,
+                parents,
+                lines,
+                exceptions,
             )
+            if isinstance(element, ast.Starred):
+                expanded_values = _ordered_starred_sql_values(candidate)
+                if expanded_values is not None:
+                    values.extend(expanded_values)
+                elif candidate.iterated_origin is not None:
+                    values.append(_SqlValue(candidate.iterated_origin))
+            else:
+                values.append(candidate)
             exceptions.capture(state, base=True)
-        return _SqlValue(state.graph.union(value.origin for value in values))
+        set_expanded_nodes = _static_display_elements(expression)
+        unique: list[_SqlValue] | None = [] if set_expanded_nodes is not None else None
+        seen: set[object] = set()
+        if unique is not None:
+            try:
+                for element, set_value in zip(
+                    set_expanded_nodes or (), values, strict=True
+                ):
+                    literal = ast.literal_eval(element)
+                    hash(literal)
+                    if literal not in seen:
+                        seen.add(literal)
+                        unique.append(set_value)
+            except (TypeError, ValueError):
+                unique = None
+        return _SqlValue(
+            state.graph.union(value.origin for value in values),
+            iterated_values=tuple(unique) if unique is not None else None,
+            iterated_origin=state.graph.union(value.origin for value in values),
+        )
     _process_sql_expression(expression, state, parents, lines, exceptions)
     return _SqlValue(_sql_origins_in_expression(expression, state, parents))
+
+
+def _ordered_starred_sql_values(value: _SqlValue) -> tuple[_SqlValue, ...] | None:
+    """Return item snapshots only when their iteration order is trustworthy."""
+
+    values = value.iterated_values
+    if values is None:
+        values = value.elements
+    if values is None:
+        return None
+    if value.elements is not None or value.mapping is not None or len(values) <= 1:
+        return values
+    # A multi-element set snapshot has no stable iteration order.
+    return None
+
+
+def _is_exact_singleton_sql_generator(expression: ast.expr) -> bool:
+    if not isinstance(expression, ast.GeneratorExp):
+        return False
+    return all(
+        not generator.is_async
+        and _literal_iterable_cardinality(generator.iter) == 1
+        and all(_literal_truth(condition) is True for condition in generator.ifs)
+        for generator in expression.generators
+    )
+
+
+def _consume_exact_singleton_sql_generator(
+    expression: ast.expr,
+    state: _SqlBindingState,
+    parents: dict[ast.AST, ast.AST],
+    lines: set[int],
+    exceptions: _SqlExceptions,
+) -> _SqlValue:
+    """Exhaust a proven-singleton generator at a synchronous consumer."""
+
+    assert isinstance(expression, ast.GeneratorExp)
+    outer = state.copy()
+    local_keys = {
+        key
+        for generator in expression.generators
+        for key in _comprehension_local_keys(generator.target)
+    }
+    result: _SqlValue | None = None
+    try:
+        for generator in expression.generators:
+            iterable = _evaluate_sql_assignment_value(
+                generator.iter, state, parents, lines, exceptions
+            )
+            values = _literal_iterated_values(generator.iter, iterable)
+            target_value = (
+                values[0]
+                if values is not None and len(values) == 1
+                else _iterated_sql_value(generator.iter, iterable, state, parents)
+            )
+            if not _apply_sql_assignment_targets(
+                state,
+                [generator.target],
+                target_value,
+                parents,
+                lines,
+                exceptions,
+            ):
+                return _SqlValue(None)
+            for condition in generator.ifs:
+                _process_sql_expression(condition, state, parents, lines, exceptions)
+        result = _evaluate_sql_assignment_value(
+            expression.elt, state, parents, lines, exceptions
+        )
+    finally:
+        for key in local_keys:
+            _restore_sql_comprehension_local(state, outer, key)
+    if result is None:
+        return _SqlValue(None)
+    return _SqlValue(
+        result.origin,
+        elements=(result,),
+        iterated_values=(result,),
+        iterated_origin=result.origin,
+    )
+
+
+def _sql_pair_mapping_entries(
+    expression: ast.expr,
+    value: _SqlValue,
+) -> list[tuple[ast.expr | None, _SqlValue]] | None:
+    pair_expressions = (
+        (expression.elt,)
+        if isinstance(expression, ast.GeneratorExp)
+        else _static_display_elements(expression)
+    )
+    pair_values = value.iterated_values
+    if (
+        pair_expressions is None
+        or pair_values is None
+        or len(pair_expressions) != len(pair_values)
+    ):
+        return None
+    entries: list[tuple[ast.expr | None, _SqlValue]] = []
+    for pair_expression, pair_value in zip(pair_expressions, pair_values, strict=True):
+        components = _static_display_elements(pair_expression)
+        if (
+            components is None
+            or len(components) != 2
+            or pair_value.elements is None
+            or len(pair_value.elements) != 2
+        ):
+            return None
+        entries.append((components[0], pair_value.elements[1]))
+    return entries
+
+
+def _project_singleton_sql_comprehension_value(
+    expression: ast.DictComp | ast.ListComp | ast.SetComp,
+    entry: _SqlBindingState,
+    parents: dict[ast.AST, ast.AST],
+    lines: set[int],
+) -> _SqlValue | None:
+    """Project the result of a bounded, replay-safe eager comprehension.
+
+    The real comprehension has already been evaluated against the live state.
+    This bounded copy only recovers its returned value shape.  Unknown filters,
+    async clauses, side-effectful replay, and large products remain opaque.
+    """
+
+    ignored_exceptions = _SqlExceptions.empty(enabled=False)
+    candidates = [entry]
+    for generator in expression.generators:
+        if generator.is_async or not _sql_comprehension_projection_is_replay_safe(
+            generator.iter
+        ):
+            return None
+        truths = tuple(_literal_truth(condition) for condition in generator.ifs)
+        if any(truth is None for truth in truths) or any(
+            not _sql_comprehension_projection_is_replay_safe(condition)
+            for condition in generator.ifs
+        ):
+            return None
+        expanded: list[_SqlBindingState] = []
+        for candidate in candidates:
+            iterable = _evaluate_sql_assignment_value(
+                generator.iter,
+                candidate,
+                parents,
+                lines,
+                ignored_exceptions,
+            )
+            values = _literal_iterated_values(generator.iter, iterable)
+            if values is None:
+                return None
+            for value in values:
+                iteration = candidate.copy()
+                if not _apply_sql_assignment_targets(
+                    iteration,
+                    [generator.target],
+                    value,
+                    parents,
+                    lines,
+                    ignored_exceptions,
+                ):
+                    return None
+                if all(truth is True for truth in truths):
+                    expanded.append(iteration)
+                if len(expanded) > _MAX_EXACT_SQL_ITERATIONS:
+                    return None
+        candidates = expanded
+    value_nodes = (
+        (expression.key, expression.value)
+        if isinstance(expression, ast.DictComp)
+        else (expression.elt,)
+    )
+    if any(
+        not _sql_comprehension_projection_is_replay_safe(node) for node in value_nodes
+    ):
+        return None
+    if isinstance(expression, ast.DictComp):
+        entries: list[tuple[ast.expr | None, _SqlValue]] = []
+        keys: list[_SqlValue] = []
+        origins: list[_ProvRef | None] = []
+        for candidate in candidates:
+            key = _evaluate_sql_assignment_value(
+                expression.key,
+                candidate,
+                parents,
+                lines,
+                ignored_exceptions,
+            )
+            value = _evaluate_sql_assignment_value(
+                expression.value,
+                candidate,
+                parents,
+                lines,
+                ignored_exceptions,
+            )
+            entries.append((expression.key, value))
+            keys.append(key)
+            origins.extend((key.origin, value.origin))
+        return _SqlValue(
+            entry.graph.union(origins),
+            mapping=tuple(entries),
+            iterated_values=tuple(keys) if len(keys) <= 1 else None,
+            iterated_origin=entry.graph.union(key.origin for key in keys),
+        )
+    results = tuple(
+        _evaluate_sql_assignment_value(
+            expression.elt,
+            candidate,
+            parents,
+            lines,
+            ignored_exceptions,
+        )
+        for candidate in candidates
+    )
+    ordered = not isinstance(expression, ast.SetComp) or len(results) <= 1
+    return _SqlValue(
+        entry.graph.union(result.origin for result in results),
+        elements=results if ordered else None,
+        iterated_values=results if ordered else None,
+        iterated_origin=entry.graph.union(result.origin for result in results),
+    )
+
+
+def _sql_comprehension_projection_is_replay_safe(expression: ast.AST) -> bool:
+    """Keep the value-shape replay free of modeled state mutations or calls."""
+
+    return not any(
+        isinstance(
+            node,
+            (
+                ast.Await,
+                ast.Call,
+                ast.NamedExpr,
+                ast.Yield,
+                ast.YieldFrom,
+            ),
+        )
+        for node in ast.walk(expression)
+    )
 
 
 def _apply_sql_assignment_targets(
@@ -3612,6 +4173,8 @@ def _sql_origins_in_expression(
                     pending.append(final)
         elif isinstance(candidate, ast.Await):
             pending.append(candidate.value)
+        elif isinstance(candidate, ast.Starred):
+            pending.append(candidate.value)
         elif isinstance(candidate, ast.Call) and _is_transparent_string_call(candidate):
             assert isinstance(candidate.func, ast.Attribute)
             pending.append(candidate.func.value)
@@ -3693,6 +4256,8 @@ def _binding_target_keys(target: ast.AST) -> set[str]:
     reference = _qualified_name(target) if isinstance(target, ast.expr) else None
     if reference is not None:
         return {reference}
+    if isinstance(target, ast.Starred):
+        return _binding_target_keys(target.value)
     if isinstance(target, (ast.Tuple, ast.List)):
         return {key for element in target.elts for key in _binding_target_keys(element)}
     return set()
@@ -3861,6 +4426,7 @@ def _merge_sql_binding_states(
             channel for state in active for channel in state.active_exception_channels
         },
     )
+    merged.class_comprehension_outer = active[0].class_comprehension_outer
     for key in {key for state in active for key in state}:
         reference = graph.union(state.get(key) for state in active)
         if reference is not None:

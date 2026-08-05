@@ -2719,3 +2719,479 @@ def test_multi_element_for_destructuring_preserves_components_and_first_failure(
     findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
 
     assert not any(finding.pattern_id == "EQ-009" for finding in findings)
+
+
+def test_small_literal_loops_preserve_ordered_last_binding_and_failure_state() -> None:
+    files = {
+        "src/failure_after_safe.py": (
+            'source = f"SELECT {column}"\n'
+            "payload = source\n"
+            "try:\n"
+            '    for payload, other in [("safe", "ok"), ("bad",)]:\n'
+            "        pass\n"
+            "except ValueError:\n"
+            "    cursor.execute(payload)\n"
+        ),
+        "src/unsafe_safe_failure.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = "safe"\n'
+            "try:\n"
+            '    for payload, other in [(source, "ok"), ("safe", "ok"), ("bad",)]:\n'
+            "        pass\n"
+            "except ValueError:\n"
+            "    cursor.execute(payload)\n"
+        ),
+        "src/post_loop.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = "safe"\n'
+            'for payload in [source, "safe"]:\n'
+            "    pass\n"
+            "cursor.execute(payload)\n"
+        ),
+        "src/loop_else.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = "safe"\n'
+            'for payload in [source, "safe"]:\n'
+            "    pass\n"
+            "else:\n"
+            "    cursor.execute(payload)\n"
+        ),
+        "src/singleton.py": (
+            'source = f"SELECT {column}"\n'
+            "payload = source\n"
+            'for payload in ["safe"]:\n'
+            "    pass\n"
+            "cursor.execute(payload)\n"
+        ),
+        "src/comprehension.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = "safe"\n'
+            '[(payload := item) for item in [source, "safe"]]\n'
+            "cursor.execute(payload)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert not any(finding.pattern_id == "EQ-009" for finding in findings)
+
+
+def test_small_literal_unrolling_retains_cross_iteration_provenance() -> None:
+    files = {
+        "src/loop.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = "safe"\n'
+            'for item in [source, "safe"]:\n'
+            "    cursor.execute(payload)\n"
+            "    payload = item\n"
+        ),
+        "src/comprehension.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = "safe"\n'
+            "[(cursor.execute(payload), (payload := item)) "
+            'for item in [source, "safe"]]\n'
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {(path, 1) for path in files}
+
+
+def test_bound_dict_and_set_iteration_preserve_key_and_element_snapshots() -> None:
+    files = {
+        "src/dict_loop.py": (
+            'source = f"SELECT {column}"\n'
+            "values = {source: 0}\n"
+            "for key in values:\n"
+            "    cursor.execute(key)\n"
+        ),
+        "src/dict_comprehension.py": (
+            'source = f"SELECT {column}"\n'
+            "values = {source: 0}\n"
+            "[cursor.execute(key) for key in values]\n"
+        ),
+        "src/set_loop.py": (
+            'source = f"SELECT {column}"\n'
+            "values = {source}\n"
+            "for value in values:\n"
+            "    cursor.execute(value)\n"
+        ),
+        "src/set_comprehension.py": (
+            'source = f"SELECT {column}"\n'
+            "values = {source}\n"
+            "[cursor.execute(value) for value in values]\n"
+        ),
+        "src/key_snapshot.py": (
+            'source = f"SELECT {column}"\n'
+            "payload = source\n"
+            'values = {payload: 0, (payload := "safe"): 1}\n'
+            "for key in values:\n"
+            "    cursor.execute(key)\n"
+        ),
+        "src/nested_unpack.py": (
+            'source = f"SELECT {column}"\n'
+            "values = {**{source: 0}}\n"
+            "for key in values:\n"
+            "    cursor.execute(key)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {(path, 1) for path in files}
+
+
+def test_annotated_assignments_preserve_runtime_order_and_no_value_bindings() -> None:
+    files = {
+        "src/annotation_only.py": (
+            "def run():\n"
+            '    payload = f"SELECT {column}"\n'
+            "    payload: str\n"
+            "    cursor.execute(payload)\n"
+        ),
+        "src/rhs_before_annotation.py": (
+            'payload = "safe"\n'
+            'source = f"SELECT {column}"\n'
+            "payload: (observed := payload) = source\n"
+            "cursor.execute(observed)\n"
+        ),
+        "src/safe_rhs_before_annotation.py": (
+            'source = f"SELECT {column}"\n'
+            "payload = source\n"
+            'payload: (observed := payload) = "safe"\n'
+            "cursor.execute(observed)\n"
+        ),
+        "src/expression_target.py": (
+            "def run(items):\n"
+            '    payload = "safe"\n'
+            '    source = f"SELECT {column}"\n'
+            "    items[(payload := source)]: int\n"
+            "    cursor.execute(payload)\n"
+        ),
+        "src/safe_expression_target.py": (
+            "def run(items):\n"
+            '    payload = f"SELECT {column}"\n'
+            '    items[(payload := "safe")]: int\n'
+            "    cursor.execute(payload)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {
+        ("src/annotation_only.py", 2),
+        ("src/expression_target.py", 3),
+        ("src/rhs_before_annotation.py", 2),
+    }
+
+
+def test_dict_pair_constructor_preserves_exact_overwrite_order() -> None:
+    files = {
+        "src/safe_last.py": (
+            'source = f"SELECT {column}"\n'
+            'subject = dict([("query", source), ("query", "safe")])\n'
+            "match subject:\n"
+            '    case {"query": payload}:\n'
+            "        cursor.execute(payload)\n"
+        ),
+        "src/unsafe_last.py": (
+            'source = f"SELECT {column}"\n'
+            'subject = dict([("query", "safe"), ("query", source)])\n'
+            "match subject:\n"
+            '    case {"query": payload}:\n'
+            "        cursor.execute(payload)\n"
+        ),
+        "src/literal_mapping.py": (
+            'source = f"SELECT {column}"\n'
+            'subject = dict({"query": source})\n'
+            "match subject:\n"
+            '    case {"query": payload}:\n'
+            "        cursor.execute(payload)\n"
+        ),
+        "src/dstar_mapping.py": (
+            'source = f"SELECT {column}"\n'
+            'subject = dict(**{"query": source})\n'
+            "match subject:\n"
+            '    case {"query": payload}:\n'
+            "        cursor.execute(payload)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {
+        ("src/dstar_mapping.py", 1),
+        ("src/literal_mapping.py", 1),
+        ("src/unsafe_last.py", 1),
+    }
+
+
+def test_starred_displays_preserve_shape_iteration_and_match_provenance() -> None:
+    files = {
+        "src/destructure.py": (
+            'source = f"SELECT {column}"\n'
+            'first, payload, last = (*("safe", source), "safe")\n'
+            "cursor.execute(payload)\n"
+        ),
+        "src/iteration.py": (
+            'source = f"SELECT {column}"\n'
+            "for payload in [*[source]]:\n"
+            "    cursor.execute(payload)\n"
+        ),
+        "src/match.py": (
+            'source = f"SELECT {column}"\n'
+            'match [*("safe", source)]:\n'
+            "    case [_, payload]:\n"
+            "        cursor.execute(payload)\n"
+        ),
+        "src/set_duplicate.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = "safe"\n'
+            "[(cursor.execute(payload), (payload := source)) "
+            "for _ in {*[0], 0}]\n"
+        ),
+        "src/unknown_star_target.py": (
+            "def run(values):\n"
+            '    payload = f"SELECT {column}"\n'
+            "    *payload, = values\n"
+            "    cursor.execute(payload)\n"
+        ),
+        "src/unknown_star_and_tail.py": (
+            "def run(values):\n"
+            '    payload = f"SELECT {column}"\n'
+            "    tail = payload\n"
+            "    *payload, tail = values\n"
+            "    cursor.execute(payload)\n"
+            "    cursor.execute(tail)\n"
+        ),
+        "src/star_failure_before_walrus.py": (
+            'payload = f"SELECT {column}"\n'
+            "try:\n"
+            '    [*values, (payload := "safe")]\n'
+            "except TypeError:\n"
+            "    cursor.execute(payload)\n"
+        ),
+        "src/walrus_before_star_failure.py": (
+            'payload = f"SELECT {column}"\n'
+            "try:\n"
+            '    [(payload := "safe"), *values]\n'
+            "except TypeError:\n"
+            "    cursor.execute(payload)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {
+        ("src/destructure.py", 1),
+        ("src/iteration.py", 1),
+        ("src/match.py", 1),
+        ("src/star_failure_before_walrus.py", 1),
+    }
+
+
+def test_singleton_nested_comprehension_preserves_result_provenance() -> None:
+    source = (
+        'source = f"SELECT {column}"\n'
+        "payload, = [value for _ in [0] for value in [source]]\n"
+        "cursor.execute(payload)\n"
+    )
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(
+        {"src/comprehension_result.py": source}
+    )
+
+    assert {
+        finding.line_start for finding in findings if finding.pattern_id == "EQ-009"
+    } == {1}
+
+
+def test_singleton_dict_comprehension_preserves_mapping_and_key_provenance() -> None:
+    files = {
+        "src/mapping.py": (
+            'source = f"SELECT {column}"\n'
+            'subject = {key: value for key in ["query"] for value in [source]}\n'
+            "match subject:\n"
+            '    case {"query": payload}:\n'
+            "        cursor.execute(payload)\n"
+        ),
+        "src/keys.py": (
+            'source = f"SELECT {column}"\n'
+            "for key in {source: 0 for _ in [0]}:\n"
+            "    cursor.execute(key)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {(path, 1) for path in files}
+
+
+def test_exact_generator_consumers_preserve_eager_result_provenance() -> None:
+    files = {
+        "src/dict_generator.py": (
+            'source = f"SELECT {column}"\n'
+            'subject = dict((("query", source) for _ in [0]))\n'
+            "match subject:\n"
+            '    case {"query": payload}:\n'
+            "        cursor.execute(payload)\n"
+        ),
+        "src/nested_dict_generator.py": (
+            'source = f"SELECT {column}"\n'
+            'subject = dict((key, value) for key in ["query"] '
+            "for value in [source])\n"
+            "match subject:\n"
+            '    case {"query": payload}:\n'
+            "        cursor.execute(payload)\n"
+        ),
+        "src/list_generator.py": (
+            'source = f"SELECT {column}"\n'
+            "payload, = list(value for value in [source])\n"
+            "cursor.execute(payload)\n"
+        ),
+        "src/tuple_generator.py": (
+            'source = f"SELECT {column}"\n'
+            "payload, = tuple(value for value in [source])\n"
+            "cursor.execute(payload)\n"
+        ),
+        "src/safe_generator.py": (
+            'source = f"SELECT {column}"\n'
+            'payload, = list(value for value in ["safe"])\n'
+            "cursor.execute(payload)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {
+        ("src/dict_generator.py", 1),
+        ("src/list_generator.py", 1),
+        ("src/nested_dict_generator.py", 1),
+        ("src/tuple_generator.py", 1),
+    }
+
+
+def test_exact_comprehension_projection_preserves_filters_and_multiple_results() -> (
+    None
+):
+    files = {
+        "src/literal_true.py": (
+            'source = f"SELECT {column}"\n'
+            "payload, = [value for value in [source] if True]\n"
+            "cursor.execute(payload)\n"
+        ),
+        "src/multiple.py": (
+            'source = f"SELECT {column}"\n'
+            'first, payload = [value for value in ["safe", source]]\n'
+            "cursor.execute(payload)\n"
+        ),
+        "src/literal_false.py": (
+            'source = f"SELECT {column}"\n'
+            "try:\n"
+            "    payload, = [value for value in [source] if False]\n"
+            "except ValueError:\n"
+            "    pass\n"
+            'payload = "safe"\n'
+            "cursor.execute(payload)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {
+        ("src/literal_true.py", 1),
+        ("src/multiple.py", 1),
+    }
+
+
+def test_parenthesized_annotation_target_preserves_name_lookup_failure() -> None:
+    source = (
+        'source = f"SELECT {column}"\n'
+        "try:\n"
+        "    (missing): int\n"
+        "except NameError:\n"
+        "    cursor.execute(source)\n"
+    )
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(
+        {"src/parenthesized_annotation.py": source}
+    )
+
+    assert {
+        finding.line_start for finding in findings if finding.pattern_id == "EQ-009"
+    } == {1}
+
+
+def test_starred_iteration_uses_items_not_container_provenance() -> None:
+    files = {
+        "src/string_characters.py": (
+            'source = f"SELECT {column}"\n'
+            "for character in [*source]:\n"
+            "    cursor.execute(character)\n"
+        ),
+        "src/mapping_keys.py": (
+            'source = f"SELECT {column}"\n'
+            'mapping = {"safe": source}\n'
+            "for key in [*mapping]:\n"
+            "    cursor.execute(key)\n"
+        ),
+        "src/structured_values.py": (
+            'source = f"SELECT {column}"\n'
+            "values = [source]\n"
+            "for payload in [*values]:\n"
+            "    cursor.execute(payload)\n"
+        ),
+        "src/singleton_starred_set.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = "safe"\n'
+            "[(cursor.execute(payload), (payload := source)) "
+            "for _ in {*{0}, 0}]\n"
+        ),
+        "src/singleton_starred_string.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = "safe"\n'
+            "[(cursor.execute(payload), (payload := source)) "
+            'for _ in {*"a", "a"}]\n'
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {("src/structured_values.py", 1)}
