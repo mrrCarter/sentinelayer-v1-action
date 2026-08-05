@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 import io
@@ -148,6 +149,14 @@ class _SqlFlow:
     raises: _SqlBindingState | None = None
 
 
+@dataclass
+class _SqlExpressionEvent:
+    kind: str
+    node: ast.AST
+    state: _SqlBindingState
+    branches: tuple[_SqlBindingState, _SqlBindingState] | None = None
+
+
 _HTTPX_FUNCTION_NAMES = frozenset(
     {
         "httpx.get",
@@ -163,7 +172,6 @@ _HTTPX_FUNCTION_NAMES_BY_CASEFOLD = {
     function_name.casefold(): function_name for function_name in _HTTPX_FUNCTION_NAMES
 }
 _MAX_FALLBACK_CALL_TOKENS = 512
-_MAX_SQL_TEMPLATE_CHARS = 4096
 _SQL_IDENTIFIER_PART_PATTERN = (
     r'(?:\{expr\}|[A-Za-z_][A-Za-z0-9_$]*|"(?:[^"]|"")*"|'
     r"`[^`]+`|\[[^\]]+\])"
@@ -177,23 +185,24 @@ _SQL_STRONG_STATEMENT_RE = re.compile(
     ^\s*
     (?:
         SELECT\s+(?:
-            [\s\S]{{0,4096}}\bFROM\b
+            [\s\S]*\bFROM\b
             | [A-Za-z_][A-Za-z0-9_$.]*\s*\([^)]*\{{expr\}}[^)]*\)
         )
         | INSERT\s+(?:(?:OR\s+(?:ABORT|FAIL|IGNORE|REPLACE|ROLLBACK)|IGNORE)\s+)?
           INTO\s+{_SQL_IDENTIFIER_PATTERN}(?=\s|\()
         | DELETE\s+FROM\b
         | UPDATE\s+(?:{_SQL_IDENTIFIER_PATTERN}|[^\s;]+)\s+SET\b
-        | WITH\b[\s\S]{{0,4096}}\bAS\s*\(
+        | WITH\b[\s\S]*\bAS\s*\(
     )
     """,
     re.IGNORECASE | re.VERBOSE,
 )
 _SQL_AMBIGUOUS_DYNAMIC_SELECT_RE = re.compile(
     r"^\s*SELECT\s+"
-    r"(?=[\s\S]{0,4096}\{expr\})[\s\S]{1,4096}\s*;?\s*$",
+    r"(?=[\s\S]*\{expr\})[\s\S]+\s*;?\s*$",
     re.IGNORECASE | re.VERBOSE,
 )
+_PYTHON_BUILTIN_NAMES = frozenset(vars(builtins))
 _SQL_CONTEXT_NAME_RE = re.compile(
     r"(?:^|_)(?:sql|query|statement|stmt)(?:_|$)",
     re.IGNORECASE,
@@ -216,12 +225,6 @@ _SQL_TRANSPARENT_STRING_METHODS = frozenset(
         "strip",
         "upper",
     }
-)
-_QUERY_ASSIGNMENT_PREFIX_RE = re.compile(
-    r"(?:^|[;])\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)?"
-    r"(?P<target>[A-Za-z_][A-Za-z0-9_]*)"
-    r"(?:\s*:\s*[^=]+)?\s*=\s*(?:\(\s*)*$",
-    re.IGNORECASE,
 )
 _NON_CODE_TOKEN_TYPES = frozenset(
     {
@@ -450,14 +453,13 @@ def _percent_format_template(value: str) -> str | None:
         if cursor < len(value) and value[cursor] == "(":
             depth = 1
             cursor += 1
-            key_start = cursor
             while cursor < len(value) and depth:
                 if value[cursor] == "(":
                     depth += 1
                 elif value[cursor] == ")":
                     depth -= 1
                 cursor += 1
-            if depth or cursor - 1 == key_start:
+            if depth:
                 return None
 
         while cursor < len(value) and value[cursor] in "#0- +":
@@ -539,17 +541,12 @@ def _without_leading_sql_comments(template: str) -> str:
         while cursor < length and template[cursor].isspace():
             cursor += 1
         if template.startswith("--", cursor):
-            terminators = [
-                position
-                for position in (
-                    template.find("\r", cursor + 2),
-                    template.find("\n", cursor + 2),
-                )
-                if position >= 0
-            ]
-            if not terminators:
+            cursor += 2
+            while cursor < length and template[cursor] not in "\r\n":
+                cursor += 1
+            if cursor == length:
                 return ""
-            cursor = min(terminators) + 1
+            cursor += 1
             continue
         if template.startswith("/*", cursor):
             closing = template.find("*/", cursor + 2)
@@ -801,7 +798,14 @@ def _analyze_sql_statement(
 
     if isinstance(statement, ast.Assign):
         _process_sql_expression(statement.value, current, parents, lines, exceptions)
-        _assign_sql_bindings(current, statement.targets, statement.value, parents)
+        _apply_sql_assignment_targets(
+            current,
+            statement.targets,
+            statement.value,
+            parents,
+            lines,
+            exceptions,
+        )
     elif isinstance(statement, ast.AnnAssign):
         _process_sql_expression(
             statement.annotation, current, parents, lines, exceptions
@@ -810,7 +814,14 @@ def _analyze_sql_statement(
             _process_sql_expression(
                 statement.value, current, parents, lines, exceptions
             )
-        _assign_sql_bindings(current, [statement.target], statement.value, parents)
+        _apply_sql_assignment_targets(
+            current,
+            [statement.target],
+            statement.value,
+            parents,
+            lines,
+            exceptions,
+        )
     elif isinstance(statement, ast.AugAssign):
         _process_sql_expression(statement.target, current, parents, lines, exceptions)
         _process_sql_expression(statement.value, current, parents, lines, exceptions)
@@ -823,7 +834,9 @@ def _analyze_sql_statement(
         )
         _set_sql_binding_targets(current, [statement.target], origin)
     elif isinstance(statement, ast.Delete):
-        _kill_sql_binding_targets(current, statement.targets)
+        for target in statement.targets:
+            _process_sql_expression(target, current, parents, lines, exceptions)
+            _kill_sql_binding_targets(current, [target])
     elif isinstance(statement, (ast.Import, ast.ImportFrom)):
         for alias in statement.names:
             _kill_sql_binding_key(
@@ -852,8 +865,23 @@ def _analyze_sql_statement(
         _process_sql_expression(statement.value, current, parents, lines, exceptions)
     elif isinstance(statement, ast.Assert):
         _process_sql_expression(statement.test, current, parents, lines, exceptions)
-        if statement.msg is not None:
-            _process_sql_expression(statement.msg, current, parents, lines, exceptions)
+        truth = _literal_truth(statement.test)
+        assertion_raises: list[_SqlBindingState] = []
+        if truth is not True:
+            failed = current.copy()
+            if statement.msg is not None:
+                _process_sql_expression(
+                    statement.msg,
+                    failed,
+                    parents,
+                    lines,
+                    assertion_raises,
+                )
+            assertion_raises.append(failed)
+        return _SqlFlow(
+            normal=current if truth is not False else None,
+            raises=_merge_sql_binding_states(*exceptions, *assertion_raises),
+        )
     else:
         _process_sql_expression(statement, current, parents, lines, exceptions)
 
@@ -925,13 +953,34 @@ def _analyze_sql_for(
     entry = state.copy()
     exceptions: list[_SqlBindingState] = []
     _process_sql_expression(statement.iter, entry, parents, lines, exceptions)
+    cardinality = _literal_iterable_cardinality(statement.iter)
+    if cardinality == 0:
+        else_flow = (
+            _analyze_sql_statement_block(
+                statement.orelse, entry, parents, lines
+            )
+            if statement.orelse
+            else _SqlFlow(normal=entry)
+        )
+        else_flow.raises = _merge_sql_binding_states(
+            *exceptions, else_flow.raises
+        )
+        return else_flow
+
     header, phis = _sql_loop_header(
         entry,
         statement.body,
         extra_keys=_binding_target_keys(statement.target),
     )
     body_input = header.copy()
-    _kill_sql_binding_targets(body_input, [statement.target])
+    _process_sql_expression(
+        statement.target, body_input, parents, lines, exceptions
+    )
+    _set_sql_binding_targets(
+        body_input,
+        [statement.target],
+        _iterated_sql_origins(statement.iter, entry, parents),
+    )
     body = _analyze_sql_statement_block(
         statement.body, body_input, parents, lines
     )
@@ -952,6 +1001,38 @@ def _analyze_sql_for(
             *exceptions, body.raises, else_flow.raises
         ),
     )
+
+
+def _literal_iterable_cardinality(expression: ast.expr) -> int | None:
+    if isinstance(expression, (ast.List, ast.Tuple, ast.Set)):
+        return len(expression.elts)
+    if isinstance(expression, ast.Dict):
+        return len(expression.keys)
+    if isinstance(expression, ast.Constant) and isinstance(
+        expression.value, (bytes, str)
+    ):
+        return len(expression.value)
+    return None
+
+
+def _iterated_sql_origins(
+    expression: ast.expr,
+    state: _SqlBindingState,
+    parents: dict[ast.AST, ast.AST],
+) -> _ProvRef | None:
+    if isinstance(expression, (ast.List, ast.Tuple, ast.Set)):
+        return state.graph.union(
+            _sql_origins_in_expression(element, state, parents)
+            for element in expression.elts
+        )
+    if isinstance(expression, ast.Dict):
+        return state.graph.union(
+            _sql_origins_in_expression(key, state, parents)
+            for key in expression.keys
+            if key is not None
+        )
+    # Iterating a string yields individual characters, not the SQL string.
+    return None
 
 
 def _analyze_sql_while(
@@ -1077,7 +1158,15 @@ def _analyze_sql_try(
         breaks=_merge_sql_binding_states(body.breaks, normal.breaks),
         continues=_merge_sql_binding_states(body.continues, normal.continues),
         returns=_merge_sql_binding_states(body.returns, normal.returns),
-        raises=_merge_sql_binding_states(body.raises, normal.raises),
+        raises=_merge_sql_binding_states(
+            None
+            if any(
+                _handler_catches_modeled_exceptions(handler)
+                for handler in statement.handlers
+            )
+            else body.raises,
+            normal.raises,
+        ),
     )
 
     if body.raises is not None:
@@ -1109,6 +1198,21 @@ def _analyze_sql_try(
         _apply_sql_finally(combined, statement.finalbody, parents, lines)
         if statement.finalbody
         else combined
+    )
+
+
+def _handler_catches_modeled_exceptions(handler: ast.ExceptHandler) -> bool:
+    if handler.type is None:
+        return True
+    candidates = (
+        handler.type.elts
+        if isinstance(handler.type, ast.Tuple)
+        else [handler.type]
+    )
+    return any(
+        (name := _qualified_name(candidate)) is not None
+        and name.rsplit(".", 1)[-1] in {"BaseException", "Exception"}
+        for candidate in candidates
     )
 
 
@@ -1160,34 +1264,186 @@ def _analyze_sql_match(
     _process_sql_expression(
         statement.subject, current, parents, lines, exceptions
     )
-    subject_origins = _sql_origins_in_expression(
-        statement.subject, current, parents
-    )
     outcomes = _SqlFlow()
-    exhaustive = False
+    fallthrough: _SqlBindingState | None = current
     for case in statement.cases:
-        case_state = current.copy()
-        for name in _match_capture_names(case.pattern):
-            _set_sql_binding_key(case_state, name, subject_origins)
+        if fallthrough is None:
+            break
+        unmatched = fallthrough
+        case_state = unmatched.copy()
+        for name, origin in _match_capture_origins(
+            case.pattern,
+            statement.subject,
+            case_state,
+            parents,
+        ).items():
+            _set_sql_binding_key(case_state, name, origin)
+        guard_truth: bool | None = True
         if case.guard is not None:
             _process_sql_expression(
                 case.guard, case_state, parents, lines, exceptions
             )
-        outcomes = _merge_sql_flows(
-            outcomes,
-            _analyze_sql_statement_block(
-                case.body, case_state, parents, lines
-            ),
-        )
-        if case.guard is None and _match_pattern_is_irrefutable(case.pattern):
-            exhaustive = True
-            break
-    if not exhaustive:
-        outcomes.normal = _merge_sql_binding_states(outcomes.normal, current)
+            guard_truth = _literal_truth(case.guard)
+        if guard_truth is not False:
+            outcomes = _merge_sql_flows(
+                outcomes,
+                _analyze_sql_statement_block(
+                    case.body, case_state, parents, lines
+                ),
+            )
+
+        failed: list[_SqlBindingState] = []
+        if not _match_pattern_is_irrefutable(case.pattern):
+            failed.append(unmatched)
+        if case.guard is not None and guard_truth is not True:
+            failed.append(case_state)
+        fallthrough = _merge_sql_binding_states(*failed)
+
+    outcomes.normal = _merge_sql_binding_states(outcomes.normal, fallthrough)
     outcomes.raises = _merge_sql_binding_states(
         outcomes.raises, *exceptions
     )
     return outcomes
+
+
+def _match_capture_origins(
+    pattern: ast.pattern,
+    subject: ast.expr | None,
+    state: _SqlBindingState,
+    parents: dict[ast.AST, ast.AST],
+) -> dict[str, _ProvRef | None]:
+    captures = {name: None for name in _match_capture_names(pattern)}
+    if isinstance(pattern, ast.MatchAs):
+        if pattern.pattern is not None:
+            captures.update(
+                _match_capture_origins(
+                    pattern.pattern, subject, state, parents
+                )
+            )
+        if pattern.name is not None:
+            captures[pattern.name] = (
+                _sql_origins_in_expression(subject, state, parents)
+                if subject is not None
+                else None
+            )
+        return captures
+    if isinstance(pattern, ast.MatchOr):
+        alternatives = [
+            _match_capture_origins(item, subject, state, parents)
+            for item in pattern.patterns
+        ]
+        return {
+            name: state.graph.union(
+                alternative.get(name) for alternative in alternatives
+            )
+            for name in captures
+        }
+    if isinstance(pattern, ast.MatchSequence) and isinstance(
+        subject, (ast.List, ast.Tuple)
+    ):
+        return _match_sequence_capture_origins(
+            pattern, subject, state, parents
+        )
+    if isinstance(pattern, ast.MatchMapping) and isinstance(subject, ast.Dict):
+        return _match_mapping_capture_origins(
+            pattern, subject, state, parents
+        )
+    return captures
+
+
+def _match_sequence_capture_origins(
+    pattern: ast.MatchSequence,
+    subject: ast.List | ast.Tuple,
+    state: _SqlBindingState,
+    parents: dict[ast.AST, ast.AST],
+) -> dict[str, _ProvRef | None]:
+    captures = {name: None for name in _match_capture_names(pattern)}
+    starred = [
+        index for index, item in enumerate(pattern.patterns)
+        if isinstance(item, ast.MatchStar)
+    ]
+    if len(starred) > 1 or (
+        not starred and len(pattern.patterns) != len(subject.elts)
+    ):
+        return captures
+    if starred and len(subject.elts) < len(pattern.patterns) - 1:
+        return captures
+
+    star_index = starred[0] if starred else len(pattern.patterns)
+    trailing = len(pattern.patterns) - star_index - bool(starred)
+    for child_pattern, child_subject in zip(
+        pattern.patterns[:star_index],
+        subject.elts[:star_index],
+        strict=True,
+    ):
+        captures.update(
+            _match_capture_origins(
+                child_pattern, child_subject, state, parents
+            )
+        )
+    if starred:
+        star = pattern.patterns[star_index]
+        assert isinstance(star, ast.MatchStar)
+        if star.name is not None:
+            middle_end = len(subject.elts) - trailing if trailing else len(subject.elts)
+            captures[star.name] = state.graph.union(
+                _sql_origins_in_expression(element, state, parents)
+                for element in subject.elts[star_index:middle_end]
+            )
+    if trailing:
+        for child_pattern, child_subject in zip(
+            pattern.patterns[-trailing:],
+            subject.elts[-trailing:],
+            strict=True,
+        ):
+            captures.update(
+                _match_capture_origins(
+                    child_pattern, child_subject, state, parents
+                )
+            )
+    return captures
+
+
+def _match_mapping_capture_origins(
+    pattern: ast.MatchMapping,
+    subject: ast.Dict,
+    state: _SqlBindingState,
+    parents: dict[ast.AST, ast.AST],
+) -> dict[str, _ProvRef | None]:
+    captures = {name: None for name in _match_capture_names(pattern)}
+    subject_values: dict[object, ast.expr] = {}
+    for key, value in zip(subject.keys, subject.values, strict=True):
+        if key is None:
+            continue
+        try:
+            literal_key = ast.literal_eval(key)
+            hash(literal_key)
+        except (TypeError, ValueError):
+            continue
+        subject_values[literal_key] = value
+
+    matched_keys: set[object] = set()
+    for key, child_pattern in zip(pattern.keys, pattern.patterns, strict=True):
+        try:
+            literal_key = ast.literal_eval(key)
+            hash(literal_key)
+        except (TypeError, ValueError):
+            continue
+        child_subject = subject_values.get(literal_key)
+        if child_subject is not None:
+            matched_keys.add(literal_key)
+        captures.update(
+            _match_capture_origins(
+                child_pattern, child_subject, state, parents
+            )
+        )
+    if pattern.rest is not None:
+        captures[pattern.rest] = state.graph.union(
+            _sql_origins_in_expression(value, state, parents)
+            for key, value in subject_values.items()
+            if key not in matched_keys
+        )
+    return captures
 
 
 def _match_capture_names(pattern: ast.pattern) -> set[str]:
@@ -1267,19 +1523,19 @@ def _process_sql_expression(
     later call arguments can mutate the same name.
     """
 
-    events: list[tuple[str, ast.AST, _SqlBindingState]] = [("visit", node, state)]
+    events = [_SqlExpressionEvent("visit", node, state)]
     skipped = (
         ast.ClassDef,
-        ast.DictComp,
         ast.FunctionDef,
         ast.AsyncFunctionDef,
         ast.GeneratorExp,
         ast.Lambda,
-        ast.ListComp,
-        ast.SetComp,
     )
     while events:
-        kind, current, current_state = events.pop()
+        event = events.pop()
+        kind = event.kind
+        current = event.node
+        current_state = event.state
         if kind == "bind":
             assert isinstance(current, ast.NamedExpr)
             _assign_sql_bindings(
@@ -1295,59 +1551,105 @@ def _process_sql_expression(
         if kind == "raise":
             exceptions.append(current_state.copy())
             continue
-        if isinstance(current, skipped):
-            continue
-        if isinstance(current, ast.NamedExpr):
-            events.append(("bind", current, current_state))
-            events.append(("visit", current.value, current_state))
-            continue
-        if isinstance(current, ast.IfExp):
-            _process_sql_expression(
-                current.test, current_state, parents, lines, exceptions
-            )
+        if kind == "ifexp":
+            assert isinstance(current, ast.IfExp)
             truth = _literal_truth(current.test)
             if truth is True:
-                _process_sql_expression(
-                    current.body, current_state, parents, lines, exceptions
+                events.append(
+                    _SqlExpressionEvent("visit", current.body, current_state)
                 )
             elif truth is False:
-                _process_sql_expression(
-                    current.orelse, current_state, parents, lines, exceptions
+                events.append(
+                    _SqlExpressionEvent("visit", current.orelse, current_state)
                 )
             else:
                 body_state = current_state.copy()
                 else_state = current_state.copy()
-                _process_sql_expression(
-                    current.body, body_state, parents, lines, exceptions
+                events.append(
+                    _SqlExpressionEvent(
+                        "merge",
+                        current,
+                        current_state,
+                        (body_state, else_state),
+                    )
                 )
-                _process_sql_expression(
-                    current.orelse, else_state, parents, lines, exceptions
+                events.append(
+                    _SqlExpressionEvent("visit", current.orelse, else_state)
                 )
-                merged = _merge_sql_binding_states(body_state, else_state)
-                assert merged is not None
-                current_state.replace_with(merged)
+                events.append(
+                    _SqlExpressionEvent("visit", current.body, body_state)
+                )
+            continue
+        if kind == "merge":
+            assert event.branches is not None
+            merged = _merge_sql_binding_states(*event.branches)
+            assert merged is not None
+            current_state.replace_with(merged)
+            continue
+        if isinstance(current, skipped):
+            continue
+        if isinstance(current, ast.NamedExpr):
+            events.append(_SqlExpressionEvent("bind", current, current_state))
+            events.append(
+                _SqlExpressionEvent("visit", current.value, current_state)
+            )
+            continue
+        if isinstance(current, ast.IfExp):
+            events.append(_SqlExpressionEvent("ifexp", current, current_state))
+            events.append(
+                _SqlExpressionEvent("visit", current.test, current_state)
+            )
             continue
         if isinstance(current, ast.BoolOp):
             _process_sql_bool_expression(
                 current, current_state, parents, lines, exceptions
             )
             continue
+        if isinstance(current, (ast.DictComp, ast.ListComp, ast.SetComp)):
+            _process_eager_sql_comprehension(
+                current,
+                current_state,
+                parents,
+                lines,
+                exceptions,
+            )
+            continue
         if isinstance(current, ast.Call):
             sql_arguments = {
                 id(argument) for argument in _sql_execution_value_arguments(current)
             } if _is_sql_execution_call(current) else set()
-            ordered: list[tuple[str, ast.AST, _SqlBindingState]] = [
-                ("visit", current.func, current_state)
+            ordered = [
+                _SqlExpressionEvent("visit", current.func, current_state)
             ]
             for argument in current.args:
-                ordered.append(("visit", argument, current_state))
+                ordered.append(
+                    _SqlExpressionEvent("visit", argument, current_state)
+                )
                 if id(argument) in sql_arguments:
-                    ordered.append(("sink", argument, current_state))
+                    ordered.append(
+                        _SqlExpressionEvent("sink", argument, current_state)
+                    )
             for keyword in current.keywords:
-                ordered.append(("visit", keyword.value, current_state))
+                ordered.append(
+                    _SqlExpressionEvent("visit", keyword.value, current_state)
+                )
                 if id(keyword.value) in sql_arguments:
-                    ordered.append(("sink", keyword.value, current_state))
-            ordered.append(("raise", current, current_state))
+                    ordered.append(
+                        _SqlExpressionEvent("sink", keyword.value, current_state)
+                    )
+            ordered.append(_SqlExpressionEvent("raise", current, current_state))
+            events.extend(reversed(ordered))
+            continue
+        if isinstance(current, ast.Dict):
+            ordered = []
+            for key, value in zip(current.keys, current.values, strict=True):
+                if key is not None:
+                    ordered.append(
+                        _SqlExpressionEvent("visit", key, current_state)
+                    )
+                ordered.append(
+                    _SqlExpressionEvent("visit", value, current_state)
+                )
             events.extend(reversed(ordered))
             continue
 
@@ -1358,11 +1660,25 @@ def _process_sql_expression(
         ]
         if isinstance(
             current,
-            (ast.Attribute, ast.BinOp, ast.Compare, ast.JoinedStr, ast.Subscript),
+            (
+                ast.Attribute,
+                ast.Await,
+                ast.BinOp,
+                ast.Compare,
+                ast.JoinedStr,
+                ast.Starred,
+                ast.Subscript,
+                ast.UnaryOp,
+            ),
+        ) or (
+            isinstance(current, ast.Name)
+            and isinstance(current.ctx, ast.Load)
+            and current.id not in _PYTHON_BUILTIN_NAMES
         ):
-            events.append(("raise", current, current_state))
+            events.append(_SqlExpressionEvent("raise", current, current_state))
         events.extend(
-            ("visit", child, current_state) for child in reversed(children)
+            _SqlExpressionEvent("visit", child, current_state)
+            for child in reversed(children)
         )
 
 
@@ -1393,6 +1709,184 @@ def _process_sql_bool_expression(
     merged = _merge_sql_binding_states(*exits, working)
     assert merged is not None
     state.replace_with(merged)
+
+
+def _process_eager_sql_comprehension(
+    node: ast.DictComp | ast.ListComp | ast.SetComp,
+    state: _SqlBindingState,
+    parents: dict[ast.AST, ast.AST],
+    lines: set[int],
+    exceptions: list[_SqlBindingState],
+) -> None:
+    """Model eager comprehension effects with zero/representative paths.
+
+    Comprehension iteration variables are local in Python 3, while walrus
+    targets bind in the containing scope.  A representative iteration is
+    sufficient for this may-analysis; an unknown iterable/filter also keeps a
+    no-element path.  Generator expressions remain lazy and are not evaluated
+    here.
+    """
+
+    outer = state.copy()
+    local_keys = {
+        key
+        for generator in node.generators
+        for key in _binding_target_keys(generator.target)
+    }
+    outcomes: list[_SqlBindingState] = []
+
+    def evaluate_generator(index: int, candidate: _SqlBindingState) -> None:
+        if index == len(node.generators):
+            if isinstance(node, ast.DictComp):
+                _process_sql_expression(
+                    node.key, candidate, parents, lines, exceptions
+                )
+                _process_sql_expression(
+                    node.value, candidate, parents, lines, exceptions
+                )
+            else:
+                _process_sql_expression(
+                    node.elt, candidate, parents, lines, exceptions
+                )
+            outcomes.append(candidate)
+            return
+
+        generator = node.generators[index]
+        _process_sql_expression(
+            generator.iter, candidate, parents, lines, exceptions
+        )
+        cardinality = _literal_iterable_cardinality(generator.iter)
+        if cardinality is None:
+            outcomes.append(candidate.copy())
+        elif cardinality == 0:
+            outcomes.append(candidate)
+            return
+
+        iteration = candidate.copy()
+        _process_sql_expression(
+            generator.target, iteration, parents, lines, exceptions
+        )
+        _set_sql_binding_targets(
+            iteration,
+            [generator.target],
+            _iterated_sql_origins(generator.iter, candidate, parents),
+        )
+        for condition in generator.ifs:
+            _process_sql_expression(
+                condition, iteration, parents, lines, exceptions
+            )
+            truth = _literal_truth(condition)
+            if truth is not True:
+                outcomes.append(iteration.copy())
+            if truth is False:
+                return
+        evaluate_generator(index + 1, iteration)
+
+    evaluate_generator(0, state.copy())
+    merged = _merge_sql_binding_states(*outcomes)
+    assert merged is not None
+    for key in local_keys:
+        _kill_sql_binding_key(merged, key)
+    for key, origin in outer.items():
+        if any(key == local or key.startswith(f"{local}.") for local in local_keys):
+            merged.set_reference(key, origin)
+    state.replace_with(merged)
+
+
+def _apply_sql_assignment_targets(
+    state: _SqlBindingState,
+    targets: list[ast.expr],
+    value: ast.expr | None,
+    parents: dict[ast.AST, ast.AST],
+    lines: set[int],
+    exceptions: list[_SqlBindingState],
+) -> None:
+    """Evaluate and bind assignment targets in Python's left-to-right order.
+
+    The right-hand value has already been evaluated.  Capture its provenance
+    before a subscript/attribute target can mutate bindings through a walrus,
+    then evaluate each target and commit that target before moving to the next
+    one.  This preserves both chained-assignment order and the state visible
+    when a later target operation raises.
+    """
+
+    plans = [
+        binding
+        for target in targets
+        for binding in _sql_assignment_plan(target, value, state, parents)
+    ]
+    for target, origin in plans:
+        _process_sql_expression(target, state, parents, lines, exceptions)
+        _set_sql_binding_targets(state, [target], origin)
+
+
+def _sql_assignment_plan(
+    target: ast.expr,
+    value: ast.expr | None,
+    state: _SqlBindingState,
+    parents: dict[ast.AST, ast.AST],
+) -> list[tuple[ast.expr, _ProvRef | None]]:
+    if isinstance(target, ast.Starred):
+        return _sql_assignment_plan(target.value, value, state, parents)
+    if isinstance(target, (ast.Tuple, ast.List)) and isinstance(
+        value, (ast.Tuple, ast.List)
+    ):
+        elements = list(value.elts)
+        starred = [
+            index for index, element in enumerate(target.elts)
+            if isinstance(element, ast.Starred)
+        ]
+        if not starred and len(target.elts) == len(elements):
+            return [
+                binding
+                for child_target, child_value in zip(
+                    target.elts, elements, strict=True
+                )
+                for binding in _sql_assignment_plan(
+                    child_target, child_value, state, parents
+                )
+            ]
+        if len(starred) == 1 and len(elements) >= len(target.elts) - 1:
+            star_index = starred[0]
+            trailing = len(target.elts) - star_index - 1
+            plans: list[tuple[ast.expr, _ProvRef | None]] = []
+            for child_target, child_value in zip(
+                target.elts[:star_index],
+                elements[:star_index],
+                strict=True,
+            ):
+                plans.extend(
+                    _sql_assignment_plan(
+                        child_target, child_value, state, parents
+                    )
+                )
+            star_target = target.elts[star_index]
+            assert isinstance(star_target, ast.Starred)
+            middle_end = len(elements) - trailing if trailing else len(elements)
+            star_origin = state.graph.union(
+                _sql_origins_in_expression(element, state, parents)
+                for element in elements[star_index:middle_end]
+            )
+            plans.append((star_target.value, star_origin))
+            if trailing:
+                for child_target, child_value in zip(
+                    target.elts[-trailing:],
+                    elements[-trailing:],
+                    strict=True,
+                ):
+                    plans.extend(
+                        _sql_assignment_plan(
+                            child_target, child_value, state, parents
+                        )
+                    )
+            return plans
+
+    origin = (
+        _sql_origins_in_expression(value, state, parents)
+        if value is not None
+        else None
+    )
+    return [(target, origin)]
 
 
 def _assign_sql_bindings(
@@ -1467,6 +1961,14 @@ def _sql_origins_in_expression(
                 pending.append(candidate.orelse)
             else:
                 pending.extend((candidate.orelse, candidate.body))
+        elif isinstance(candidate, ast.BoolOp):
+            if isinstance(candidate.op, ast.Or):
+                for value in reversed(_reachable_or_values(candidate.values)):
+                    pending.append(value)
+            else:
+                final = _reachable_and_result(candidate.values)
+                if final is not None:
+                    pending.append(final)
         elif isinstance(candidate, ast.Await):
             pending.append(candidate.value)
         elif isinstance(candidate, ast.Call) and _is_transparent_string_call(candidate):
@@ -1474,9 +1976,27 @@ def _sql_origins_in_expression(
             pending.append(candidate.func.value)
         elif isinstance(candidate, ast.BinOp) and isinstance(candidate.op, ast.Add):
             pending.extend((candidate.right, candidate.left))
-        elif isinstance(candidate, (ast.Tuple, ast.List)):
+        elif isinstance(candidate, (ast.Tuple, ast.List, ast.Set)):
             pending.extend(reversed(candidate.elts))
     return state.graph.union(references)
+
+
+def _reachable_or_values(values: list[ast.expr]) -> list[ast.expr]:
+    reachable: list[ast.expr] = []
+    for value in values:
+        reachable.append(value)
+        if _literal_truth(value) is True:
+            break
+    return reachable
+
+
+def _reachable_and_result(values: list[ast.expr]) -> ast.expr | None:
+    for index, value in enumerate(values):
+        if index == len(values) - 1:
+            return value
+        if _literal_truth(value) is False:
+            return None
+    return None
 
 
 def _binding_target_keys(target: ast.AST) -> set[str]:
@@ -1862,14 +2382,15 @@ def _tokenized_statement_sql_lines(
         else statement.function_name
     )
     lines: set[int] = set()
-    for index, template in _token_statement_templates(tokens):
+    templates = _token_statement_templates(tokens)
+    context_indices = _token_sql_context_indices(
+        tokens,
+        function_name=function_name,
+    )
+    for index, template in templates:
         if not _looks_like_sql_statement(template):
             continue
-        if _select_requires_sql_context(template) and not _token_has_sql_context(
-            tokens,
-            index,
-            function_name=function_name,
-        ):
+        if _select_requires_sql_context(template) and index not in context_indices:
             continue
         lines.add(tokens[index].start[0])
     return lines
@@ -1904,9 +2425,6 @@ def _token_concat_template(
         return None, {index}
 
     parts = [initial[0]]
-    retained_chars = min(len(initial[0]), _MAX_SQL_TEMPLATE_CHARS)
-    if retained_chars != len(initial[0]):
-        parts[0] = initial[0][:_MAX_SQL_TEMPLATE_CHARS]
     has_dynamic = initial[1]
     has_string = True
     consumed_strings = {index}
@@ -1917,30 +2435,51 @@ def _token_concat_template(
         if operand_end <= operand_start:
             break
         operand = tokens[operand_start:operand_end]
-        literal_parts = [_token_literal_part(token) for token in operand]
-        if literal_parts and all(part is not None for part in literal_parts):
-            consumed_strings.update(
-                position
-                for position in range(operand_start, operand_end)
-                if tokens[position].type == tokenize.STRING
-            )
-            for part in literal_parts:
-                assert part is not None
-                if retained_chars < _MAX_SQL_TEMPLATE_CHARS:
-                    retained = part[0][
-                        : _MAX_SQL_TEMPLATE_CHARS - retained_chars
-                    ]
-                    parts.append(retained)
-                    retained_chars += len(retained)
-                has_dynamic = has_dynamic or part[1]
-        else:
+        consumed_strings.update(
+            position
+            for position in range(operand_start, operand_end)
+            if tokens[position].type == tokenize.STRING
+        )
+        part = _token_concat_operand_part(operand)
+        if part is None:
+            parts.append("{expr}")
             has_dynamic = True
+        else:
+            parts.append(part[0])
+            has_dynamic = has_dynamic or part[1]
+            has_string = True
         cursor = operand_end
 
     if not has_string or not has_dynamic:
         return None, consumed_strings
-    static_prefix = "".join(parts)
-    return f"{static_prefix}{{expr}}", consumed_strings
+    return "".join(parts), consumed_strings
+
+
+def _token_concat_operand_part(
+    tokens: list[tokenize.TokenInfo],
+) -> tuple[str, bool] | None:
+    """Return a direct literal/grouping operand without rescanning suffixes."""
+
+    if not tokens:
+        return None
+    mates = _token_delimiter_mates(tokens)
+    start = 0
+    end = len(tokens)
+    while (
+        start < end
+        and tokens[start].string == "("
+        and mates.get(start) == end - 1
+    ):
+        start += 1
+        end -= 1
+    parts = [_token_literal_part(token) for token in tokens[start:end]]
+    if not parts or any(part is None for part in parts):
+        return None
+    literal_parts = [part for part in parts if part is not None]
+    return (
+        "".join(part[0] for part in literal_parts),
+        any(part[1] for part in literal_parts),
+    )
 
 
 def _token_literal_part(token: tokenize.TokenInfo) -> tuple[str, bool] | None:
@@ -2045,34 +2584,88 @@ def _token_call_has_argument(
     return bool(closing_index is not None and closing_index > open_paren_index + 1)
 
 
-def _token_has_sql_context(
+def _token_sql_context_indices(
     tokens: list[tokenize.TokenInfo],
-    index: int,
     *,
     function_name: str | None,
-) -> bool:
-    window_start = 0
-    prefix = tokenize.untokenize(
-        [(token.type, token.string) for token in tokens[window_start:index]]
-    )
-    assignment = _QUERY_ASSIGNMENT_PREFIX_RE.search(prefix)
-    if assignment is not None and _is_sql_context_name(assignment.group("target")):
-        return True
+) -> set[int]:
+    """Locate direct token-level SQL contexts in one linear scan.
 
-    sink_names = "|".join(sorted(re.escape(name) for name in _SQL_EXECUTION_CALL_NAMES))
-    if re.search(
-        rf"(?:^|[^\w])(?:[A-Za-z_][A-Za-z0-9_]*\.)*"
-        rf"(?:{sink_names})\s*\(\s*"
-        r"(?:[A-Za-z_][A-Za-z0-9_]*\s*=\s*)?(?:\(\s*)*$",
-        prefix,
-        re.IGNORECASE,
-    ):
-        return True
-    return bool(
-        function_name
-        and _is_sql_context_name(function_name)
-        and re.search(r"\breturn\s*(?:\(\s*)*$", prefix, re.IGNORECASE)
-    )
+    Malformed modules cannot use the AST flow analyzer, but reconstructing and
+    regex-scanning the whole token prefix for every string made a statement
+    containing many f-strings quadratic.  This state machine recognizes only
+    the same direct contexts needed by the fallback: query-named assignments,
+    the first SQL execution argument, and returns from query-named functions.
+    Parentheses may group the value; intervening calls or containers are not
+    treated as transparent.
+    """
+
+    contexts: set[int] = set()
+    opening = {"(": ")", "[": "]", "{": "}"}
+    stack: list[str] = []
+    segment_start = 0
+    chained_targets: list[str] = []
+    query_return = bool(function_name and _is_sql_context_name(function_name))
+
+    def direct_string(start: int) -> int | None:
+        cursor = start
+        while cursor < len(tokens) and tokens[cursor].string == "(":
+            cursor += 1
+        if cursor < len(tokens) and tokens[cursor].type == tokenize.STRING:
+            return cursor
+        return None
+
+    for index, token in enumerate(tokens):
+        text = token.string
+
+        if token.type == tokenize.NAME:
+            folded = text.casefold()
+            if folded in _SQL_EXECUTION_CALL_NAMES:
+                open_index = index + 1
+                if open_index < len(tokens) and tokens[open_index].string == "(":
+                    value_start = open_index + 1
+                    if (
+                        value_start + 1 < len(tokens)
+                        and tokens[value_start].type == tokenize.NAME
+                        and tokens[value_start].string.casefold()
+                        in _SQL_EXECUTION_KEYWORD_NAMES
+                        and tokens[value_start + 1].string == "="
+                    ):
+                        value_start += 2
+                    string_index = direct_string(value_start)
+                    if string_index is not None:
+                        contexts.add(string_index)
+            if query_return and folded == "return":
+                string_index = direct_string(index + 1)
+                if string_index is not None:
+                    contexts.add(string_index)
+
+        if text in opening:
+            stack.append(opening[text])
+            continue
+        if stack and text == stack[-1]:
+            stack.pop()
+            continue
+        if stack:
+            continue
+        if text == ";":
+            segment_start = index + 1
+            chained_targets.clear()
+            continue
+        if text != "=":
+            continue
+
+        target = _token_assignment_target(tokens[segment_start:index])
+        if target is not None:
+            chained_targets.append(target)
+        string_index = direct_string(index + 1)
+        if string_index is not None and any(
+            _is_sql_context_name(target) for target in chained_targets
+        ):
+            contexts.add(string_index)
+        segment_start = index + 1
+
+    return contexts
 
 
 def python_httpx_calls(content: str) -> list[PythonHttpxCall]:

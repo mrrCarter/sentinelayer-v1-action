@@ -555,6 +555,9 @@ def test_percent_and_brace_format_parsers_handle_escapes_and_nested_specs() -> N
         "balanced.py": (
             'query = "SELECT * FROM users WHERE name = %(user(id))s" % values\n'
         ),
+        "empty_mapping_key.py": (
+            'query = "SELECT * FROM users WHERE name = %()s" % values\n'
+        ),
         "width.py": (
             'query = "SELECT * FROM users WHERE amount = %*.*f" % values\n'
         ),
@@ -943,6 +946,414 @@ def test_malformed_concat_detects_dynamic_operand_at_any_large_position() -> Non
     assert {
         finding.file_path for finding in findings if finding.pattern_id == "EQ-009"
     } == set(files)
+
+
+def test_sql_flow_records_expression_exception_boundaries() -> None:
+    files = {
+        "src/name.py": (
+            'source = f"SELECT {column}"\n'
+            "try:\n"
+            "    payload = source\n"
+            "    missing_name\n"
+            "except Exception:\n"
+            "    cursor.execute(payload)\n"
+        ),
+        "src/unary.py": (
+            'source = f"SELECT {column}"\n'
+            "try:\n"
+            "    -(payload := source)\n"
+            "except Exception:\n"
+            "    cursor.execute(payload)\n"
+        ),
+        "src/await.py": (
+            "async def run():\n"
+            '    source = f"SELECT {column}"\n'
+            "    try:\n"
+            "        await (payload := source)\n"
+            "    except Exception:\n"
+            "        cursor.execute(payload)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {
+        ("src/await.py", 2),
+        ("src/name.py", 1),
+        ("src/unary.py", 1),
+    }
+
+
+def test_caught_inner_exception_does_not_leak_to_outer_handler() -> None:
+    source = (
+        'source = f"SELECT {column}"\n'
+        "try:\n"
+        "    try:\n"
+        "        payload = source\n"
+        "        risky()\n"
+        "    except Exception:\n"
+        '        payload = "safe"\n'
+        "except Exception:\n"
+        "    cursor.execute(payload)\n"
+    )
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(
+        {"src/nested_try.py": source}
+    )
+
+    assert not any(finding.pattern_id == "EQ-009" for finding in findings)
+
+
+def test_sql_flow_models_assert_as_conditional_raise() -> None:
+    files = {
+        "src/caught.py": (
+            'source = f"SELECT {column}"\n'
+            "try:\n"
+            "    assert False, (payload := source)\n"
+            "except AssertionError:\n"
+            "    cursor.execute(payload)\n"
+        ),
+        "src/true_msg.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = "safe"\n'
+            "assert True, (payload := source)\n"
+            "cursor.execute(payload)\n"
+        ),
+        "src/unknown_normal.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = "safe"\n'
+            "assert condition, (payload := source)\n"
+            "cursor.execute(payload)\n"
+        ),
+        "src/unreachable.py": (
+            'source = f"SELECT {column}"\n'
+            "payload = source\n"
+            "assert False\n"
+            "cursor.execute(payload)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {("src/caught.py", 1)}
+
+
+def test_sql_flow_evaluates_store_targets_in_python_order() -> None:
+    files = {
+        "src/side_effect.py": (
+            'source = f"SELECT {column}"\n'
+            'values[(payload := source)] = "safe"\n'
+            "cursor.execute(payload)\n"
+        ),
+        "src/target_raise.py": (
+            'source = f"SELECT {column}"\n'
+            "try:\n"
+            "    ()[0] = (payload := source)\n"
+            "except TypeError:\n"
+            "    cursor.execute(payload)\n"
+        ),
+        "src/chained_positive.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = observed = "safe"\n'
+            "payload = values[(observed := payload)] = source\n"
+            "cursor.execute(observed)\n"
+        ),
+        "src/chained_negative.py": (
+            'payload = f"SELECT {column}"\n'
+            'observed = "safe"\n'
+            'payload = values[(observed := payload)] = "safe"\n'
+            "cursor.execute(observed)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {
+        ("src/chained_positive.py", 1),
+        ("src/side_effect.py", 1),
+        ("src/target_raise.py", 1),
+    }
+
+
+def test_sql_flow_binds_for_targets_from_literal_elements() -> None:
+    files = {
+        "src/direct.py": (
+            'for payload in [f"SELECT {column}"]:\n'
+            "    cursor.execute(payload)\n"
+        ),
+        "src/post_loop.py": (
+            'payload = "safe"\n'
+            'for payload in [f"SELECT {column}"]:\n'
+            "    pass\n"
+            "cursor.execute(payload)\n"
+        ),
+        "src/scalar.py": (
+            'for character in f"SELECT {column}":\n'
+            "    cursor.execute(character)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {("src/direct.py", 1), ("src/post_loop.py", 2)}
+
+
+def test_eager_comprehension_effects_respect_cardinality_and_scope() -> None:
+    files = {
+        "src/nonempty.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = "safe"\n'
+            "[(payload := source) for _ in [0]]\n"
+            "cursor.execute(payload)\n"
+        ),
+        "src/unknown.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = "safe"\n'
+            "[(payload := source) for _ in items]\n"
+            "cursor.execute(payload)\n"
+        ),
+        "src/empty.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = "safe"\n'
+            "[(payload := source) for _ in []]\n"
+            "cursor.execute(payload)\n"
+        ),
+        "src/lazy.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = "safe"\n'
+            "((payload := source) for _ in [0])\n"
+            "cursor.execute(payload)\n"
+        ),
+        "src/eager_sink.py": (
+            'source = f"SELECT {column}"\n'
+            "[cursor.execute(source) for _ in [0]]\n"
+        ),
+        "src/scope.py": (
+            'payload = f"SELECT {column}"\n'
+            '[payload for payload in ["safe"]]\n'
+            "cursor.execute(payload)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {
+        ("src/eager_sink.py", 1),
+        ("src/nonempty.py", 1),
+        ("src/scope.py", 1),
+        ("src/unknown.py", 1),
+    }
+
+
+def test_boolop_result_provenance_tracks_returned_operands() -> None:
+    files = {
+        "src/or_bound.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = source or "safe"\n'
+            "cursor.execute(payload)\n"
+        ),
+        "src/and_bound.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = source and "safe"\n'
+            "cursor.execute(payload)\n"
+        ),
+        "src/or_direct.py": 'cursor.execute(f"SELECT {column}" or "safe")\n',
+        "src/and_direct.py": 'cursor.execute(f"SELECT {column}" and "safe")\n',
+        "src/last_and.py": (
+            'source = f"SELECT {column}"\n'
+            'cursor.execute("safe" and source)\n'
+        ),
+        "src/dead.py": (
+            'source = f"SELECT {column}"\n'
+            "cursor.execute(False and source)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {
+        ("src/last_and.py", 1),
+        ("src/or_bound.py", 1),
+        ("src/or_direct.py", 1),
+    }
+
+
+def test_match_projects_structured_captures_and_routes_guard_fallthrough() -> None:
+    files = {
+        "src/sequence_safe.py": (
+            'source = f"SELECT {column}"\n'
+            'match ("safe", source):\n'
+            "    case (safe, unsafe):\n"
+            "        cursor.execute(safe)\n"
+        ),
+        "src/sequence_unsafe.py": (
+            'source = f"SELECT {column}"\n'
+            'match ("safe", source):\n'
+            "    case (safe, unsafe):\n"
+            "        cursor.execute(unsafe)\n"
+        ),
+        "src/mapping.py": (
+            'source = f"SELECT {column}"\n'
+            'match {"safe": "safe", "unsafe": source}:\n'
+            '    case {"unsafe": unsafe}:\n'
+            "        cursor.execute(unsafe)\n"
+        ),
+        "src/false_guard.py": (
+            'source = f"SELECT {column}"\n'
+            "match source:\n"
+            "    case payload if False:\n"
+            "        cursor.execute(payload)\n"
+        ),
+        "src/guard_fallthrough.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = "safe"\n'
+            "match value:\n"
+            "    case _ if not (payload := source):\n"
+            "        pass\n"
+            "    case _:\n"
+            "        cursor.execute(payload)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {
+        ("src/guard_fallthrough.py", 1),
+        ("src/mapping.py", 1),
+        ("src/sequence_unsafe.py", 1),
+    }
+
+
+def test_sql_flow_preserves_dict_order_and_precise_starred_unpacking() -> None:
+    files = {
+        "src/dict_order.py": (
+            'source = f"SELECT {column}"\n'
+            'payload = "safe"\n'
+            "{(payload := source): cursor.execute(payload), "
+            '(payload := "safe"): 0}\n'
+        ),
+        "src/star_prefix.py": (
+            'safe, *rest = ("safe", f"SELECT {column}")\n'
+            "cursor.execute(safe)\n"
+        ),
+        "src/star_suffix.py": (
+            '*rest, safe = (f"SELECT {column}", "safe")\n'
+            "cursor.execute(safe)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {("src/dict_order.py", 1)}
+
+
+def test_sql_flow_handles_deep_conditional_expression_without_recursion() -> None:
+    expression = '"safe"'
+    for index in reversed(range(1000)):
+        expression = f'f"SELECT {{column_{index}}}" if flag_{index} else {expression}'
+    source = f"payload = {expression}\ncursor.execute(payload)\n"
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(
+        {"src/deep_ifexp.py": source}
+    )
+
+    assert any(finding.pattern_id == "EQ-009" for finding in findings)
+
+
+def test_malformed_concat_preserves_sql_position_and_leading_trivia() -> None:
+    files = {
+        "src/spaces.py": (
+            "query = "
+            + repr(" " * 5000 + "SELECT * FROM users WHERE id = ")
+            + " + user_value\ninvalid syntax here\n"
+        ),
+        "src/comments.py": (
+            "query = "
+            + repr("/**/" * 2000 + "SELECT * FROM users WHERE id = ")
+            + " + user_value\ninvalid syntax here\n"
+        ),
+        "src/update.py": (
+            'query = "UPDATE " + table + " SET value = 1"\n'
+            "invalid syntax here\n"
+        ),
+        "src/insert.py": (
+            'query = "INSERT INTO " + table + "(id) VALUES (1)"\n'
+            "invalid syntax here\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        finding.file_path for finding in findings if finding.pattern_id == "EQ-009"
+    } == set(files)
+
+
+def test_malformed_static_grouping_does_not_become_dynamic_sql() -> None:
+    source = (
+        'query = "SELECT " + '
+        + " + ".join('("x")' for _ in range(3000))
+        + "\ninvalid syntax here\n"
+    )
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(
+        {"src/static_grouping.py": source}
+    )
+
+    assert not any(finding.pattern_id == "EQ-009" for finding in findings)
+
+
+def test_malformed_token_recovery_handles_many_templates_and_nested_concat() -> None:
+    templates = "values = (\n" + "".join(
+        f'f"SELECT {{column_{index}}}",\n' for index in range(2000)
+    )
+    nested = "user_value"
+    for _ in range(1000):
+        nested = f'"x" + ({nested})'
+    files = {
+        "src/templates.py": templates,
+        "src/nested.py": (
+            f'query = "SELECT " + ({nested})\ninvalid syntax here\n'
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        finding.file_path for finding in findings if finding.pattern_id == "EQ-009"
+    } == {"src/nested.py"}
 
 
 def test_dockerfile_without_user_detected_as_p2() -> None:
