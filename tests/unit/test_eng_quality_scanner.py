@@ -1493,6 +1493,43 @@ def test_parent_rebind_and_delete_clear_deep_dotted_provenance() -> None:
     assert not any(finding.pattern_id == "EQ-009" for finding in findings)
 
 
+def test_additive_assignment_tracks_dynamic_sql_fragments_to_later_sinks() -> None:
+    files = {
+        "src/fstring.py": (
+            'payload = "SELECT * FROM users"\n'
+            'payload += f" WHERE id={value}"\n'
+            "cursor.execute(payload)\n"
+        ),
+        "src/percent.py": (
+            'payload = "SELECT * FROM users"\n'
+            'payload += " WHERE id=%s" % value\n'
+            "cursor.execute(payload)\n"
+        ),
+        "src/format.py": (
+            'payload = "SELECT * FROM users"\n'
+            'payload += " WHERE id={}".format(value)\n'
+            "cursor.execute(payload)\n"
+        ),
+        "src/no_sink.py": (
+            'payload = "ordinary text"\n'
+            'payload += f" {value}"\n'
+            "print(payload)\n"
+        ),
+    }
+
+    findings = EngQualityScanner(tech_stack=["Python"]).scan(files)
+
+    assert {
+        (finding.file_path, finding.line_start)
+        for finding in findings
+        if finding.pattern_id == "EQ-009"
+    } == {
+        ("src/format.py", 2),
+        ("src/fstring.py", 2),
+        ("src/percent.py", 2),
+    }
+
+
 def test_python_ast_budget_is_exact_and_fails_closed_with_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

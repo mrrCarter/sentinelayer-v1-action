@@ -1046,10 +1046,19 @@ def _analyze_sql_statement(
         _process_sql_expression(statement.target, current, parents, lines, exceptions)
         _process_sql_expression(statement.value, current, parents, lines, exceptions)
         previous = _origins_for_binding_targets(current, [statement.target])
+        dynamic_append = (
+            current.graph.source(
+                int(getattr(statement.value, "lineno", 1) or 1)
+            )
+            if isinstance(statement.op, ast.Add)
+            and _dynamic_string_template(statement.value, parents) is not None
+            else None
+        )
         origin = current.graph.union(
             (
                 previous,
                 _sql_origins_in_expression(statement.value, current, parents),
+                dynamic_append,
             )
         )
         _set_sql_binding_targets(current, [statement.target], origin)
