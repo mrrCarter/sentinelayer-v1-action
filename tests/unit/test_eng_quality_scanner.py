@@ -196,6 +196,49 @@ def test_n_plus_one_on_unparsable_source_keeps_the_legacy_matcher() -> None:
     assert _n_plus_one_lines(source) == [2]
 
 
+def _timeout_lines(source: str) -> list[int]:
+    scanner = EngQualityScanner(tech_stack=["FastAPI", "Python"])
+    findings = scanner.scan({"scripts/e2e_check.py": source})
+    return sorted(f.line_start for f in findings if f.pattern_id == "EQ-012")
+
+
+# (source, EQ-012 lines). The first group are the reviewer-triaged multiline false positives.
+_TIMEOUT_CASES = [
+    # timeout on a later line of the SAME call is a timeout
+    ("import httpx\nr = httpx.get(\n    url, timeout=1\n)\n", []),
+    ("import httpx\nr = httpx.post(\n    url,\n    json={},\n    timeout=120,\n)\n", []),
+    ("import httpx\nc = httpx.Client(\n    base_url=u,\n    timeout=30.0,\n)\n", []),
+    # genuinely missing timeouts are still reported, at the call line
+    ("import httpx\nr = httpx.get(url)\n", [2]),
+    ("import httpx\nr = httpx.post(\n    url,\n    json={},\n)\n", [2]),
+    ("import httpx\nc = httpx.AsyncClient(base_url=u)\n", [2]),
+    # a comment or string mentioning "timeout" no longer hides a missing one
+    ("import httpx\nr = httpx.get(url)  # TODO add timeout\n", [2]),
+    # unchanged: spreading **kwargs is still reported; any timeout= keyword counts
+    ("import httpx\nr = httpx.get(url, **opts)\n", [2]),
+    ("import httpx\nr = httpx.get(url, timeout=None)\n", []),
+    # text that only looks like a call is not one
+    ('"""Example: httpx.get(url)"""\n', []),
+]
+
+
+def test_eq012_timeouts_come_from_call_keywords_not_the_first_line() -> None:
+    for source, expected in _TIMEOUT_CASES:
+        compile(source, "<fixture>", "exec")  # valid Python; compiled, never run
+        assert _timeout_lines(source) == expected, source
+
+
+def test_eq012_on_unparsable_source_keeps_the_legacy_line_check() -> None:
+    source = "import httpx\nr = httpx.get(\n    url, timeout=1\n)\n)\n"
+    try:
+        compile(source, "<fixture>", "exec")
+    except SyntaxError:
+        pass
+    else:
+        raise AssertionError("fixture must be invalid Python")
+    assert _timeout_lines(source) == [2]  # legacy: no 'timeout' text on the call line
+
+
 def test_workflow_secret_labels_not_flagged_as_hardcoded_secrets() -> None:
     files = {
         ".github/workflows/security-review.yml": (

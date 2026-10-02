@@ -91,6 +91,42 @@ def _python_loops_awaiting_db(content: str) -> list[int]:
     return offsets
 
 
+_HTTPX_CALL_ATTRS = frozenset({"get", "post", "put", "patch", "delete"})
+_HTTPX_CLIENT_ATTRS = frozenset({"AsyncClient", "Client"})
+
+
+def _python_untimed_httpx_lines(content: str) -> Optional[tuple[set[int], set[int]]]:
+    """Lines of httpx request calls and client constructors with NO `timeout=` keyword.
+
+    Keywords come from the Python parser, so a timeout passed on a later line of the same
+    call counts (the legacy same-line text check reported those as missing). As before, any
+    `timeout=` keyword counts as present, and a call that only spreads `**kwargs` is still
+    reported. Returns None when the source does not parse, and the caller then keeps the
+    legacy same-line check.
+    """
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(content)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+    calls: set[int] = set()
+    clients: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id == "httpx"):
+            continue
+        if any(keyword.arg == "timeout" for keyword in node.keywords):
+            continue
+        if func.attr in _HTTPX_CALL_ATTRS:
+            calls.add(func.value.lineno)
+        elif func.attr in _HTTPX_CLIENT_ATTRS:
+            clients.add(func.value.lineno)
+    return calls, clients
+
+
 @dataclass(frozen=True)
 class _Rule:
     pattern_id: str
@@ -712,8 +748,11 @@ class EngQualityScanner:
                         )
 
             if path.endswith(_PY_EXTS):
+                untimed = _python_untimed_httpx_lines(content)
                 for idx, line in enumerate(lines):
-                    if httpx_call_re.search(line) and "timeout" not in line.lower():
+                    if httpx_call_re.search(line) and (
+                        (idx + 1) in untimed[0] if untimed is not None else "timeout" not in line.lower()
+                    ):
                         line_no = idx + 1
                         findings.append(
                             self._make_finding(
@@ -724,7 +763,9 @@ class EngQualityScanner:
                                 confidence=0.7,
                             )
                         )
-                    if httpx_client_re.search(line) and "timeout" not in line.lower():
+                    if httpx_client_re.search(line) and (
+                        (idx + 1) in untimed[1] if untimed is not None else "timeout" not in line.lower()
+                    ):
                         line_no = idx + 1
                         findings.append(
                             self._make_finding(
